@@ -98,10 +98,11 @@ export function BuildCIHealthPage({ snapshot }: Readonly<{ snapshot: DashboardSn
       {builds.status === "unavailable" ? <EmptyState title="Data source not connected" description={builds.reason} /> : builds.data.length === 0 ? <EmptyState title="No workflow runs" description="GitHub Actions returned no recent workflow runs for the configured repository." /> : (
         <>
           <div className="mb-4 grid gap-4 sm:grid-cols-3">
-            <MiniStat label="Runs returned" value={builds.data.length} />
+            <MiniStat label={builds.meta?.bounds ? "Recent runs returned" : "Runs returned"} value={builds.data.length} />
             <MiniStat label="Successful" value={successful ?? 0} tone="success" />
             <MiniStat label="Failed" value={failed ?? 0} tone={failed ? "failure" : "neutral"} />
           </div>
+          <BoundsNote result={builds} />
           <section className="panel p-5 sm:p-6">
             <PanelTitle icon={Workflow} title="Recent workflow runs" />
             <div className="space-y-2">{builds.data.map((build) => <BuildListRow build={build} key={build.id} />)}</div>
@@ -123,7 +124,7 @@ export function DataSourcesPage({ snapshot }: Readonly<{ snapshot: DashboardSnap
             <div className="flex items-start gap-3">
               <div className="grid size-10 shrink-0 place-items-center rounded-xl border border-cyan-200/15 bg-cyan-200/[0.08] text-cyan-100/80"><GitFork size={18} /></div>
               <div>
-                <div className="flex flex-wrap items-center gap-2"><h2 className="text-base font-semibold text-slate-200">{github.name}</h2><StatusPill connected={github.status === "connected"} /></div>
+                <div className="flex flex-wrap items-center gap-2"><h2 className="text-base font-semibold text-slate-200">{github.name}</h2><StatusPill status={github.status} /></div>
                 <p className="mt-1 max-w-xl text-xs leading-5 text-slate-500">{github.description}</p>
               </div>
             </div>
@@ -131,7 +132,7 @@ export function DataSourcesPage({ snapshot }: Readonly<{ snapshot: DashboardSnap
           </div>
         </div>
         <div className="grid gap-px bg-white/[0.07] sm:grid-cols-2 lg:grid-cols-4">
-          <HealthFact icon={Server} label="Provider health" value={github.status === "connected" ? "Healthy" : "Unavailable"} tone={github.status === "connected" ? "success" : "warning"} />
+          <HealthFact icon={Server} label="Provider health" value={github.status === "connected" ? "Healthy" : github.status === "degraded" ? "Degraded" : "Unavailable"} tone={github.status === "connected" ? "success" : "warning"} />
           <HealthFact icon={GitFork} label="Configured repository" value={github.configuredResource ?? "Not configured"} />
           <HealthFact icon={Clock3} label="Last successful fetch" value={github.lastSuccessfulFetch ? formatDate(github.lastSuccessfulFetch) : "Not available"} />
           <HealthFact icon={KeyRound} label="Authentication" value={authenticationLabel(github.authentication)} tone={github.authentication === "authenticated" ? "success" : "warning"} />
@@ -139,7 +140,7 @@ export function DataSourcesPage({ snapshot }: Readonly<{ snapshot: DashboardSnap
         <div className="p-5 sm:p-6">
           <div className={`flex items-start gap-3 rounded-xl border p-4 ${github.status === "connected" ? "border-emerald-200/15 bg-emerald-200/[0.045]" : "border-amber-200/15 bg-amber-200/[0.045]"}`}>
             {github.status === "connected" ? <CheckCircle2 className="mt-0.5 shrink-0 text-emerald-200/80" size={16} /> : <CircleAlert className="mt-0.5 shrink-0 text-amber-100/80" size={16} />}
-            <div><p className="text-sm font-medium text-slate-300">{github.message}</p><p className="mt-1 text-xs leading-5 text-slate-500">Safe provider status only. Authorization headers and token values are never exposed.</p></div>
+            <div><p className="text-sm font-medium text-slate-300">{github.message}</p>{github.retry?.retryAt ? <p className="mt-1 text-xs leading-5 text-amber-100/60">Retry eligible after {formatDate(github.retry.retryAt)}.</p> : null}<p className="mt-1 text-xs leading-5 text-slate-500">Safe provider status only. Authorization headers and token values are never exposed.</p></div>
           </div>
           <div className="mt-5">
             <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-600">Capabilities</p>
@@ -149,7 +150,7 @@ export function DataSourcesPage({ snapshot }: Readonly<{ snapshot: DashboardSnap
       </section> : <EmptyState title="GitHub source unavailable" description="The provider registry did not return a GitHub source descriptor." />}
 
       <section className="mt-4 grid gap-4 md:grid-cols-2">
-        {snapshot.sources.filter((source) => source.id !== "github").map((source) => <section className="panel p-5" key={source.id}><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-slate-300">{source.name}</p><p className="mt-1 text-xs leading-5 text-slate-500">{source.description}</p></div><StatusPill connected={source.status === "connected"} /></div><p className="mt-4 text-xs leading-5 text-slate-600">{source.message}</p></section>)}
+        {snapshot.sources.filter((source) => source.id !== "github").map((source) => <section className="panel p-5" key={source.id}><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-slate-300">{source.name}</p><p className="mt-1 text-xs leading-5 text-slate-500">{source.description}</p></div><StatusPill status={source.status} /></div><p className="mt-4 text-xs leading-5 text-slate-600">{source.message}</p></section>)}
       </section>
     </PageFrame>
   );
@@ -169,7 +170,7 @@ function BranchPanel({ branches }: Readonly<{ branches: DataResult<BranchRecord[
 }
 
 function QueuePanel<T extends PullRequestRecord | IssueRecord>({ icon: Icon, title, result, emptyTitle, emptyDescription, itemLabel }: Readonly<{ icon: LucideIcon; title: string; result: DataResult<T[]>; emptyTitle: string; emptyDescription: string; itemLabel: string }>) {
-  return <section className="panel p-5 sm:p-6"><PanelTitle icon={Icon} title={title} /><QueueResult result={result} emptyTitle={emptyTitle} emptyDescription={emptyDescription} itemLabel={itemLabel} /></section>;
+  return <section className="panel p-5 sm:p-6"><PanelTitle icon={Icon} title={title} /><QueueResult result={result} emptyTitle={emptyTitle} emptyDescription={emptyDescription} itemLabel={itemLabel} /><BoundsNote result={result} /></section>;
 }
 
 function QueueResult<T extends PullRequestRecord | IssueRecord>({ result, emptyTitle, emptyDescription, itemLabel }: Readonly<{ result: DataResult<T[]>; emptyTitle: string; emptyDescription: string; itemLabel: string }>) {
@@ -218,6 +219,11 @@ function InfoCell({ label, value }: Readonly<{ label: string; value: string }>) 
 
 function Freshness({ value }: Readonly<{ value?: string }>) {
   return <span className="ml-auto inline-flex items-center gap-1.5 text-[10px] text-slate-600"><Clock3 size={12} /> {value ? `Fetched ${formatDate(value)}` : "Fetch time unavailable"}</span>;
+}
+
+function BoundsNote<T>({ result }: Readonly<{ result: DataResult<T[]> }>) {
+  if (result.status === "unavailable" || !result.meta?.bounds) return null;
+  return <p className="mt-3 text-[10px] leading-4 text-slate-600">{result.meta.bounds.description}{result.meta.bounds.truncated ? ` At least ${result.data.length.toLocaleString()} records matched before the cap.` : " The returned set was not truncated."}</p>;
 }
 
 function ExternalLinkLink({ href, label }: Readonly<{ href: string; label: string }>) {

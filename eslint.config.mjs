@@ -10,6 +10,9 @@ export default defineConfig([
     "out/**",
     "build/**",
     "coverage/**",
+    "dist/**",
+    ".vinext/**",
+    ".wrangler/**",
     "next-env.d.ts",
   ]),
 ]);

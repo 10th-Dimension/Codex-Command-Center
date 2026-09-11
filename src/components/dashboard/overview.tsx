@@ -23,7 +23,8 @@ import type { ActivityRecord, ActivityTrendPoint, BuildRecord, DataResult } from
 const metricIcons: LucideIcon[] = [Layers3, GitCommitHorizontal, GitPullRequest, CircleDot, ShieldCheck, Activity];
 
 export function Overview({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>) {
-  const githubConnected = snapshot.githubHealth.status === "connected";
+  const githubConnected = snapshot.githubHealth.status !== "unavailable";
+  const githubDegraded = snapshot.githubHealth.status === "degraded";
 
   return (
     <div className="fade-in-up mx-auto max-w-[1480px]">
@@ -47,9 +48,9 @@ export function Overview({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>
             {githubConnected ? <CircleCheck size={15} /> : <Radio size={15} />}
           </div>
           <div>
-            <p className={`text-sm font-medium ${githubConnected ? "text-emerald-50/90" : "text-amber-50/90"}`}>{githubConnected ? "GitHub is connected" : "No live sources connected"}</p>
+            <p className={`text-sm font-medium ${githubConnected ? "text-emerald-50/90" : "text-amber-50/90"}`}>{githubDegraded ? "GitHub is partially available" : githubConnected ? "GitHub is connected" : "No live sources connected"}</p>
             <p className={`mt-1 text-xs leading-5 ${githubConnected ? "text-emerald-100/60" : "text-amber-100/55"}`}>
-              {githubConnected ? `${snapshot.githubHealth.configuredResource ?? "Configured repository"} is supplying read-only data.` : snapshot.githubHealth.message}
+              {githubDegraded ? snapshot.githubHealth.message : githubConnected ? `${snapshot.githubHealth.configuredResource ?? "Configured repository"} is supplying read-only data.` : snapshot.githubHealth.message}
             </p>
           </div>
         </div>
@@ -96,7 +97,7 @@ export function Overview({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>
                   <p className="truncate text-xs font-medium text-slate-300">{source.name}</p>
                   <p className="mt-1 truncate text-[10px] text-slate-600">{source.configuredResource ?? source.capabilities.slice(0, 2).join(" · ")}</p>
                 </div>
-                <StatusPill connected={source.status === "connected"} />
+                <StatusPill status={source.status} />
               </div>
             ))}
           </div>
