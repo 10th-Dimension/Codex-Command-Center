@@ -31,3 +31,8 @@ tmp/
 temp/
 recordings/
 runtime/
+.vinext/
+.wrangler/
+dist/
+.dev.vars
+.dev.vars.*

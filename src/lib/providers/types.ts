@@ -16,7 +16,7 @@ export type ProviderCapability =
   | "codex-usage"
   | "project-telemetry";
 
-export type ProviderStatus = "connected" | "unavailable";
+export type ProviderStatus = "connected" | "degraded" | "unavailable";
 
 export type ProviderErrorCode =
   | "not-configured"
@@ -49,6 +49,25 @@ export interface ProviderHealth {
   authentication: AuthenticationState;
   message: string;
   errorCode?: ProviderErrorCode;
+  retry?: ProviderRetryMetadata;
+}
+
+export interface ProviderRetryMetadata {
+  retryAfterSeconds?: number;
+  retryAt?: string;
+}
+
+export interface ResultBounds {
+  description: string;
+  limit: number;
+  truncated: boolean;
+}
+
+export interface ProviderResultMetadata {
+  bounds?: ResultBounds;
+  cacheState?: "upstream" | "fresh-cache" | "stale-cache";
+  partial?: boolean;
+  retry?: ProviderRetryMetadata;
 }
 
 export type DataResult<T> =
@@ -57,12 +76,14 @@ export type DataResult<T> =
       data: T;
       source: ProviderId;
       asOf?: string;
+      meta?: ProviderResultMetadata;
     }
   | {
       status: "unavailable";
       source: ProviderId;
       reason: string;
       errorCode?: ProviderErrorCode;
+      meta?: ProviderResultMetadata;
     };
 
 export interface RepositoryRecord {
@@ -141,6 +162,21 @@ export interface ActivityTrendPoint {
   value: number;
 }
 
+export interface GitHubDataSnapshot {
+  repositories: DataResult<RepositoryRecord[]>;
+  commits: DataResult<CommitRecord[]>;
+  branches: DataResult<BranchRecord[]>;
+  pullRequests: DataResult<PullRequestRecord[]>;
+  issues: DataResult<IssueRecord[]>;
+  builds: DataResult<BuildRecord[]>;
+  activity: DataResult<ActivityRecord[]>;
+  trends: {
+    sevenDay: DataResult<ActivityTrendPoint[]>;
+    thirtyDay: DataResult<ActivityTrendPoint[]>;
+  };
+  health: ProviderHealth;
+}
+
 export interface CodexActivityRecord {
   id: string;
   taskId: string;
@@ -216,6 +252,7 @@ export interface GitHubProvider extends
   IssueProvider,
   BuildProvider,
   ActivityProvider {
+  getSnapshot(context: ProviderContext): Promise<GitHubDataSnapshot>;
   getHealth(context: ProviderContext): Promise<ProviderHealth>;
 }
 
