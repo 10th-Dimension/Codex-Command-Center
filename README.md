@@ -2,7 +2,7 @@
 
 Codex Command Center is a private, extensible dashboard for bringing trusted engineering and agent signals into one calm workspace. It is designed to eventually aggregate GitHub repositories, commits, branches, pull requests, issues, GitHub Actions, Codex activity and usage telemetry, project telemetry, Liquidation Terminal telemetry, and additional providers.
 
-The initial release establishes the application shell, typed provider contracts, adapter registry, security boundaries, and honest unavailable states. It does not invent metrics and it does not connect to external systems yet.
+The current release establishes the application shell, typed provider contracts, adapter registry, security boundaries, and a read-only GitHub provider for one configured repository. It does not invent metrics: unavailable providers and empty GitHub responses remain explicit in the UI.
 
 ## Installation
 
@@ -17,7 +17,7 @@ Install dependencies from the repository root:
 npm install
 ```
 
-Copy `.env.example` to `.env.local` only when you are ready to configure a local integration. The example file intentionally contains variable names only. Keep real values out of source code and documentation.
+Copy `.env.example` to `.env.local` only when you are ready to configure a local integration. For the GitHub provider, set `GITHUB_TOKEN`, `GITHUB_OWNER`, and `GITHUB_REPOSITORY` in that ignored local file. The example file intentionally contains variable names only. Keep real values out of source code and documentation.
 
 ## Local development
 
@@ -27,7 +27,7 @@ Start the development server:
 npm run dev
 ```
 
-Then open [http://localhost:3000](http://localhost:3000). The dashboard is intentionally useful before a provider is connected: each data surface explains that its source is unavailable instead of showing placeholder numbers.
+Then open [http://localhost:3000](http://localhost:3000). With the GitHub variables configured, the dashboard reads repository metadata, commits, branches, open pull requests, open issues, and GitHub Actions runs from the configured repository. Without them, each data surface explains that its source is unavailable instead of showing placeholder numbers.
 
 Run the project checks with:
 
@@ -66,18 +66,19 @@ The UI is built with Next.js App Router, TypeScript, Tailwind CSS, and reusable 
 - `connected` contains data returned by a real provider.
 - `unavailable` contains a safe, user-facing reason and no fabricated fallback.
 
-`src/lib/providers/registry.ts` is the composition boundary. The overview query uses that registry and converts provider results into dashboard view models. A future provider can be added behind the same contracts without rewriting the dashboard components.
+`src/lib/providers/registry.ts` is the composition boundary. The server-only `src/lib/providers/github.ts` implements the GitHub adapter with authenticated, read-only REST `GET` requests, safe error classification, and short-lived server-side fetch caching. The overview query uses that registry and converts provider results into dashboard view models. The adapter stores configured repositories as targets, so additional repositories can be added without changing the dashboard components.
 
-The current registry uses explicit empty adapters. They are placeholders for integration work, not mock data sources.
+Codex activity, Codex usage, and project telemetry still use explicit empty adapters. They are placeholders for future integration work, not mock data sources.
 
 ## Security model
 
 - `.env.local` and other local environment files are ignored by Git.
 - `.env.example` contains variable names only and no secret values.
 - There are no `NEXT_PUBLIC_*` variables for private credentials.
-- Provider credentials belong in server-only integration code or a secret manager; they must never cross into client components.
+- The GitHub token belongs only in the server-only provider boundary; it must never cross into client components.
 - Runtime artifacts, logs, recordings, databases, caches, and generated archives are ignored where appropriate.
-- The dashboard renders unavailable states until a real source is configured.
+- There are no GitHub write or mutation operations in this phase.
+- The dashboard renders unavailable states until a real source is configured and preserves explicit empty states when a connected source returns no records.
 
 ## Git workflow
 
@@ -85,4 +86,4 @@ GitHub is the canonical source of truth for this project. Inspect status and und
 
 ## Future integrations
 
-Planned integration seams include a server-only GitHub adapter, Codex activity and usage telemetry adapters where supported, project telemetry, Liquidation Terminal telemetry, and additional provider modules. Each integration should document its authentication boundary, failure behavior, refresh strategy, and data freshness without exposing private credentials or manufacturing unavailable values.
+Planned integration seams include Codex activity and usage telemetry adapters where supported, project telemetry, Liquidation Terminal telemetry, multiple GitHub repository targets, and additional provider modules. Each integration should document its authentication boundary, failure behavior, refresh strategy, and data freshness without exposing private credentials or manufacturing unavailable values.

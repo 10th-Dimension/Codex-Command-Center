@@ -11,11 +11,23 @@ export type ProviderCapability =
   | "pull-requests"
   | "issues"
   | "builds"
+  | "activity"
   | "codex-activity"
   | "codex-usage"
   | "project-telemetry";
 
 export type ProviderStatus = "connected" | "unavailable";
+
+export type ProviderErrorCode =
+  | "not-configured"
+  | "authentication"
+  | "permission"
+  | "rate-limited"
+  | "network"
+  | "api"
+  | "empty";
+
+export type AuthenticationState = "not-configured" | "authenticated" | "unauthorized" | "permission-denied" | "unknown";
 
 export interface ProviderDescriptor {
   id: ProviderId;
@@ -29,6 +41,16 @@ export interface ProviderContext {
   signal?: AbortSignal;
 }
 
+export interface ProviderHealth {
+  status: ProviderStatus;
+  checkedAt: string;
+  configuredResource?: string;
+  lastSuccessfulFetch?: string;
+  authentication: AuthenticationState;
+  message: string;
+  errorCode?: ProviderErrorCode;
+}
+
 export type DataResult<T> =
   | {
       status: "connected";
@@ -40,6 +62,7 @@ export type DataResult<T> =
       status: "unavailable";
       source: ProviderId;
       reason: string;
+      errorCode?: ProviderErrorCode;
     };
 
 export interface RepositoryRecord {
@@ -102,6 +125,22 @@ export interface BuildRecord {
   url?: string;
 }
 
+export interface ActivityRecord {
+  id: string;
+  repositoryId: string;
+  kind: "commit" | "pull-request" | "issue" | "build";
+  title: string;
+  summary: string;
+  occurredAt: string;
+  author?: string;
+  url?: string;
+}
+
+export interface ActivityTrendPoint {
+  label: string;
+  value: number;
+}
+
 export interface CodexActivityRecord {
   id: string;
   taskId: string;
@@ -152,6 +191,11 @@ export interface BuildProvider extends ProviderDescriptor {
   listBuilds(context: ProviderContext): Promise<DataResult<BuildRecord[]>>;
 }
 
+export interface ActivityProvider extends ProviderDescriptor {
+  listActivity(context: ProviderContext): Promise<DataResult<ActivityRecord[]>>;
+  listActivityTrend(context: ProviderContext, days: 7 | 30): Promise<DataResult<ActivityTrendPoint[]>>;
+}
+
 export interface CodexActivityProvider extends ProviderDescriptor {
   listCodexActivity(context: ProviderContext): Promise<DataResult<CodexActivityRecord[]>>;
 }
@@ -164,13 +208,26 @@ export interface ProjectTelemetryProvider extends ProviderDescriptor {
   listProjectTelemetry(context: ProviderContext): Promise<DataResult<ProjectTelemetryRecord[]>>;
 }
 
+export interface GitHubProvider extends
+  RepositoryProvider,
+  CommitProvider,
+  BranchProvider,
+  PullRequestProvider,
+  IssueProvider,
+  BuildProvider,
+  ActivityProvider {
+  getHealth(context: ProviderContext): Promise<ProviderHealth>;
+}
+
 export interface ProviderRegistry {
+  github: GitHubProvider;
   repositories: RepositoryProvider;
   commits: CommitProvider;
   branches: BranchProvider;
   pullRequests: PullRequestProvider;
   issues: IssueProvider;
   builds: BuildProvider;
+  activity: ActivityProvider;
   codexActivity: CodexActivityProvider;
   codexUsage: CodexUsageProvider;
   projectTelemetry: ProjectTelemetryProvider;
