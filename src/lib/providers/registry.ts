@@ -1,10 +1,9 @@
 import "server-only";
 
 import {
-  emptyCodexActivityProvider,
-  emptyCodexUsageProvider,
   emptyProjectTelemetryProvider,
 } from "./empty-provider";
+import { realCodexTelemetryProvider } from "./codex";
 import { realGitHubProvider } from "./github";
 import type { ProviderRegistry } from "./types";
 
@@ -24,7 +23,8 @@ export const providerRegistry: ProviderRegistry = {
   issues: realGitHubProvider,
   builds: realGitHubProvider,
   activity: realGitHubProvider,
-  codexActivity: emptyCodexActivityProvider,
-  codexUsage: emptyCodexUsageProvider,
+  codex: realCodexTelemetryProvider,
+  codexActivity: realCodexTelemetryProvider,
+  codexUsage: realCodexTelemetryProvider,
   projectTelemetry: emptyProjectTelemetryProvider,
 };

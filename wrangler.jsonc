@@ -1,20 +1,31 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "codex-command-center",
-  "compatibility_date": "2026-09-10",
-  "compatibility_flags": [
-    "nodejs_compat"
-  ],
-  "main": "vinext/server/fetch-handler",
-  "assets": {
-    "directory": "dist/client",
-    "not_found_handling": "none",
-    "binding": "ASSETS"
-  },
-  "cache": {
-    "enabled": true
-  },
-  "version_metadata": {
-    "binding": "CF_VERSION_METADATA"
-  }
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "codex-command-center",
+	"compatibility_date": "2026-09-10",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"main": "vinext/server/fetch-handler",
+	"assets": {
+		"directory": "dist/client",
+		"not_found_handling": "none",
+		"binding": "ASSETS"
+	},
+	"cache": {
+		"enabled": true
+	},
+	"version_metadata": {
+		"binding": "CF_VERSION_METADATA"
+	},
+	"d1_databases": [
+		{
+			"binding": "CODEX_TELEMETRY_DB",
+			"database_name": "codex-command-center-telemetry",
+			"database_id": "8d2ed842-ae1e-49d5-b722-411690425ddb",
+			"migrations_dir": "migrations"
+		}
+	],
+	"vars": {
+		"CODEX_TELEMETRY_RETENTION_DAYS": "30"
+	}
 }

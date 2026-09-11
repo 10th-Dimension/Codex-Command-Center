@@ -120,11 +120,30 @@ test("partial capability failure degrades the Data Sources health", async () => 
   assert.equal(github.health.status, "degraded");
 
   const unavailable = { status: "unavailable" as const, source: "codex" as const, reason: "Not configured", errorCode: "not-configured" as const };
+  const codexHealth = { status: "unavailable" as const, checkedAt: requestedAt, authentication: "not-configured" as const, message: "Not configured", errorCode: "not-configured" as const };
   const dashboard = composeDashboardSnapshot({
     requestedAt,
     github,
     githubDescriptor: provider,
-    codexActivity: unavailable,
+    codex: {
+      activity: unavailable,
+      trends: { twentyFourHour: unavailable, sevenDay: unavailable, thirtyDay: unavailable },
+      usage: unavailable,
+      categories: unavailable,
+      models: unavailable,
+      tools: unavailable,
+      timings: unavailable,
+      approvals: unavailable,
+      mcpServers: unavailable,
+      mcpTools: unavailable,
+      networkDecisions: unavailable,
+      networkHosts: unavailable,
+      sessions: unavailable,
+      projects: unavailable,
+      recentErrors: unavailable,
+      health: codexHealth,
+      retentionDays: 30,
+    },
     codexDescriptor: { id: "codex", name: "Codex", description: "Codex", capabilities: ["codex-activity"] },
     projectTelemetry: { ...unavailable, source: "project-telemetry" },
     projectDescriptor: { id: "project-telemetry", name: "Projects", description: "Projects", capabilities: ["project-telemetry"] },

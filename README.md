@@ -1,6 +1,6 @@
 # Codex Command Center
 
-Codex Command Center is a private, extensible engineering dashboard for trusted repository, delivery, project, and agent signals. Its first live adapter reads one configured private GitHub repository and exposes repository metadata, recent commits, branches, open pull requests, open issues, GitHub Actions runs, activity, and commit trends. Unavailable or empty data stays explicit; the application never manufactures dashboard metrics.
+Codex Command Center is a private, extensible engineering dashboard for trusted repository, delivery, project, and agent signals. Its live adapters read a configured private GitHub repository and privacy-filtered Codex OpenTelemetry logs stored in Cloudflare D1. Unavailable or empty data stays explicit; the application never manufactures dashboard metrics.
 
 The application has one shared source tree and two supported local workflows:
 
@@ -66,9 +66,12 @@ The server-only wrapper in `src/lib/providers/github.ts` is the only environment
 .
 ├── .github/workflows/ci.yml       # Next.js and Worker verification; no deployment
 ├── app/                            # Shared App Router pages and dynamic dashboard layout
+├── migrations/                     # Versioned D1 telemetry schema
+├── scripts/telemetry-relay.ts      # Loopback-only OTLP relay for Codex
 ├── src/components/                 # Provider-agnostic dashboard presentation
 ├── src/lib/dashboard/              # Server query and pure view-model composition
-├── src/lib/providers/              # Contracts, registry, GitHub core/wrapper, empty adapters
+├── src/lib/providers/              # Contracts, registry, GitHub/Codex adapters
+├── src/lib/telemetry/              # OTLP decoding, privacy filtering, ingestion, and D1 access
 ├── tests/                          # Transport-injected provider and view-model tests
 ├── .env.example                    # Variable names only
 ├── AGENTS.md                       # Permanent agent and deployment safety rules
@@ -79,6 +82,83 @@ The server-only wrapper in `src/lib/providers/github.ts` is the only environment
 ```
 
 Presentation components depend on typed `DataResult<T>` and `ProviderHealth` contracts, never GitHub transport details. `src/lib/providers/registry.ts` remains the provider composition boundary. `src/lib/providers/github-core.ts` is runtime-portable and testable through an injected Fetch implementation; `src/lib/providers/github.ts` is marked server-only and reads runtime configuration. The target list is already modeled as a collection so additional repositories can be introduced without changing dashboard components.
+
+The Codex path follows the same separation. The ingestion core accepts standard Web requests and a narrow D1 interface. The server-only Cloudflare adapter supplies the `CODEX_TELEMETRY_DB` binding and dedicated ingestion secret. Dashboard queries consume the typed Codex provider; components never import D1, the relay, Cloudflare bindings, or credentials.
+
+## Codex telemetry pipeline
+
+```text
+Codex OTLP logs
+  -> http://127.0.0.1:14318/v1/logs
+  -> loopback-only local relay
+  -> Cloudflare Access service-token authentication
+  -> POST /api/telemetry/ingest
+  -> dedicated ingestion-key verification
+  -> privacy normalization and bounded batch writes
+  -> CODEX_TELEMETRY_DB (D1)
+  -> typed Codex provider
+  -> Overview, Codex Activity, Usage, and Data Sources
+```
+
+The relay listens only on IPv4 loopback. It accepts OTLP/HTTP protobuf or JSON, preserves the payload content type, and adds `CF-Access-Client-Id`, `CF-Access-Client-Secret`, and `X-Codex-Telemetry-Key` only on the outbound request. Relay credentials are separate from GitHub credentials. The relay never prints configuration values or payloads.
+
+Cloudflare Access is the external identity gate. Configure a service-token Access policy for the ingest path and an authorized-user policy for dashboard routes. The application-level ingestion key is an additional server-side check, not a replacement for Access. Never make the ingest path publicly reachable merely because it also checks the dedicated key.
+
+### Local relay configuration
+
+Keep these local relay variables in ignored `.env.local`; never place their values in tracked files:
+
+- `TELEMETRY_COLLECTOR_URL`
+- `TELEMETRY_INGEST_KEY`
+- `CF_ACCESS_CLIENT_ID`
+- `CF_ACCESS_CLIENT_SECRET`
+
+Start the relay from the repository root:
+
+```bash
+npm run telemetry:relay
+```
+
+### Windows Codex OTLP configuration
+
+Edit `%USERPROFILE%\.codex\config.toml` and preserve every unrelated setting. Current official Codex configuration uses the `[otel]` table with an inline `otlp-http` exporter. Prompt content remains disabled:
+
+```toml
+[otel]
+environment = "prod"
+log_user_prompt = false
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:14318/v1/logs", protocol = "binary" } }
+```
+
+Restart Codex after changing the configuration. The exporter supports OTLP/HTTP binary protobuf and JSON; binary is the default used here. Do not add prompt logging, authorization headers, or service credentials to Codex configuration—the loopback relay owns authentication to the remote collector.
+
+### Event normalization and privacy
+
+The normalizer recognizes the current Codex operational event families, including conversation starts, API requests, SSE/WebSocket events carrying legitimate token counts, tool and approval decisions, tool results, MCP activity, and network proxy decisions. It maps them into session, API-request, decision, tool, MCP, network, usage, warning, error, or unknown categories. Unknown events are retained only as a bounded Codex-style event name plus sanitized attribute-key names so the schema can evolve safely.
+
+The following are never persisted: authorization or cookie headers, API keys, access or refresh tokens, passwords, private keys, client secrets, prompt text, request/response bodies, commands, tool arguments, stdout/stderr, or full tool results. Arbitrary unknown attribute values are not stored. Identifiers and recognized operational scalar fields are length- and range-bounded before storage. Ingestion payloads are capped at 1 MiB and 500 log records.
+
+Prompt logging is off by default and must remain off unless a separate privacy review explicitly authorizes it. Even if prompt or tool-output fields arrive accidentally, the ingestion boundary drops them before D1 writes.
+
+### D1 schema, retention, and bindings
+
+`migrations/0001_codex_telemetry.sql` creates the event table and indexes for time, category, session/thread, project, model, tool, MCP server, network decision, and success/failure queries. The schema has explicit optional fields for environment, task/project/repository/workspace context, tool type/status, approvals, MCP server/tool, safe network host/decision, duration, success, safe error class, provenance, and schema version. Event fingerprints have a unique constraint so collector retries are idempotent. Ingestion uses prepared statements and D1 batches capped at 50 writes.
+
+Raw events default to 30-day retention through `CODEX_TELEMETRY_RETENTION_DAYS`; cleanup runs after successful ingestion. The configured value is bounded to 1–365 days. Long-term rollups are intentionally not fabricated or precomputed yet; add them only when a real product requirement defines their fields and retention.
+
+Before an authorized deployment, create the production D1 database, replace the all-zero placeholder `database_id` in `wrangler.jsonc`, apply the checked-in migration, and create the encrypted Worker secret named `CODEX_TELEMETRY_INGEST_KEY`. Do not put the secret value in Wrangler configuration. Local schema verification can use:
+
+```bash
+npx wrangler d1 migrations apply codex-command-center-telemetry --local
+```
+
+Applying remote migrations, creating encrypted production secrets, configuring Access, and deploying are production operations and require explicit authorization.
+
+### Dashboard semantics
+
+Codex Activity reports real stored events today; observed sessions over 24 hours; exact 24-hour, 7-day, and 30-day trends; request/tool/failure/approval/MCP/network/error counts; event timelines; model/tool/category/timing breakdowns; sessions; explicit project relationships; and recent errors or warnings. Missing session, project, model, approval, MCP, network, tool, timing, or usage fields remain visibly unavailable or empty.
+
+Usage reports only token-count fields legitimately present in telemetry. Operational requests, events, and tool executions are labeled as activity. The dashboard never derives or displays account billing totals, credit balances, plan limits, rate-limit allocations, or monetary cost from these logs.
 
 ## GitHub snapshot and request design
 
@@ -124,7 +204,7 @@ CI runs all six checks on pushes and pull requests. It does not deploy.
 
 ## Future integrations
 
-Planned provider seams include Codex activity and usage telemetry where supported, project telemetry, Liquidation Terminal telemetry, multiple GitHub repositories, and additional read-only providers. Each integration must preserve typed results, server-only credentials, bounded concurrency, explicit freshness/failure semantics, and honest unavailable states.
+Planned provider seams include project telemetry, Liquidation Terminal telemetry, multiple GitHub repositories, optional long-lived Codex rollups, and additional read-only providers. Each integration must preserve typed results, server-only credentials, bounded concurrency, explicit freshness/failure semantics, and honest unavailable states.
 
 ## Git workflow
 

@@ -14,6 +14,7 @@ export type ProviderCapability =
   | "activity"
   | "codex-activity"
   | "codex-usage"
+  | "telemetry-ingest"
   | "project-telemetry";
 
 export type ProviderStatus = "connected" | "degraded" | "unavailable";
@@ -179,20 +180,140 @@ export interface GitHubDataSnapshot {
 
 export interface CodexActivityRecord {
   id: string;
-  taskId: string;
+  eventName: string;
+  category: CodexTelemetryCategory;
+  taskId?: string;
+  sessionId?: string;
+  threadId?: string;
   projectId?: string;
-  summary: string;
-  status: "running" | "completed" | "blocked" | "failed";
+  projectName?: string;
+  repositoryId?: string;
+  workspaceId?: string;
+  environment?: string;
+  model?: string;
+  toolName?: string;
+  toolType?: string;
+  toolStatus?: string;
+  decision?: string;
+  approvalDecision?: string;
+  mcpServer?: string;
+  mcpTool?: string;
+  networkHost?: string;
+  networkDecision?: string;
+  success?: boolean;
+  errorType?: string;
+  status?: string;
+  severity?: string;
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  reasoningOutputTokens?: number;
+  safeAttributeKeys: string[];
+  unknownAttributeKeys: string[];
   occurredAt: string;
+  receivedAt: string;
+  source: "openai-codex-otel";
+  schemaVersion: 1;
 }
 
 export interface CodexUsageSnapshot {
   window: "7d" | "30d";
-  model?: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  requests?: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
+  eventsWithUsage: number;
   capturedAt: string;
+}
+
+export type CodexTelemetryCategory =
+  | "session"
+  | "api-request"
+  | "tool"
+  | "mcp"
+  | "network"
+  | "decision"
+  | "error"
+  | "warning"
+  | "usage"
+  | "unknown";
+
+export interface CodexTelemetryTrendPoint {
+  label: string;
+  events: number;
+  errors: number;
+  toolExecutions: number;
+}
+
+export interface CodexTelemetryBreakdown {
+  label: string;
+  count: number;
+}
+
+export interface CodexTelemetryTimingBreakdown {
+  label: string;
+  sampleCount: number;
+  averageMs: number;
+  maximumMs: number;
+}
+
+export interface CodexTelemetryToolSummary {
+  label: string;
+  count: number;
+  failureCount: number;
+  averageDurationMs?: number;
+  lastSeenAt: string;
+}
+
+export interface CodexTelemetrySessionSummary {
+  sessionId: string;
+  projectName?: string;
+  model?: string;
+  eventCount: number;
+  errorCount: number;
+  toolExecutions: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface CodexTelemetryProjectSummary {
+  projectId: string;
+  projectName?: string;
+  eventCount: number;
+  sessionCount: number;
+  lastSeenAt: string;
+}
+
+export interface CodexTelemetrySnapshot {
+  activity: DataResult<CodexActivityRecord[]>;
+  trends: {
+    twentyFourHour: DataResult<CodexTelemetryTrendPoint[]>;
+    sevenDay: DataResult<CodexTelemetryTrendPoint[]>;
+    thirtyDay: DataResult<CodexTelemetryTrendPoint[]>;
+  };
+  usage: DataResult<CodexUsageSnapshot[]>;
+  categories: DataResult<CodexTelemetryBreakdown[]>;
+  models: DataResult<CodexTelemetryBreakdown[]>;
+  tools: DataResult<CodexTelemetryToolSummary[]>;
+  timings: DataResult<CodexTelemetryTimingBreakdown[]>;
+  approvals: DataResult<CodexTelemetryBreakdown[]>;
+  mcpServers: DataResult<CodexTelemetryBreakdown[]>;
+  mcpTools: DataResult<CodexTelemetryBreakdown[]>;
+  networkDecisions: DataResult<CodexTelemetryBreakdown[]>;
+  networkHosts: DataResult<CodexTelemetryBreakdown[]>;
+  sessions: DataResult<CodexTelemetrySessionSummary[]>;
+  projects: DataResult<CodexTelemetryProjectSummary[]>;
+  recentErrors: DataResult<CodexActivityRecord[]>;
+  health: ProviderHealth;
+  lastReceivedAt?: string;
+  oldestEventAt?: string;
+  newestEventAt?: string;
+  eventCount?: number;
+  todayEventCount?: number;
+  observedSessionCount24h?: number;
+  failedToolCount30d?: number;
+  retentionDays: number;
 }
 
 export interface ProjectTelemetryRecord {
@@ -240,6 +361,11 @@ export interface CodexUsageProvider extends ProviderDescriptor {
   getCodexUsage(context: ProviderContext): Promise<DataResult<CodexUsageSnapshot[]>>;
 }
 
+export interface CodexTelemetryProvider extends CodexActivityProvider, CodexUsageProvider {
+  getSnapshot(context: ProviderContext): Promise<CodexTelemetrySnapshot>;
+  getHealth(context: ProviderContext): Promise<ProviderHealth>;
+}
+
 export interface ProjectTelemetryProvider extends ProviderDescriptor {
   listProjectTelemetry(context: ProviderContext): Promise<DataResult<ProjectTelemetryRecord[]>>;
 }
@@ -265,6 +391,7 @@ export interface ProviderRegistry {
   issues: IssueProvider;
   builds: BuildProvider;
   activity: ActivityProvider;
+  codex: CodexTelemetryProvider;
   codexActivity: CodexActivityProvider;
   codexUsage: CodexUsageProvider;
   projectTelemetry: ProjectTelemetryProvider;

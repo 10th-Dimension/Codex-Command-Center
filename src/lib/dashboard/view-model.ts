@@ -4,7 +4,7 @@ import type {
   AuthenticationState,
   BranchRecord,
   BuildRecord,
-  CodexActivityRecord,
+  CodexTelemetrySnapshot,
   CommitRecord,
   DataResult,
   GitHubDataSnapshot,
@@ -43,6 +43,7 @@ export interface DashboardSnapshot {
   };
   sources: DataSourceSummary[];
   githubHealth: ProviderHealth;
+  codex: CodexTelemetrySnapshot;
 }
 
 export interface DataSourceSummary {
@@ -56,6 +57,11 @@ export interface DataSourceSummary {
   authentication: AuthenticationState;
   message: string;
   retry?: ProviderRetryMetadata;
+  lastReceivedAt?: string;
+  retentionDays?: number;
+  eventCount?: number;
+  oldestEventAt?: string;
+  newestEventAt?: string;
 }
 
 interface Descriptor {
@@ -69,7 +75,7 @@ export interface DashboardCompositionInput {
   requestedAt: string;
   github: GitHubDataSnapshot;
   githubDescriptor: Descriptor;
-  codexActivity: DataResult<CodexActivityRecord[]>;
+  codex: CodexTelemetrySnapshot;
   codexDescriptor: Descriptor;
   projectTelemetry: DataResult<ProjectTelemetryRecord[]>;
   projectDescriptor: Descriptor;
@@ -114,9 +120,13 @@ function buildMetricResult(builds: DataResult<BuildRecord[]>, status: BuildRecor
   return { ...builds, data: builds.data.filter((build) => build.status === status).length };
 }
 
+function telemetryTrendTotal(result: CodexTelemetrySnapshot["trends"]["sevenDay"]): DataResult<number> {
+  if (result.status === "unavailable") return result;
+  return { ...result, data: result.data.reduce((total, point) => total + point.events, 0) };
+}
+
 export function composeDashboardSnapshot(input: DashboardCompositionInput): DashboardSnapshot {
   const { github } = input;
-  const codexHealth = emptyProviderHealth(input.codexActivity, input.requestedAt, "Codex telemetry is available.");
   const projectHealth = emptyProviderHealth(input.projectTelemetry, input.requestedAt, "Project telemetry is available.");
 
   return {
@@ -157,6 +167,18 @@ export function composeDashboardSnapshot(input: DashboardCompositionInput): Dash
         helper: "Failed runs in the bounded recent result",
         result: buildMetricResult(github.builds, "failure"),
       },
+      {
+        id: "codex-events-7d",
+        label: "Codex activity · 7 days",
+        helper: "Operational telemetry events received in the last 7 days",
+        result: telemetryTrendTotal(input.codex.trends.sevenDay),
+      },
+      {
+        id: "codex-events-30d",
+        label: "Codex activity · 30 days",
+        helper: "Operational telemetry events received in the last 30 days",
+        result: telemetryTrendTotal(input.codex.trends.thirtyDay),
+      },
     ],
     repositories: github.repositories,
     commits: github.commits,
@@ -167,9 +189,17 @@ export function composeDashboardSnapshot(input: DashboardCompositionInput): Dash
     activity: github.activity,
     trends: github.trends,
     githubHealth: github.health,
+    codex: input.codex,
     sources: [
       sourceSummary(input.githubDescriptor, github.health),
-      sourceSummary(input.codexDescriptor, codexHealth),
+      {
+        ...sourceSummary(input.codexDescriptor, input.codex.health),
+        lastReceivedAt: input.codex.lastReceivedAt,
+        retentionDays: input.codex.retentionDays,
+        eventCount: input.codex.eventCount,
+        oldestEventAt: input.codex.oldestEventAt,
+        newestEventAt: input.codex.newestEventAt,
+      },
       sourceSummary(input.projectDescriptor, projectHealth),
     ],
   };
