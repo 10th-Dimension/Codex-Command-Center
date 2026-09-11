@@ -1,0 +1,33 @@
+node_modules/
+.next/
+out/
+dist/
+coverage/
+.vercel/
+.turbo/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime output and local artifacts
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.tar
+*.tar.gz
+*.zip
+*.tsbuildinfo
+cache/
+.cache/
+tmp/
+temp/
+recordings/
+runtime/
