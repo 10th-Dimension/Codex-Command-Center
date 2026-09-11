@@ -20,6 +20,10 @@ These rules are permanent maintenance guidance for agents working in this reposi
 - Keep GitHub capability fetches snapshot-scoped, deduplicated, and limited to no more than five active outbound operations per dashboard request.
 - Derive activity, trends, metrics, and CI summaries from the fetched snapshot instead of re-requesting the same capability.
 - Keep intentional result bounds and truncation metadata visible and honest.
+- Keep Codex telemetry ingestion, D1 access, provider composition, dashboard queries, and presentation as separate layers.
+- Treat OTLP events as untrusted input. Preserve payload, record, attribute, string, and numeric bounds.
+- Keep D1 access behind prepared statements and batch related writes; evolve the schema through append-only checked-in migrations.
+- Preserve event fingerprint deduplication and the default 30-day raw-event retention cleanup path.
 
 ## Data integrity and security
 
@@ -31,6 +35,13 @@ These rules are permanent maintenance guidance for agents working in this reposi
 - Never put credentials or secret values in source code, documentation, or examples.
 - Keep local credentials in ignored `.env.local`; future Worker credentials must use Cloudflare encrypted secrets or secret bindings, never Wrangler plaintext configuration.
 - Keep private dashboard routes and authenticated provider fetches private/no-store. Never publicly cache HTML or RSC payloads containing private provider data.
+- Never store or render prompt text, authorization headers, cookies, credentials, service secrets, arbitrary request/response bodies, tool arguments, stdout/stderr, or full tool output from telemetry.
+- Keep Codex prompt logging disabled by default. Any opt-in requires an explicit privacy review and a separately scoped change.
+- Unknown telemetry may expose only sanitized, bounded key names and counts in the inspector; do not persist or render unknown values.
+- Keep the relay bound to `127.0.0.1`. It must not log payloads, secrets, or credential-bearing URLs.
+- Keep GitHub credentials, Cloudflare Access service-token credentials, and the dedicated Codex ingestion key separate.
+- Require both Cloudflare Access protection and the dedicated application ingestion key for production collection.
+- Describe telemetry requests, events, tool calls, and token fields honestly. Never relabel operational counts as billing usage, credits, quotas, rate limits, or monetary cost.
 
 ## Verification
 
@@ -39,6 +50,7 @@ These rules are permanent maintenance guidance for agents working in this reposi
 - Run `npm run typecheck`.
 - Run `npm run build` after meaningful changes.
 - Run `npm run check:vinext` and `npm run build:vinext` after changes that can affect the Cloudflare Workers runtime.
+- Run telemetry parser, privacy, ingestion-authentication, deduplication, D1/provider, relay, and migration tests after changing the telemetry path.
 - Verify both normal Next.js and local Worker/vinext runtime paths when runtime behavior changes.
 - Start the application locally and verify the primary dashboard route renders when the change affects the UI.
 - Inspect the final `git status` and `git diff` before reporting completion.

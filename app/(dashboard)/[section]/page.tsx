@@ -8,6 +8,7 @@ import {
   RepositoriesPage,
 } from "@/components/dashboard/operational-pages";
 import { SectionPage } from "@/components/dashboard/section-page";
+import { CodexActivityPage, UsagePage } from "@/components/dashboard/codex-pages";
 import { getDashboardSnapshot } from "@/lib/dashboard/queries";
 import { navigationItems, sectionContent } from "@/lib/navigation";
 
@@ -25,12 +26,14 @@ export default async function SectionRoute({
     notFound();
   }
 
-  if (section === "repositories" || section === "activity" || section === "pull-requests-issues" || section === "build-ci-health" || section === "data-sources") {
+  if (section === "repositories" || section === "activity" || section === "pull-requests-issues" || section === "build-ci-health" || section === "codex-activity" || section === "usage" || section === "data-sources") {
     const snapshot = await getDashboardSnapshot();
     if (section === "repositories") return <RepositoriesPage snapshot={snapshot} />;
     if (section === "activity") return <ActivityPage snapshot={snapshot} />;
     if (section === "pull-requests-issues") return <PullRequestsIssuesPage snapshot={snapshot} />;
     if (section === "build-ci-health") return <BuildCIHealthPage snapshot={snapshot} />;
+    if (section === "codex-activity") return <CodexActivityPage snapshot={snapshot} />;
+    if (section === "usage") return <UsagePage snapshot={snapshot} />;
     return <DataSourcesPage snapshot={snapshot} />;
   }
 

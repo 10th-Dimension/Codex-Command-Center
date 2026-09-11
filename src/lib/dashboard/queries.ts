@@ -15,9 +15,9 @@ export async function getDashboardSnapshot() {
   const context = { requestedAt };
   const githubProvider = providerRegistry.github;
 
-  const [github, codexActivity, projectTelemetry] = await Promise.all([
+  const [github, codex, projectTelemetry] = await Promise.all([
     githubProvider.getSnapshot(context),
-    providerRegistry.codexActivity.listCodexActivity(context),
+    providerRegistry.codex.getSnapshot(context),
     providerRegistry.projectTelemetry.listProjectTelemetry(context),
   ]);
 
@@ -25,8 +25,8 @@ export async function getDashboardSnapshot() {
     requestedAt,
     github,
     githubDescriptor: githubProvider,
-    codexActivity,
-    codexDescriptor: providerRegistry.codexActivity,
+    codex,
+    codexDescriptor: providerRegistry.codex,
     projectTelemetry,
     projectDescriptor: providerRegistry.projectTelemetry,
   });

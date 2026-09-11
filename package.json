@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-tests.mjs",
+    "telemetry:relay": "tsx scripts/telemetry-relay.ts",
     "check:vinext": "vinext check",
     "dev:vinext": "vinext dev --port 3001",
     "build:vinext": "vinext build",
