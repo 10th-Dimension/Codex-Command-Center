@@ -15,7 +15,7 @@ No deploy command is run by CI. The deployment script exists only for a future, 
 
 ## Requirements and installation
 
-- Node.js 20.19 or newer
+- Node.js 22 or newer
 - npm
 
 Install the locked dependencies from the repository root:

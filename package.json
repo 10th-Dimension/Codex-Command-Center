@@ -2,13 +2,16 @@
   "name": "codex-command-center",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "node scripts/run-tests.mjs",
     "check:vinext": "vinext check",
     "dev:vinext": "vinext dev --port 3001",
     "build:vinext": "vinext build",
