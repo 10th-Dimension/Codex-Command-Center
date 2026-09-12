@@ -181,6 +181,7 @@ export interface GitHubDataSnapshot {
 export interface CodexActivityRecord {
   id: string;
   eventName: string;
+  eventKind?: string;
   category: CodexTelemetryCategory;
   taskId?: string;
   sessionId?: string;
@@ -191,59 +192,101 @@ export interface CodexActivityRecord {
   workspaceId?: string;
   environment?: string;
   model?: string;
+  reasoningEffort?: string;
   toolName?: string;
   toolType?: string;
   toolStatus?: string;
+  toolNamespace?: string;
+  toolExecutionState?: CodexToolExecutionState;
   decision?: string;
   approvalDecision?: string;
+  approvalPolicy?: string;
+  sandboxPolicy?: string;
   mcpServer?: string;
   mcpTool?: string;
+  mcpServerOrigin?: string;
   networkHost?: string;
   networkDecision?: string;
+  agentName?: string;
+  providerName?: string;
+  originator?: string;
+  appVersion?: string;
+  serviceName?: string;
+  serviceVersion?: string;
+  startupPhase?: string;
+  startupStatus?: string;
+  terminalType?: string;
   success?: boolean;
   errorType?: string;
   status?: string;
   severity?: string;
   durationMs?: number;
+  ttftMs?: number;
   inputTokens?: number;
   outputTokens?: number;
   cachedInputTokens?: number;
   reasoningOutputTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  toolTokens?: number;
   safeAttributeKeys: string[];
   unknownAttributeKeys: string[];
   occurredAt: string;
   receivedAt: string;
   source: "openai-codex-otel";
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
+}
+
+export type CodexMetricAvailability = "available" | "unavailable" | "no-samples";
+
+export interface CodexMeasuredValue {
+  availability: CodexMetricAvailability;
+  value?: number;
+  sampleCount: number;
 }
 
 export interface CodexUsageSnapshot {
-  window: "7d" | "30d";
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  reasoningOutputTokens: number;
+  window: "24h" | "7d" | "30d";
+  inputTokens: CodexMeasuredValue;
+  outputTokens: CodexMeasuredValue;
+  cachedInputTokens: CodexMeasuredValue;
+  cacheWriteTokens: CodexMeasuredValue;
+  reasoningTokens: CodexMeasuredValue;
+  toolTokens: CodexMeasuredValue;
   eventsWithUsage: number;
+  sessionsWithUsage: number;
+  modelsWithUsage: number;
   capturedAt: string;
 }
 
 export type CodexTelemetryCategory =
+  | "startup"
   | "session"
+  | "model"
   | "api-request"
   | "tool"
   | "mcp"
   | "network"
+  | "approval"
   | "decision"
   | "error"
   | "warning"
   | "usage"
   | "unknown";
 
+export type CodexToolExecutionState = "started" | "succeeded" | "failed" | "related";
+
 export interface CodexTelemetryTrendPoint {
   label: string;
   events: number;
   errors: number;
   toolExecutions: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  toolTokens?: number;
 }
 
 export interface CodexTelemetryBreakdown {
@@ -255,26 +298,90 @@ export interface CodexTelemetryTimingBreakdown {
   label: string;
   sampleCount: number;
   averageMs: number;
+  p50Ms?: number;
+  p95Ms?: number;
+  p99Ms?: number;
+  minimumMs: number;
   maximumMs: number;
 }
 
 export interface CodexTelemetryToolSummary {
   label: string;
-  count: number;
+  relatedEventCount: number;
+  completedExecutionCount: number;
+  successCount: number;
   failureCount: number;
+  failureRate?: number;
   averageDurationMs?: number;
+  p50DurationMs?: number;
+  p95DurationMs?: number;
+  toolTokens?: number;
   lastSeenAt: string;
 }
 
 export interface CodexTelemetrySessionSummary {
   sessionId: string;
   projectName?: string;
-  model?: string;
+  models: string[];
+  reasoningEfforts: string[];
   eventCount: number;
   errorCount: number;
   toolExecutions: number;
+  toolRelatedEvents: number;
+  usageEvents: number;
+  approvalEvents: number;
+  warningCount: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  toolTokens?: number;
+  averageTtftMs?: number;
   firstSeenAt: string;
   lastSeenAt: string;
+}
+
+export interface CodexTelemetryModelSummary {
+  model: string;
+  eventCount: number;
+  sessionCount: number;
+  usageEventCount: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  toolTokens?: number;
+  averageTtftMs?: number;
+  p50TtftMs?: number;
+  p95TtftMs?: number;
+  averageDurationMs?: number;
+  toolExecutions: number;
+  toolFailures: number;
+  approvalEvents: number;
+}
+
+export interface CodexTelemetryReasoningSummary {
+  reasoningEffort: string;
+  eventCount: number;
+  sessionCount: number;
+  usageEventCount: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  toolTokens?: number;
+  toolExecutions: number;
+  averageTtftMs?: number;
+  averageDurationMs?: number;
+}
+
+export interface CodexTelemetryCorrelation {
+  dimension: string;
+  label: string;
+  count: number;
 }
 
 export interface CodexTelemetryProjectSummary {
@@ -295,11 +402,27 @@ export interface CodexTelemetrySnapshot {
   usage: DataResult<CodexUsageSnapshot[]>;
   categories: DataResult<CodexTelemetryBreakdown[]>;
   models: DataResult<CodexTelemetryBreakdown[]>;
+  modelAnalytics: DataResult<CodexTelemetryModelSummary[]>;
+  reasoningEfforts: DataResult<CodexTelemetryBreakdown[]>;
+  reasoningAnalytics: DataResult<CodexTelemetryReasoningSummary[]>;
+  correlations: DataResult<CodexTelemetryCorrelation[]>;
   tools: DataResult<CodexTelemetryToolSummary[]>;
   timings: DataResult<CodexTelemetryTimingBreakdown[]>;
   approvals: DataResult<CodexTelemetryBreakdown[]>;
+  approvalPolicies: DataResult<CodexTelemetryBreakdown[]>;
+  sandboxPolicies: DataResult<CodexTelemetryBreakdown[]>;
   mcpServers: DataResult<CodexTelemetryBreakdown[]>;
   mcpTools: DataResult<CodexTelemetryBreakdown[]>;
+  mcpOrigins: DataResult<CodexTelemetryBreakdown[]>;
+  toolNamespaces: DataResult<CodexTelemetryBreakdown[]>;
+  agents: DataResult<CodexTelemetryBreakdown[]>;
+  providers: DataResult<CodexTelemetryBreakdown[]>;
+  originators: DataResult<CodexTelemetryBreakdown[]>;
+  appVersions: DataResult<CodexTelemetryBreakdown[]>;
+  serviceVersions: DataResult<CodexTelemetryBreakdown[]>;
+  startupStatuses: DataResult<CodexTelemetryBreakdown[]>;
+  terminalTypes: DataResult<CodexTelemetryBreakdown[]>;
+  ttft: DataResult<CodexTelemetryTimingBreakdown[]>;
   networkDecisions: DataResult<CodexTelemetryBreakdown[]>;
   networkHosts: DataResult<CodexTelemetryBreakdown[]>;
   sessions: DataResult<CodexTelemetrySessionSummary[]>;

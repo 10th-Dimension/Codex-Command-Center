@@ -3,179 +3,113 @@ import { Activity, AlertTriangle, Bot, Braces, Clock3, Database, Gauge, Hammer, 
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusPill } from "@/components/ui/status-pill";
 import type { DashboardSnapshot } from "@/lib/dashboard/queries";
-import type { CodexActivityRecord, CodexTelemetryBreakdown, CodexTelemetryToolSummary, CodexTelemetryTrendPoint, DataResult } from "@/lib/providers/types";
+import type { CodexActivityRecord, CodexMeasuredValue, CodexTelemetryBreakdown, CodexTelemetryTimingBreakdown, CodexTelemetryTrendPoint, DataResult } from "@/lib/providers/types";
 
 export function CodexActivityPage({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>) {
-  const telemetry = snapshot.codex;
-  if (telemetry.activity.status === "unavailable") {
-    return <Page title="Codex Activity" eyebrow="Agents / Codex Activity" description="Operational Codex telemetry from the private relay and D1 provider."><SourceBanner snapshot={snapshot} /><EmptyState description={telemetry.activity.reason} /></Page>;
-  }
-
-  const sevenDayEvents = total(telemetry.trends.sevenDay, "events");
-  const thirtyDayEvents = total(telemetry.trends.thirtyDay, "events");
-  const errors = total(telemetry.trends.thirtyDay, "errors");
-  const tools = total(telemetry.trends.thirtyDay, "toolExecutions");
-  const requests = telemetry.categories.status === "connected" ? telemetry.categories.data.find((item) => item.label === "api-request")?.count ?? 0 : undefined;
-  const unknown = telemetry.activity.data.filter((event) => event.category === "unknown");
-  const approvals = breakdownTotal(telemetry.approvals);
-  const mcpCalls = telemetry.categories.status === "connected" ? telemetry.categories.data.find((item) => item.label === "mcp")?.count ?? 0 : undefined;
-  const networkAllows = decisionCount(telemetry.networkDecisions, ["allow", "allowed"]);
-  const networkDenies = decisionCount(telemetry.networkDecisions, ["deny", "denied", "blocked"]);
-
-  return (
-    <Page title="Codex Activity" eyebrow="Agents / Codex Activity" description="Privacy-filtered operational telemetry received from Codex. Counts reflect collected events, not account usage, billing, credits, or cost.">
-      <SourceBanner snapshot={snapshot} />
-      <div className="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        <Stat label="Events today" value={telemetry.todayEventCount} />
-        <Stat label="Sessions observed · 24 hours" value={telemetry.observedSessionCount24h} />
-        <Stat label="Events · 7 days" value={sevenDayEvents} />
-        <Stat label="Events · 30 days" value={thirtyDayEvents} />
-        <Stat label="Tool executions · 30 days" value={tools} />
-        <Stat label="Failed tool executions · 30 days" value={telemetry.failedToolCount30d} tone={telemetry.failedToolCount30d ? "warning" : "normal"} />
-        <Stat label="API request events · 30 days" value={requests} />
-        <Stat label="Approval decisions · 30 days" value={approvals} />
-        <Stat label="MCP events · 30 days" value={mcpCalls} />
-        <Stat label="Network allows · 30 days" value={networkAllows} />
-        <Stat label="Network denies · 30 days" value={networkDenies} tone={networkDenies ? "warning" : "normal"} />
-        <Stat label="Errors · 30 days" value={errors} tone={errors && errors > 0 ? "warning" : "normal"} />
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
-        <Panel title="Recent event timeline" icon={Activity}>
-          {telemetry.activity.data.length === 0 ? <EmptyState compact title="No telemetry received" description="The provider is connected, but D1 contains no Codex telemetry events." /> : <div className="space-y-2">{telemetry.activity.data.map((event) => <EventRow event={event} key={event.id} />)}</div>}
-        </Panel>
-        <div className="space-y-4">
-          <TrendPanel title="24-hour event trend" result={telemetry.trends.twentyFourHour} />
-          <TrendPanel title="7-day event trend" result={telemetry.trends.sevenDay} />
-          <TrendPanel title="30-day event trend" result={telemetry.trends.thirtyDay} />
-          <BreakdownPanel title="Event categories" icon={Layers3} result={telemetry.categories} />
-          <BreakdownPanel title="Models observed" icon={Bot} result={telemetry.models} />
-          <ToolPanel result={telemetry.tools} />
-          <TimingPanel snapshot={snapshot} />
-        </div>
-      </div>
-
-      <div className="mt-4 grid gap-4 xl:grid-cols-2">
-        <BreakdownPanel title="Approval decisions" icon={ShieldCheck} result={telemetry.approvals} />
-        <BreakdownPanel title="MCP servers" icon={Layers3} result={telemetry.mcpServers} />
-        <BreakdownPanel title="MCP tools" icon={Hammer} result={telemetry.mcpTools} />
-        <BreakdownPanel title="Network decisions" icon={ShieldCheck} result={telemetry.networkDecisions} />
-        <BreakdownPanel title="Network hosts" icon={Waypoints} result={telemetry.networkHosts} />
-      </div>
-
-      <div className="mt-4 grid gap-4 xl:grid-cols-2">
-        <Panel title="Sessions" icon={Waypoints}>
-          {telemetry.sessions.status === "unavailable" ? <EmptyState compact description={telemetry.sessions.reason} /> : telemetry.sessions.data.length === 0 ? <EmptyState compact title="No session identifiers observed" description="Session grouping appears only when the exporter supplies a conversation or session identifier." /> : <div className="space-y-2">{telemetry.sessions.data.map((session) => <div className="panel-subtle p-3.5" key={session.sessionId}><div className="flex items-center justify-between gap-3"><p className="truncate text-xs font-medium text-slate-300">{session.sessionId}</p><span className="text-[10px] text-slate-600">{session.eventCount.toLocaleString()} events</span></div><p className="mt-1 text-[10px] text-slate-600">{session.model ?? "Model unavailable"} · {session.toolExecutions.toLocaleString()} tools · {session.errorCount.toLocaleString()} errors · last seen {formatDate(session.lastSeenAt)}</p></div>)}</div>}
-        </Panel>
-        <Panel title="Projects" icon={Database}>
-          {telemetry.projects.status === "unavailable" ? <EmptyState compact description={telemetry.projects.reason} /> : telemetry.projects.data.length === 0 ? <EmptyState compact title="No project identifiers observed" description="Project grouping remains unavailable until telemetry includes an explicit project identifier." /> : <div className="space-y-2">{telemetry.projects.data.map((project) => <div className="panel-subtle p-3.5" key={project.projectId}><div className="flex items-center justify-between gap-3"><p className="truncate text-xs font-medium text-slate-300">{project.projectName ?? project.projectId}</p><span className="text-[10px] text-slate-600">{project.eventCount.toLocaleString()} events</span></div><p className="mt-1 text-[10px] text-slate-600">{project.sessionCount.toLocaleString()} sessions · last seen {formatDate(project.lastSeenAt)}</p></div>)}</div>}
-        </Panel>
-      </div>
-
-      <div className="mt-4 grid gap-4 xl:grid-cols-2">
-        <Panel title="Recent errors and warnings" icon={AlertTriangle}>
-          {telemetry.recentErrors.status === "unavailable" ? <EmptyState compact description={telemetry.recentErrors.reason} /> : telemetry.recentErrors.data.length === 0 ? <EmptyState compact title="No errors or warnings observed" description="No error- or warning-classified telemetry appears in the current 30-day window." /> : <div className="space-y-2">{telemetry.recentErrors.data.map((event) => <EventRow event={event} key={event.id} />)}</div>}
-        </Panel>
-        <Panel title="Unknown-event inspector" icon={Braces}>
-          {unknown.length === 0 ? <EmptyState compact title="No unknown recent events" description="Every recent event matched a known operational category." /> : <div className="space-y-2">{groupUnknownEvents(unknown).map((group) => <details className="panel-subtle p-3.5" key={group.eventName}><summary className="cursor-pointer text-xs font-medium text-slate-300">{group.eventName} · {group.count.toLocaleString()} events</summary><p className="mt-2 text-[10px] leading-5 text-slate-600">{group.keys.length.toLocaleString()} sanitized unknown attribute keys. Values are intentionally not stored or shown.</p>{group.keys.length ? <div className="mt-2 flex flex-wrap gap-1.5">{group.keys.map((key) => <span className="rounded-full border border-white/[0.08] px-2 py-1 text-[10px] text-slate-500" key={key}>{key}</span>)}</div> : null}</details>)}</div>}
-        </Panel>
-      </div>
-    </Page>
-  );
+  const t = snapshot.codex;
+  if (t.activity.status === "unavailable") return <Page title="Codex Activity" eyebrow="Agents / Codex Activity" description="Operational Codex telemetry from the private relay and D1 provider."><SourceBanner snapshot={snapshot} /><EmptyState description={t.activity.reason} /></Page>;
+  const unknown = t.activity.data.filter((event) => event.category === "unknown");
+  const relatedTools = connectedTotal(t.tools, (tool) => tool.relatedEventCount);
+  const completedTools = connectedTotal(t.tools, (tool) => tool.completedExecutionCount);
+  return <Page title="Codex Activity" eyebrow="Agents / Codex Activity" description="Privacy-filtered operational telemetry. Events, executions, and usage are kept distinct; none of these values represent account quota, billing, credits, or cost.">
+    <SourceBanner snapshot={snapshot} />
+    <div className="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <Stat label="Events today" value={t.todayEventCount} /><Stat label="Sessions · 24h" value={t.observedSessionCount24h} />
+      <Stat label="Tool-related events · 30d" value={relatedTools} /><Stat label="Completed tool executions · 30d" value={completedTools} />
+      <Stat label="Failed executions · 30d" value={t.failedToolCount30d} warning /><Stat label="Approvals · 30d" value={connectedTotal(t.approvals, (x) => x.count)} />
+      <Stat label="Errors · 30d" value={trendTotal(t.trends.thirtyDay, "errors")} warning /><Stat label="Unknown recent events" value={unknown.length} />
+    </div>
+    <div className="grid gap-4 xl:grid-cols-[1.4fr_0.6fr]">
+      <Panel title="Recent event timeline" icon={Activity}>{t.activity.data.length ? <div className="space-y-2">{t.activity.data.map((event) => <EventRow event={event} key={event.id} />)}</div> : <EmptyState compact title="No telemetry received" description="D1 is connected but contains no Codex events." />}</Panel>
+      <div className="space-y-4"><TrendPanel title="24-hour activity" result={t.trends.twentyFourHour} /><TrendPanel title="30-day activity" result={t.trends.thirtyDay} /><BreakdownPanel title="Event categories" result={t.categories} icon={Layers3} /><BreakdownPanel title="Models observed" result={t.models} icon={Bot} /><BreakdownPanel title="Reasoning effort" result={t.reasoningEfforts} icon={Gauge} /></div>
+    </div>
+    <div className="mt-4 grid gap-4 xl:grid-cols-3"><ToolPanel snapshot={snapshot} /><TimingPanel title="Event duration" result={t.timings} /><TimingPanel title="TTFT by model" result={t.ttft} /></div>
+    <div className="mt-4 grid gap-4 xl:grid-cols-3">
+      <BreakdownPanel title="Approval decisions" result={t.approvals} icon={ShieldCheck} /><BreakdownPanel title="Approval policies" result={t.approvalPolicies} icon={ShieldCheck} /><BreakdownPanel title="Sandbox policies" result={t.sandboxPolicies} icon={ShieldCheck} />
+      <BreakdownPanel title="MCP servers" result={t.mcpServers} icon={Layers3} /><BreakdownPanel title="MCP origins" result={t.mcpOrigins} icon={Waypoints} /><BreakdownPanel title="Tool namespaces" result={t.toolNamespaces} icon={Hammer} />
+      <BreakdownPanel title="Agents" result={t.agents} icon={Bot} /><BreakdownPanel title="Providers" result={t.providers} icon={Database} /><BreakdownPanel title="Originators" result={t.originators} icon={Waypoints} />
+      <BreakdownPanel title="App versions" result={t.appVersions} icon={Database} /><BreakdownPanel title="Service versions" result={t.serviceVersions} icon={Database} /><BreakdownPanel title="Startup status" result={t.startupStatuses} icon={Activity} />
+    </div>
+    <div className="mt-4"><CorrelationPanel snapshot={snapshot} /></div>
+    <div className="mt-4 grid gap-4 xl:grid-cols-2"><SessionPanel snapshot={snapshot} /><Panel title="Recent errors and warnings" icon={AlertTriangle}>{t.recentErrors.status === "unavailable" ? <EmptyState compact description={t.recentErrors.reason} /> : t.recentErrors.data.length ? <div className="space-y-2">{t.recentErrors.data.map((event) => <EventRow event={event} key={event.id} />)}</div> : <EmptyState compact title="No warning samples" description="No warning- or error-classified events are present in this window." />}</Panel></div>
+    <div className="mt-4"><Panel title="Unknown-event inspector" icon={Braces}>{unknown.length ? <div className="grid gap-2 xl:grid-cols-2">{groupUnknown(unknown).map((group) => <details className="panel-subtle p-3.5" key={group.eventName}><summary className="cursor-pointer text-xs font-medium text-slate-300">{group.eventName} · {group.count.toLocaleString()}</summary><p className="mt-2 text-[10px] leading-5 text-slate-600">Only sanitized unknown key names are retained. Values are discarded before D1.</p><div className="mt-2 flex flex-wrap gap-1.5">{group.keys.map((key) => <span className="rounded-full border border-white/[0.08] px-2 py-1 text-[10px] text-slate-500" key={key}>{key}</span>)}</div></details>)}</div> : <EmptyState compact title="No unknown recent events" description="Every recent event matched a supported operational category." />}</Panel></div>
+  </Page>;
 }
 
 export function UsagePage({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>) {
-  const telemetry = snapshot.codex;
-  const usage = telemetry.usage;
-  return (
-    <Page title="Usage" eyebrow="Capacity / Usage" description="Token fields legitimately emitted by Codex telemetry. This is not an account billing, credit, quota, or cost view.">
-      <SourceBanner snapshot={snapshot} />
-      {usage.status === "unavailable" ? <EmptyState description={usage.reason} /> : usage.data.every((window) => window.eventsWithUsage === 0) ? <EmptyState title="Usage fields not available" description="Telemetry is connected, but no token-usage fields have been received. Billing, credits, limits, and cost remain unavailable." /> : (
-        <div className="grid gap-4 xl:grid-cols-2">
-          {usage.data.map((window) => <Panel title={`${window.window === "7d" ? "7-day" : "30-day"} emitted token fields`} icon={Gauge} key={window.window}><div className="grid gap-3 sm:grid-cols-2"><Stat label="Input tokens" value={window.inputTokens} /><Stat label="Output tokens" value={window.outputTokens} /><Stat label="Cached input tokens" value={window.cachedInputTokens} /><Stat label="Reasoning output tokens" value={window.reasoningOutputTokens} /></div><p className="mt-4 text-[11px] leading-5 text-slate-600">Derived from {window.eventsWithUsage.toLocaleString()} telemetry events containing legitimate usage fields. Values are not converted to price or account limits.</p></Panel>)}
-        </div>
-      )}
-      <div className="mt-4 grid gap-4 xl:grid-cols-2">
-        <TrendPanel title="Operational activity · 30 days" result={telemetry.trends.thirtyDay} />
-        <BreakdownPanel title="Model activity breakdown" icon={Bot} result={telemetry.models} />
-      </div>
-      <div className="mt-4 rounded-xl border border-amber-200/15 bg-amber-200/[0.04] p-4 text-xs leading-5 text-amber-100/65">Account billing totals, credit balances, plan limits, rate-limit allocations, and dollar cost are unavailable from this telemetry pipeline and are intentionally not inferred.</div>
-    </Page>
-  );
+  const t = snapshot.codex;
+  return <Page title="Usage" eyebrow="Capacity / Usage" description="Directly emitted token and performance measurements, aggregated without estimating billing, quota, credits, or cost.">
+    <SourceBanner snapshot={snapshot} />
+    {t.usage.status === "unavailable" ? <EmptyState description={t.usage.reason} /> : <div className="space-y-4">
+      <div className="grid gap-4 xl:grid-cols-3">{t.usage.data.map((window) => <Panel key={window.window} title={`${windowLabel(window.window)} usage summary`} icon={Gauge}><div className="grid gap-3 sm:grid-cols-2"><MeasuredStat label="Input tokens" metric={window.inputTokens} /><MeasuredStat label="Output tokens" metric={window.outputTokens} /><MeasuredStat label="Cached/read tokens" metric={window.cachedInputTokens} /><MeasuredStat label="Cache-write tokens" metric={window.cacheWriteTokens} /><MeasuredStat label="Reasoning tokens" metric={window.reasoningTokens} /><MeasuredStat label="Tool tokens" metric={window.toolTokens} /></div><p className="mt-4 text-[10px] leading-5 text-slate-600">{window.eventsWithUsage.toLocaleString()} usage-bearing events · {window.sessionsWithUsage.toLocaleString()} sessions · {window.modelsWithUsage.toLocaleString()} models</p></Panel>)}</div>
+      <TokenTrendPanel result={t.trends.twentyFourHour} title="Token trend · 24 hours" /><TokenTrendPanel result={t.trends.thirtyDay} title="Token trend · 30 days" />
+      <ModelAnalytics snapshot={snapshot} />
+      <ReasoningAnalytics snapshot={snapshot} />
+      <div className="grid gap-4 xl:grid-cols-3"><BreakdownPanel title="Reasoning effort" result={t.reasoningEfforts} icon={Gauge} /><TimingPanel title="TTFT by model" result={t.ttft} /><ToolPanel snapshot={snapshot} /></div>
+      <SessionPanel snapshot={snapshot} />
+    </div>}
+    <div className="mt-4 rounded-xl border border-amber-200/15 bg-amber-200/[0.04] p-4 text-xs leading-5 text-amber-100/65">Remaining weekly or five-hour percentage, subscription quota, reset timers, banked resets, billing, credit balance, dollar spend, and internal rate-limit allocations are unavailable and are not inferred. Cache hit percentage is also unavailable because the emitted counters do not establish a defensible denominator.</div>
+  </Page>;
 }
 
-function SourceBanner({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>) {
-  const telemetry = snapshot.codex;
-  return <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.02] px-4 py-3"><StatusPill status={telemetry.health.status} /><span className="text-xs text-slate-500">D1 retention: {telemetry.retentionDays} days</span><span className="text-xs text-slate-600">Last received: {telemetry.lastReceivedAt ? formatDate(telemetry.lastReceivedAt) : "No events received"}</span><span className="ml-auto inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-slate-600"><ShieldCheck size={13} /> Values privacy-filtered server-side</span></div>;
+function ReasoningAnalytics({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>) {
+  const result = snapshot.codex.reasoningAnalytics;
+  return <Panel title="Reasoning-effort analytics · 30 days" icon={Gauge}>{result.status === "unavailable" ? <EmptyState compact description={result.reason} /> : result.data.length ? <div className="grid gap-3 xl:grid-cols-2">{result.data.map((item) => <div className="panel-subtle p-4" key={item.reasoningEffort}><div className="flex justify-between gap-3"><p className="text-sm font-medium text-slate-300">{item.reasoningEffort}</p><span className="text-[10px] text-slate-600">{item.sessionCount} sessions</span></div><p className="mt-2 text-[10px] leading-5 text-slate-500">{item.eventCount} events · {item.usageEventCount} usage events · {item.toolExecutions} completed tools · TTFT avg {milliseconds(item.averageTtftMs)} · duration avg {milliseconds(item.averageDurationMs)}</p><p className="mt-2 text-[10px] leading-5 text-slate-600">Input {display(item.inputTokens)} · Output {display(item.outputTokens)} · Cached {display(item.cachedTokens)} · Cache-write {display(item.cacheWriteTokens)} · Reasoning {display(item.reasoningTokens)} · Tool {display(item.toolTokens)}</p></div>)}</div> : <EmptyState compact title="Reasoning effort unavailable" description="No safe reasoning-effort identifier was emitted in this window." />}</Panel>;
 }
 
-function Page({ title, eyebrow, description, children }: Readonly<{ title: string; eyebrow: string; description: string; children: React.ReactNode }>) {
-  return <div className="fade-in-up mx-auto max-w-[1280px]"><section className="mb-8"><p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan-200/70">{eyebrow}</p><h1 className="page-title text-[42px] font-semibold leading-[1.06] tracking-[-0.055em] text-slate-100">{title}</h1><p className="mt-4 max-w-3xl text-[15px] leading-7 text-slate-400">{description}</p></section>{children}</div>;
+function CorrelationPanel({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>) {
+  const result = snapshot.codex.correlations;
+  if (result.status === "unavailable") return <Panel title="Operational correlations" icon={Waypoints}><EmptyState compact description={result.reason} /></Panel>;
+  const groups = new Map<string, typeof result.data>();
+  for (const item of result.data) groups.set(item.dimension, [...(groups.get(item.dimension) ?? []), item]);
+  return <Panel title="Operational correlations · 30 days" icon={Waypoints}>{groups.size ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">{[...groups].map(([dimension, items]) => <div className="panel-subtle p-4" key={dimension}><p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{dimension}</p><div className="space-y-2">{items.slice(0, 10).map((item) => <div className="flex justify-between gap-3 text-[10px]" key={item.label}><span className="truncate text-slate-400">{item.label}</span><span className="text-slate-600">{item.count.toLocaleString()}</span></div>)}</div></div>)}</div> : <EmptyState compact title="No correlation samples" description="The required paired dimensions were not emitted together in this window." />}</Panel>;
 }
 
-function Panel({ title, icon: Icon, children }: Readonly<{ title: string; icon: typeof Activity; children: React.ReactNode }>) {
-  return <section className="panel p-5 sm:p-6"><div className="mb-5 flex items-center gap-2.5"><Icon size={15} className="text-slate-500" /><h2 className="text-sm font-semibold text-slate-300">{title}</h2></div>{children}</section>;
+function ModelAnalytics({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>) {
+  const result = snapshot.codex.modelAnalytics;
+  return <Panel title="Model analytics · 30 days" icon={Bot}>{result.status === "unavailable" ? <EmptyState compact description={result.reason} /> : result.data.length ? <div className="grid gap-3 xl:grid-cols-2">{result.data.map((model) => <div className="panel-subtle p-4" key={model.model}><div className="flex items-center justify-between gap-3"><p className="text-sm font-medium text-slate-300">{model.model}</p><span className="text-[10px] text-slate-600">{model.sessionCount.toLocaleString()} sessions</span></div><p className="mt-2 text-[10px] leading-5 text-slate-500">{model.eventCount.toLocaleString()} events · {model.usageEventCount.toLocaleString()} usage events · {model.toolExecutions.toLocaleString()} completed tools · {model.toolFailures.toLocaleString()} failures · {model.approvalEvents.toLocaleString()} approvals</p><p className="mt-2 text-[10px] leading-5 text-slate-600">Input {display(model.inputTokens)} · Output {display(model.outputTokens)} · Cached {display(model.cachedTokens)} · Cache-write {display(model.cacheWriteTokens)} · Reasoning {display(model.reasoningTokens)} · Tool {display(model.toolTokens)}</p><p className="mt-2 text-[10px] text-slate-600">TTFT avg {milliseconds(model.averageTtftMs)} · duration avg {milliseconds(model.averageDurationMs)}</p></div>)}</div> : <EmptyState compact title="No model samples" description="No model identifier was emitted in this window." />}</Panel>;
 }
 
-function Stat({ label, value, tone = "normal" }: Readonly<{ label: string; value?: number; tone?: "normal" | "warning" }>) {
-  return <div className="panel p-4"><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">{label}</p><p className={`mt-2 text-2xl font-semibold ${tone === "warning" ? "text-amber-100/90" : "text-slate-100"}`}>{value === undefined ? "Unavailable" : value.toLocaleString()}</p></div>;
+function SessionPanel({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>) {
+  const result = snapshot.codex.sessions;
+  return <Panel title="Recent session analytics" icon={Waypoints}>{result.status === "unavailable" ? <EmptyState compact description={result.reason} /> : result.data.length ? <div className="grid gap-2 xl:grid-cols-2">{result.data.map((s) => <div className="panel-subtle p-3.5" key={s.sessionId}><div className="flex items-center justify-between gap-3"><p className="truncate text-xs font-medium text-slate-300">{s.sessionId}</p><span className="text-[10px] text-slate-600">{span(s.firstSeenAt, s.lastSeenAt)}</span></div><p className="mt-1 text-[10px] text-slate-500">{s.models.join(", ") || "Model unavailable"} · {s.reasoningEfforts.join(", ") || "effort unavailable"}</p><p className="mt-1 text-[10px] leading-5 text-slate-600">{s.eventCount} events · {s.usageEvents} usage · {s.toolRelatedEvents} tool-related · {s.toolExecutions} completed · {s.approvalEvents} approvals · {s.errorCount} errors · {s.warningCount} warnings</p><p className="mt-1 text-[10px] leading-5 text-slate-600">Input {display(s.inputTokens)} · Output {display(s.outputTokens)} · Cached {display(s.cachedTokens)} · Cache-write {display(s.cacheWriteTokens)} · Reasoning {display(s.reasoningTokens)} · Tool {display(s.toolTokens)} · TTFT avg {milliseconds(s.averageTtftMs)}</p></div>)}</div> : <EmptyState compact title="No session samples" description="Session analytics require an emitted conversation, session, or thread identifier." />}</Panel>;
 }
 
-function EventRow({ event }: Readonly<{ event: CodexActivityRecord }>) {
-  const detail = [event.model, event.toolName, event.mcpServer, event.mcpTool, event.approvalDecision, event.networkHost, event.networkDecision, event.toolStatus, event.status, event.errorType, event.durationMs === undefined ? undefined : `${event.durationMs} ms`].filter(Boolean).join(" · ");
-  return <div className="panel-subtle flex items-start gap-3 p-3.5"><div className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.035]"><Clock3 size={13} className="text-slate-500" /></div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-cyan-100/60">{event.category}</span><span className="text-[10px] text-slate-600">{formatDate(event.occurredAt)}</span></div><p className="mt-1 truncate text-xs font-medium text-slate-300">{event.eventName}</p><p className="mt-1 truncate text-[10px] text-slate-600">{detail || event.sessionId || "No additional operational fields emitted"}</p></div></div>;
+function ToolPanel({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>) {
+  const result = snapshot.codex.tools;
+  return <Panel title="Tool analytics · 30 days" icon={Hammer}>{result.status === "unavailable" ? <EmptyState compact description={result.reason} /> : result.data.length ? <div className="space-y-2">{result.data.map((tool) => <div className="panel-subtle p-3" key={tool.label}><div className="flex justify-between gap-3"><span className="truncate text-xs text-slate-400">{tool.label}</span><span className="text-[10px] text-slate-600">{tool.completedExecutionCount} completed</span></div><p className="mt-1 text-[10px] leading-5 text-slate-600">{tool.relatedEventCount} related events · {tool.successCount} succeeded · {tool.failureCount} failed · failure rate {tool.failureRate === undefined ? "Unavailable" : `${(tool.failureRate * 100).toFixed(1)}%`} · avg {milliseconds(tool.averageDurationMs)} · tool tokens {display(tool.toolTokens)}</p></div>)}</div> : <EmptyState compact title="No tool samples" description="No tool identifiers were emitted in this window." />}</Panel>;
+}
+
+function TimingPanel({ title, result }: Readonly<{ title: string; result: DataResult<CodexTelemetryTimingBreakdown[]> }>) {
+  return <Panel title={title} icon={Timer}>{result.status === "unavailable" ? <EmptyState compact description={result.reason} /> : result.data.length ? <div className="space-y-2">{result.data.map((x) => <div className="panel-subtle p-3" key={x.label}><div className="flex justify-between gap-3"><span className="text-xs text-slate-400">{x.label}</span><span className="text-[10px] text-slate-600">{x.sampleCount} samples</span></div><p className="mt-1 text-[10px] text-slate-600">avg {milliseconds(x.averageMs)} · p50 {milliseconds(x.p50Ms)} · p95 {milliseconds(x.p95Ms)} · min {milliseconds(x.minimumMs)} · max {milliseconds(x.maximumMs)}</p></div>)}</div> : <EmptyState compact title="No timing samples" description="This measurement was not emitted in the current window." />}</Panel>;
 }
 
 function TrendPanel({ title, result }: Readonly<{ title: string; result: DataResult<CodexTelemetryTrendPoint[]> }>) {
   if (result.status === "unavailable") return <Panel title={title} icon={Activity}><EmptyState compact description={result.reason} /></Panel>;
-  if (result.data.length === 0) return <Panel title={title} icon={Activity}><EmptyState compact title="No events in this window" description="The connected provider returned no trend points." /></Panel>;
-  const max = Math.max(1, ...result.data.map((point) => point.events));
-  return <Panel title={title} icon={Activity}><div className="flex h-24 items-end gap-1 rounded-lg border border-white/[0.06] bg-black/10 px-2 pb-2 pt-3">{result.data.map((point) => <div className="flex h-full min-w-0 flex-1 items-end" key={point.label} title={`${point.label}: ${point.events} events`}><div className="w-full rounded-sm bg-cyan-200/65" style={{ height: `${point.events === 0 ? 3 : Math.max(10, Math.round(point.events / max * 100))}%` }} /></div>)}</div><p className="mt-3 text-[10px] text-slate-600">{result.data.reduce((sum, point) => sum + point.events, 0).toLocaleString()} operational events in this window.</p></Panel>;
+  if (!result.data.length) return <Panel title={title} icon={Activity}><EmptyState compact title="No samples" description="No events fall in this window." /></Panel>;
+  const max = Math.max(1, ...result.data.map((x) => x.events));
+  return <Panel title={title} icon={Activity}><div className="flex h-24 items-end gap-1 rounded-lg border border-white/[0.06] bg-black/10 px-2 pb-2 pt-3">{result.data.map((x) => <div className="flex h-full min-w-0 flex-1 items-end" key={x.label} title={`${x.label}: ${x.events} events`}><div className="w-full rounded-sm bg-cyan-200/65" style={{ height: `${x.events ? Math.max(10, x.events / max * 100) : 3}%` }} /></div>)}</div><p className="mt-3 text-[10px] text-slate-600">{result.data.reduce((sum, x) => sum + x.events, 0).toLocaleString()} operational events.</p></Panel>;
 }
 
-function BreakdownPanel({ title, icon, result }: Readonly<{ title: string; icon: typeof Activity; result: DataResult<CodexTelemetryBreakdown[]> }>) {
-  if (result.status === "unavailable") return <Panel title={title} icon={icon}><EmptyState compact description={result.reason} /></Panel>;
-  if (result.data.length === 0) return <Panel title={title} icon={icon}><EmptyState compact title="No breakdown available" description="No matching fields were emitted in this window." /></Panel>;
-  return <Panel title={title} icon={icon}><div className="space-y-2">{result.data.map((item) => <div className="flex items-center justify-between gap-3 text-xs" key={item.label}><span className="truncate text-slate-400">{item.label}</span><span className="text-slate-600">{item.count.toLocaleString()}</span></div>)}</div></Panel>;
+function TokenTrendPanel({ title, result }: Readonly<{ title: string; result: DataResult<CodexTelemetryTrendPoint[]> }>) {
+  if (result.status === "unavailable") return <Panel title={title} icon={Gauge}><EmptyState compact description={result.reason} /></Panel>;
+  if (!result.data.length) return <Panel title={title} icon={Gauge}><EmptyState compact title="No samples" description="No telemetry falls in this window." /></Panel>;
+  const series = [{ key: "inputTokens", label: "Input" }, { key: "outputTokens", label: "Output" }, { key: "cachedTokens", label: "Cached" }, { key: "cacheWriteTokens", label: "Cache-write" }, { key: "reasoningTokens", label: "Reasoning" }, { key: "toolTokens", label: "Tool" }] as const;
+  return <Panel title={title} icon={Gauge}><div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">{series.map((item) => { const values = result.data.map((point) => point[item.key]); const available = values.some((value) => value !== undefined); const total = values.reduce<number>((sum, value) => sum + (value ?? 0), 0); return <div className="panel-subtle p-3" key={item.key}><p className="text-[10px] uppercase tracking-wider text-slate-600">{item.label}</p><p className="mt-1 text-lg text-slate-200">{available ? total.toLocaleString() : "Unavailable"}</p></div>; })}</div></Panel>;
 }
 
-function ToolPanel({ result }: Readonly<{ result: DataResult<CodexTelemetryToolSummary[]> }>) {
-  if (result.status === "unavailable") return <Panel title="Tools observed" icon={Hammer}><EmptyState compact description={result.reason} /></Panel>;
-  if (result.data.length === 0) return <Panel title="Tools observed" icon={Hammer}><EmptyState compact title="No tool fields observed" description="Tool breakdowns appear only when telemetry supplies a tool name." /></Panel>;
-  return <Panel title="Tools observed" icon={Hammer}><div className="space-y-2">{result.data.map((tool) => <div className="panel-subtle p-3" key={tool.label}><div className="flex items-center justify-between gap-3"><span className="truncate text-xs text-slate-400">{tool.label}</span><span className="text-[10px] text-slate-600">{tool.count.toLocaleString()} calls</span></div><p className="mt-1 text-[10px] text-slate-600">{tool.failureCount.toLocaleString()} failures · {tool.averageDurationMs === undefined ? "duration unavailable" : `${tool.averageDurationMs.toLocaleString(undefined, { maximumFractionDigits: 1 })} ms average`} · last seen {formatDate(tool.lastSeenAt)}</p></div>)}</div></Panel>;
-}
-
-function TimingPanel({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>) {
-  const result = snapshot.codex.timings;
-  if (result.status === "unavailable") return <Panel title="Duration by event category" icon={Timer}><EmptyState compact description={result.reason} /></Panel>;
-  if (result.data.length === 0) return <Panel title="Duration by event category" icon={Timer}><EmptyState compact title="No duration fields observed" description="Timing remains unavailable until telemetry emits a legitimate duration field." /></Panel>;
-  return <Panel title="Duration by event category" icon={Timer}><div className="space-y-2">{result.data.map((item) => <div className="panel-subtle p-3" key={item.label}><div className="flex items-center justify-between gap-3"><span className="text-xs text-slate-400">{item.label}</span><span className="text-[10px] text-slate-600">{item.sampleCount.toLocaleString()} samples</span></div><p className="mt-1 text-[10px] text-slate-600">Average {item.averageMs.toLocaleString(undefined, { maximumFractionDigits: 1 })} ms · maximum {item.maximumMs.toLocaleString(undefined, { maximumFractionDigits: 1 })} ms</p></div>)}</div></Panel>;
-}
-
-function total(result: DataResult<CodexTelemetryTrendPoint[]>, key: "events" | "errors" | "toolExecutions") {
-  return result.status === "connected" ? result.data.reduce((sum, point) => sum + point[key], 0) : undefined;
-}
-
-function breakdownTotal(result: DataResult<CodexTelemetryBreakdown[]>) {
-  return result.status === "connected" ? result.data.reduce((sum, item) => sum + item.count, 0) : undefined;
-}
-
-function decisionCount(result: DataResult<CodexTelemetryBreakdown[]>, labels: string[]) {
-  return result.status === "connected" ? result.data.filter((item) => labels.includes(item.label.toLowerCase())).reduce((sum, item) => sum + item.count, 0) : undefined;
-}
-
-function groupUnknownEvents(events: CodexActivityRecord[]) {
-  const groups = new Map<string, { eventName: string; count: number; keys: Set<string> }>();
-  for (const event of events) {
-    const group = groups.get(event.eventName) ?? { eventName: event.eventName, count: 0, keys: new Set<string>() };
-    group.count += 1;
-    for (const key of event.unknownAttributeKeys) group.keys.add(key);
-    groups.set(event.eventName, group);
-  }
-  return [...groups.values()].map((group) => ({ ...group, keys: [...group.keys].sort() }));
-}
-
-function formatDate(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "Time unavailable" : new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
-}
+function BreakdownPanel({ title, result, icon }: Readonly<{ title: string; result: DataResult<CodexTelemetryBreakdown[]>; icon: typeof Activity }>) { return <Panel title={title} icon={icon}>{result.status === "unavailable" ? <EmptyState compact description={result.reason} /> : result.data.length ? <div className="space-y-2">{result.data.map((x) => <div className="flex justify-between gap-3 text-xs" key={x.label}><span className="truncate text-slate-400">{x.label}</span><span className="text-slate-600">{x.count.toLocaleString()}</span></div>)}</div> : <EmptyState compact title="No samples" description="No matching field was emitted in this window." />}</Panel>; }
+function EventRow({ event }: Readonly<{ event: CodexActivityRecord }>) { const details = [event.eventKind, event.model, event.reasoningEffort, event.toolNamespace && event.toolName ? `${event.toolNamespace}/${event.toolName}` : event.toolName, event.toolExecutionState, event.approvalDecision, event.approvalPolicy, event.sandboxPolicy, event.mcpServer, event.mcpServerOrigin, event.startupPhase, event.startupStatus, event.appVersion, event.ttftMs === undefined ? undefined : `TTFT ${event.ttftMs} ms`, event.durationMs === undefined ? undefined : `${event.durationMs} ms`].filter(Boolean).join(" · "); return <div className="panel-subtle flex items-start gap-3 p-3.5"><div className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.035]"><Clock3 size={13} className="text-slate-500" /></div><div className="min-w-0 flex-1"><div className="flex gap-2"><span className="text-[10px] font-semibold uppercase tracking-wider text-cyan-100/60">{event.category}</span><span className="text-[10px] text-slate-600">{formatDate(event.occurredAt)}</span></div><p className="mt-1 truncate text-xs font-medium text-slate-300">{event.eventName}</p><p className="mt-1 truncate text-[10px] text-slate-600">{details || event.sessionId || "No additional safe dimensions emitted"}</p></div></div>; }
+function MeasuredStat({ label, metric }: Readonly<{ label: string; metric: CodexMeasuredValue }>) { const value = metric.availability === "available" ? metric.value?.toLocaleString() : metric.availability === "no-samples" ? "No samples" : "Unavailable"; return <div className="panel-subtle p-3"><p className="text-[10px] uppercase tracking-wider text-slate-600">{label}</p><p className="mt-1 text-xl text-slate-100">{value}</p><p className="mt-1 text-[9px] text-slate-700">{metric.sampleCount.toLocaleString()} emitting events</p></div>; }
+function SourceBanner({ snapshot }: Readonly<{ snapshot: DashboardSnapshot }>) { const t = snapshot.codex; return <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.02] px-4 py-3"><StatusPill status={t.health.status} /><span className="text-xs text-slate-500">D1 retention: {t.retentionDays} days</span><span className="text-xs text-slate-600">Last received: {t.lastReceivedAt ? formatDate(t.lastReceivedAt) : "No events received"}</span><span className="ml-auto inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-600"><ShieldCheck size={13} /> Privacy-filtered before persistence</span></div>; }
+function Page({ title, eyebrow, description, children }: Readonly<{ title: string; eyebrow: string; description: string; children: React.ReactNode }>) { return <div className="fade-in-up mx-auto max-w-[1380px]"><section className="mb-8"><p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan-200/70">{eyebrow}</p><h1 className="page-title text-[42px] font-semibold leading-[1.06] tracking-[-0.055em] text-slate-100">{title}</h1><p className="mt-4 max-w-3xl text-[15px] leading-7 text-slate-400">{description}</p></section>{children}</div>; }
+function Panel({ title, icon: Icon, children }: Readonly<{ title: string; icon: typeof Activity; children: React.ReactNode }>) { return <section className="panel p-5 sm:p-6"><div className="mb-5 flex items-center gap-2.5"><Icon size={15} className="text-slate-500" /><h2 className="text-sm font-semibold text-slate-300">{title}</h2></div>{children}</section>; }
+function Stat({ label, value, warning }: Readonly<{ label: string; value?: number; warning?: boolean }>) { return <div className="panel p-4"><p className="text-[10px] font-semibold uppercase tracking-wider text-slate-600">{label}</p><p className={`mt-2 text-2xl font-semibold ${warning && value ? "text-amber-100/90" : "text-slate-100"}`}>{value === undefined ? "Unavailable" : value.toLocaleString()}</p></div>; }
+function connectedTotal<T>(result: DataResult<T[]>, select: (item: T) => number) { return result.status === "connected" ? result.data.reduce((sum, item) => sum + select(item), 0) : undefined; }
+function trendTotal(result: DataResult<CodexTelemetryTrendPoint[]>, key: "errors") { return result.status === "connected" ? result.data.reduce((sum, point) => sum + point[key], 0) : undefined; }
+function groupUnknown(events: CodexActivityRecord[]) { const groups = new Map<string, { eventName: string; count: number; keys: Set<string> }>(); for (const event of events) { const group = groups.get(event.eventName) ?? { eventName: event.eventName, count: 0, keys: new Set<string>() }; group.count++; event.unknownAttributeKeys.forEach((key) => group.keys.add(key)); groups.set(event.eventName, group); } return [...groups.values()].map((group) => ({ ...group, keys: [...group.keys].sort() })); }
+function display(value?: number) { return value === undefined ? "Unavailable" : value.toLocaleString(); }
+function milliseconds(value?: number) { return value === undefined ? "Unavailable" : `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} ms`; }
+function formatDate(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "Time unavailable" : new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date); }
+function span(first: string, last: string) { const value = new Date(last).getTime() - new Date(first).getTime(); if (!Number.isFinite(value) || value < 0) return "Span unavailable"; if (value < 60_000) return `${Math.round(value / 1000)}s span`; if (value < 3_600_000) return `${Math.round(value / 60_000)}m span`; return `${(value / 3_600_000).toFixed(1)}h span`; }
+function windowLabel(value: "24h" | "7d" | "30d") { return value === "24h" ? "Last 24 hours" : value === "7d" ? "Last 7 days" : "Last 30 days"; }

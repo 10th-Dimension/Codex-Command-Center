@@ -91,7 +91,7 @@ test("OTLP JSON parsing and privacy normalization retain operational fields only
   assert.equal(events[0].sessionId, "session-1");
   assert.equal(events[0].model, "gpt-test");
   assert.equal(events[0].inputTokens, 12);
-  assert.deepEqual(events[0].unknownAttributeKeys, ["custom.safe-key", "service.name"]);
+  assert.deepEqual(events[0].unknownAttributeKeys, ["custom.safe-key"]);
   const serialized = JSON.stringify(events);
   assert.doesNotMatch(serialized, /Bearer must-never-appear|private prompt|private output|unknown-value-must-not-be-stored/);
   assert.doesNotMatch(serialized, /authorization|tool\.output|"prompt"/);
@@ -135,8 +135,138 @@ test("MCP, network, approval, tool, and workspace dimensions map only when emitt
   assert.equal(event.approvalDecision, "approved");
   assert.equal(event.success, true);
   assert.equal(event.environment, "production");
-  assert.equal(event.schemaVersion, 1);
+  assert.equal(event.schemaVersion, 2);
   assert.equal(event.source, "openai-codex-otel");
+});
+
+test("observed Codex v2 attributes normalize into privacy-safe analytics fields", async () => {
+  const [event] = await normalizeOtlpRecords([{
+    attributes: {
+      "event.kind": "codex.tool_result",
+      "conversation.id": "session-v2",
+      model: "gpt-5.6-sol",
+      model_reasoning_effort: "xhigh",
+      tool_names: ["exec_command"],
+      tool_namespace: "functions",
+      call_id: "call-private-correlation-id",
+      status: "completed",
+      duration_ms: 125.5,
+      ttft_ms: 42,
+      cached_token_count: 11,
+      cache_write_token_count: 3,
+      reasoning_token_count: 7,
+      tool_token_count: 5,
+      approval_policy: "on-request",
+      sandbox_policy: "workspace-write",
+      agent_name: "codex",
+      provider_name: "openai",
+      originator: "desktop",
+      mcp_server_origin: "plugin",
+      "app.version": "1.2.3",
+      "service.name": "codex_cli_rs",
+      "service.version": "1.2.3",
+      "startup.phase": "ready",
+      "startup.status": "ok",
+      "terminal.type": "powershell",
+    },
+    resourceAttributes: {},
+  }], now);
+  assert.equal(event.eventName, "codex.tool_result");
+  assert.equal(event.eventKind, "codex.tool_result");
+  assert.equal(event.category, "tool");
+  assert.equal(event.model, "gpt-5.6-sol");
+  assert.equal(event.reasoningEffort, "xhigh");
+  assert.equal(event.toolName, "exec_command");
+  assert.equal(event.toolNamespace, "functions");
+  assert.equal(event.toolExecutionState, "succeeded");
+  assert.equal(event.cachedInputTokens, 11);
+  assert.equal(event.cacheWriteTokens, 3);
+  assert.equal(event.reasoningTokens, 7);
+  assert.equal(event.toolTokens, 5);
+  assert.equal(event.ttftMs, 42);
+  assert.match(event.callIdHash ?? "", /^[a-f0-9]{64}$/);
+  assert.doesNotMatch(JSON.stringify(event), /call-private-correlation-id/);
+  assert.equal(event.schemaVersion, 2);
+});
+
+test("event identity uses event.kind, preserves genuine unknowns, and recognizes evidence-backed categories", async () => {
+  const events = await normalizeOtlpRecords([
+    { attributes: { "event.kind": "codex.startup", "startup.phase": "boot" }, resourceAttributes: {} },
+    { attributes: { "event.kind": "codex.token_usage", input_token_count: 1 }, resourceAttributes: {} },
+    { attributes: { "event.kind": "codex.approval", approval_decision: "approved" }, resourceAttributes: {} },
+    { attributes: { "event.kind": "codex.model_response", model: "future-model" }, resourceAttributes: {} },
+    { attributes: { "event.kind": "new.safe.event", "conversation.id": "session-does-not-prove-category" }, resourceAttributes: {} },
+  ], now);
+  assert.deepEqual(events.map((event) => event.category), ["startup", "usage", "approval", "model", "unknown"]);
+  assert.equal(events[4].eventName, "new.safe.event");
+});
+
+test("blank OTLP event-name fields do not mask a safe event.name attribute", async () => {
+  const [event] = await normalizeOtlpRecords([{ eventName: "", attributes: { "event.name": "codex.tool_result", tool_name: "exec", success: true }, resourceAttributes: {} }], now);
+  assert.equal(event.eventName, "codex.tool_result");
+  assert.equal(event.category, "tool");
+});
+
+test("token aliases preserve emitted zero and keep absent or invalid values unavailable", async () => {
+  const [zero, absent, invalid] = await normalizeOtlpRecords([
+    { attributes: { cached_token_count: 0, cache_write_token_count: "0", reasoning_token_count: 0, tool_token_count: 0, ttft_ms: 0 }, resourceAttributes: {} },
+    { attributes: {}, resourceAttributes: {} },
+    { attributes: { cached_token_count: -1, cache_write_token_count: "not-a-number", reasoning_token_count: -2, tool_token_count: -3, ttft_ms: -4 }, resourceAttributes: {} },
+  ], now);
+  assert.equal(zero.cachedInputTokens, 0);
+  assert.equal(zero.cacheWriteTokens, 0);
+  assert.equal(zero.reasoningTokens, 0);
+  assert.equal(zero.toolTokens, 0);
+  assert.equal(zero.ttftMs, 0);
+  for (const event of [absent, invalid]) {
+    assert.equal(event.cachedInputTokens, undefined);
+    assert.equal(event.cacheWriteTokens, undefined);
+    assert.equal(event.reasoningTokens, undefined);
+    assert.equal(event.toolTokens, undefined);
+    assert.equal(event.ttftMs, undefined);
+  }
+});
+
+test("reasoning effort prefers reasoning_effort, accepts future identifiers, and rejects content-like values", async () => {
+  const events = await normalizeOtlpRecords([
+    { attributes: { reasoning_effort: "high", model_reasoning_effort: "low" }, resourceAttributes: {} },
+    { attributes: { model_reasoning_effort: "future-tier" }, resourceAttributes: {} },
+    { attributes: { reasoning_effort: "private prose value" }, resourceAttributes: {} },
+  ], now);
+  assert.equal(events[0].reasoningEffort, "high");
+  assert.equal(events[1].reasoningEffort, "future-tier");
+  assert.equal(events[2].reasoningEffort, undefined);
+});
+
+test("tool lifecycle hashes correlate calls without retaining raw ids or double-count hints", async () => {
+  const events = await normalizeOtlpRecords([
+    { attributes: { "event.kind": "codex.tool_call", tool_name: "exec", call_id: "same-call" }, resourceAttributes: {} },
+    { attributes: { "event.kind": "codex.tool_result", tool_name: "exec", call_id: "same-call", success: true }, resourceAttributes: {} },
+    { attributes: { "event.kind": "codex.tool_result", tool_name: "exec", call_id: "failed-call", success: false }, resourceAttributes: {} },
+  ], now);
+  assert.equal(events[0].toolExecutionState, "started");
+  assert.equal(events[1].toolExecutionState, "succeeded");
+  assert.equal(events[2].toolExecutionState, "failed");
+  assert.equal(events[0].callIdHash, events[1].callIdHash);
+  assert.notEqual(events[1].callIdHash, events[2].callIdHash);
+  assert.doesNotMatch(JSON.stringify(events), /same-call|failed-call/);
+});
+
+test("privacy denylist discards identity, reasoning content, auth, command, and output values", async () => {
+  const sensitive = {
+    "user.email": "private@example.test", "user.account_id": "account-private", reasoning_summary: "private reasoning",
+    authorization: "Bearer private", cookie: "session=private", password: "private-password", secret: "private-secret",
+    command: "private command", "tool.arguments": "private arguments", "tool.output": "private output", stdout: "private stdout", stderr: "private stderr",
+    response_body: "private response", originator: "private@example.test", "host.name": "private-machine", endpoint: "https://private.internal/path",
+    "auth.mode": "private-auth-mode", "auth.header_name": "authorization", "auth.connection_reused": true, auth_mode: "private-mode",
+  };
+  const [event] = await normalizeOtlpRecords([{ attributes: sensitive, resourceAttributes: {} }], now);
+  const serialized = JSON.stringify(event);
+  for (const value of Object.values(sensitive)) assert.doesNotMatch(serialized, new RegExp(String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+  assert.equal(event.originator, undefined);
+  assert.ok(event.redactedAttributeCount >= 12);
+  assert.ok(!event.unknownAttributeKeys.includes("host.name"));
+  assert.ok(!event.safeAttributeKeys.some((key) => key.startsWith("auth")));
 });
 
 test("ingestion rejects missing and incorrect keys without touching D1", async () => {
@@ -228,30 +358,24 @@ test("Codex provider returns typed D1-backed activity, usage, and health", async
     cached_input_tokens: 2, reasoning_output_tokens: 1, safe_attribute_keys_json: "[\"model\"]", unknown_attribute_keys_json: "[]",
     source: "openai-codex-otel", schema_version: 1,
   };
-  database.queryResults = [
-    { success: true, results: [eventRow] },
-    { success: true, results: [{ day: "2026-09-11", events: 1, errors: 0, tool_executions: 0 }] },
-    { success: true, results: [{ day: "2026-09-11T12:00:00.000Z", events: 1, errors: 0, tool_executions: 0 }] },
-    { success: true, results: [{ label: "api-request", count: 1 }] },
-    { success: true, results: [{ label: "gpt-test", count: 1 }] },
-    { success: true, results: [] },
-    { success: true, results: [{ label: "api-request", sample_count: 1, average_ms: 25, maximum_ms: 25 }] },
-    { success: true, results: [] },
-    { success: true, results: [] },
-    { success: true, results: [] },
-    { success: true, results: [] },
-    { success: true, results: [] },
-    { success: true, results: [{ session_id: "session-1", project_name: "Command Center", model: "gpt-test", event_count: 1, error_count: 0, tool_executions: 0, first_seen_at: now, last_seen_at: now }] },
-    { success: true, results: [{ project_id: "project-1", project_name: "Command Center", event_count: 1, session_count: 1, last_seen_at: now }] },
-    { success: true, results: [] },
-    { success: true, results: [{ window: "7d", input_tokens: 12, output_tokens: 4, cached_input_tokens: 2, reasoning_output_tokens: 1, events_with_usage: 1 }, { window: "30d", input_tokens: 12, output_tokens: 4, cached_input_tokens: 2, reasoning_output_tokens: 1, events_with_usage: 1 }] },
-    { success: true, results: [{ event_count: 1, last_received_at: now, oldest_event_at: now, newest_event_at: now, today_event_count: 1, observed_session_count_24h: 1, failed_tool_count_30d: 0 }] },
-  ];
+  database.queryResults = Array.from({ length: 35 }, () => ({ success: true, results: [] }));
+  database.queryResults[0] = { success: true, results: [eventRow] };
+  database.queryResults[1] = { success: true, results: [{ label: "2026-09-11", events: 1, errors: 0, tool_executions: 0, input_tokens: 12, output_tokens: 4 }] };
+  database.queryResults[2] = { success: true, results: [{ label: "2026-09-11T12:00:00.000Z", events: 1, errors: 0, tool_executions: 0 }] };
+  database.queryResults[3] = { success: true, results: [{ label: "api-request", count: 1 }] };
+  database.queryResults[4] = { success: true, results: [{ label: "gpt-test", count: 1 }] };
+  database.queryResults[7] = { success: true, results: [{ label: "api-request", sample_count: 1, average_ms: 25, p50_ms: 25, p95_ms: null, p99_ms: null, minimum_ms: 25, maximum_ms: 25 }] };
+  database.queryResults[9] = { success: true, results: [{ window: "24h", event_count: 1, input_tokens: 12, input_samples: 1, output_tokens: 4, output_samples: 1, cached_tokens: 2, cached_samples: 1, cache_write_tokens: null, cache_write_samples: 0, reasoning_tokens: 1, reasoning_samples: 1, tool_tokens: null, tool_samples: 0, usage_events: 1, usage_sessions: 1, usage_models: 1 }] };
+  database.queryResults[10] = { success: true, results: [{ input_samples: 1, output_samples: 1, cached_samples: 1, cache_write_samples: 0, reasoning_samples: 1, tool_samples: 0 }] };
+  database.queryResults[13] = { success: true, results: [{ session_id: "session-1", project_name: "Command Center", models: "gpt-test", reasoning_efforts: null, event_count: 1, usage_event_count: 1, error_count: 0, warning_count: 0, tool_related_events: 0, tool_executions: 0, approval_events: 0, input_tokens: 12, output_tokens: 4, cached_tokens: 2, cache_write_tokens: null, reasoning_tokens: 1, tool_tokens: null, average_ttft_ms: null, first_seen_at: now, last_seen_at: now }] };
+  database.queryResults[14] = { success: true, results: [{ project_id: "project-1", project_name: "Command Center", event_count: 1, session_count: 1, last_seen_at: now }] };
+  database.queryResults[34] = { success: true, results: [{ event_count: 1, last_received_at: now, oldest_event_at: now, newest_event_at: now, today_event_count: 1, observed_session_count_24h: 1, failed_tool_count_30d: 0 }] };
   const provider = createCodexTelemetryProvider({ getRuntime: () => ({ database, ingestKey, retentionDays: 30 }), now: () => new Date(now), cacheTtlMs: 0 });
   const snapshot = await provider.getSnapshot({ requestedAt: now });
   assert.equal(snapshot.health.status, "connected");
   assert.equal(snapshot.activity.status === "connected" ? snapshot.activity.data[0].eventName : null, "codex.api_request");
-  assert.equal(snapshot.usage.status === "connected" ? snapshot.usage.data[0].inputTokens : null, 12);
+  assert.equal(snapshot.usage.status === "connected" ? snapshot.usage.data[0].inputTokens.value : null, 12);
+  assert.equal(snapshot.usage.status === "connected" ? snapshot.usage.data[0].cacheWriteTokens.availability : null, "unavailable");
   assert.equal(snapshot.sessions.status === "connected" ? snapshot.sessions.data[0].sessionId : null, "session-1");
   assert.equal(snapshot.timings.status === "connected" ? snapshot.timings.data[0].averageMs : null, 25);
   assert.equal(snapshot.trends.twentyFourHour.status === "connected" ? snapshot.trends.twentyFourHour.data[0].events : null, 1);
@@ -279,4 +403,22 @@ test("D1 migration preserves deduplication, query indexes, and bounded raw-event
   assert.match(migration, /PRAGMA optimize/);
   assert.match(migration, /source TEXT NOT NULL DEFAULT 'openai-codex-otel'/);
   assert.match(migration, /schema_version INTEGER NOT NULL DEFAULT 1/);
+});
+
+test("analytics v2 migration is additive, indexed, privacy-safe, and historically conservative", async () => {
+  const migration = await readFile(new URL("../migrations/0002_codex_analytics_v2.sql", import.meta.url), "utf8");
+  for (const column of ["event_kind", "reasoning_effort", "cache_write_tokens", "reasoning_tokens", "tool_tokens", "ttft_ms", "tool_namespace", "call_id_hash", "tool_execution_state", "approval_policy", "sandbox_policy", "agent_name", "provider_name", "originator", "mcp_server_origin", "app_version", "service_name", "service_version", "startup_phase", "startup_status", "terminal_type"]) {
+    assert.match(migration, new RegExp(`ADD COLUMN ${column} `));
+  }
+  for (const index of ["reasoning_occurred_at", "call_occurred_at", "tool_state_occurred_at", "ttft_occurred_at"]) assert.match(migration, new RegExp(`idx_codex_telemetry_events_${index}`));
+  assert.match(migration, /WHERE event_category = 'unknown'/);
+  assert.doesNotMatch(migration, /DROP\s|DELETE\s|reasoning_summary|user_email|account_id|authorization|cookie|password|tool_output/i);
+});
+
+test("database analytics deduplicate terminal tool events by call hash and bound raw hydration", async () => {
+  const source = await readFile(new URL("../src/lib/telemetry/database.ts", import.meta.url), "utf8");
+  assert.match(source, /COUNT\(DISTINCT CASE WHEN[^`]+COALESCE\(call_id_hash,id\)/s);
+  assert.match(source, /ORDER BY occurred_at DESC LIMIT 100/);
+  assert.match(source, /ROW_NUMBER\(\) OVER/);
+  assert.match(source, /MAX\(n\) >= 20/);
 });
