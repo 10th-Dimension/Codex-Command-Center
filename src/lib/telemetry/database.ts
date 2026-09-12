@@ -1,87 +1,46 @@
-import type { CodexActivityRecord, CodexTelemetryBreakdown, CodexTelemetryProjectSummary, CodexTelemetrySessionSummary, CodexTelemetryTimingBreakdown, CodexTelemetryToolSummary, CodexTelemetryTrendPoint, CodexUsageSnapshot } from "@/lib/providers/types";
+import type {
+  CodexActivityRecord, CodexMeasuredValue, CodexTelemetryBreakdown, CodexTelemetryCorrelation, CodexTelemetryModelSummary,
+  CodexTelemetryProjectSummary, CodexTelemetryReasoningSummary, CodexTelemetrySessionSummary, CodexTelemetryTimingBreakdown,
+  CodexTelemetryToolSummary, CodexTelemetryTrendPoint, CodexUsageSnapshot,
+} from "@/lib/providers/types";
 import type { NormalizedTelemetryEvent } from "@/lib/telemetry/normalize";
 
-export interface D1ResultLike<T = Record<string, unknown>> {
-  success: boolean;
-  results?: T[];
-  meta?: { changes?: number };
-  error?: string;
-}
+export interface D1ResultLike<T = Record<string, unknown>> { success: boolean; results?: T[]; meta?: { changes?: number }; error?: string }
+export interface D1PreparedStatementLike { bind(...values: unknown[]): D1PreparedStatementLike; run<T = Record<string, unknown>>(): Promise<D1ResultLike<T>>; all<T = Record<string, unknown>>(): Promise<D1ResultLike<T>> }
+export interface D1DatabaseLike { prepare(sql: string): D1PreparedStatementLike; batch<T = Record<string, unknown>>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> }
 
-export interface D1PreparedStatementLike {
-  bind(...values: unknown[]): D1PreparedStatementLike;
-  run<T = Record<string, unknown>>(): Promise<D1ResultLike<T>>;
-  all<T = Record<string, unknown>>(): Promise<D1ResultLike<T>>;
-}
+const INSERT_COLUMNS = [
+  "id", "event_fingerprint", "occurred_at", "received_at", "event_name", "event_category", "environment", "severity_text", "severity_number",
+  "session_id", "thread_id", "task_id", "project_id", "project_name", "repository_id", "workspace_id", "model", "tool_name", "tool_type", "tool_status",
+  "decision", "approval_decision", "mcp_server", "mcp_tool", "network_host", "network_decision", "success", "status", "error_type", "duration_ms",
+  "input_tokens", "output_tokens", "cached_input_tokens", "reasoning_output_tokens", "safe_attribute_keys_json", "unknown_attribute_keys_json",
+  "redacted_attribute_count", "source", "schema_version", "event_kind", "reasoning_effort", "cache_write_tokens", "reasoning_tokens", "tool_tokens", "ttft_ms",
+  "tool_namespace", "call_id_hash", "tool_execution_state", "approval_policy", "sandbox_policy", "agent_name", "provider_name", "originator", "mcp_server_origin",
+  "app_version", "service_name", "service_version", "startup_phase", "startup_status", "terminal_type",
+] as const;
+const INSERT_SQL = `INSERT OR IGNORE INTO codex_telemetry_events (${INSERT_COLUMNS.join(", ")}) VALUES (${INSERT_COLUMNS.map(() => "?").join(", ")})`;
+const nil = (value: string | number | undefined) => value ?? null;
 
-export interface D1DatabaseLike {
-  prepare(sql: string): D1PreparedStatementLike;
-  batch<T = Record<string, unknown>>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]>;
-}
-
-const INSERT_SQL = `
-  INSERT OR IGNORE INTO codex_telemetry_events (
-    id, event_fingerprint, occurred_at, received_at, event_name, event_category, environment,
-    severity_text, severity_number, session_id, thread_id, task_id, project_id, project_name,
-    repository_id, workspace_id, model, tool_name, tool_type, tool_status, decision,
-    approval_decision, mcp_server, mcp_tool, network_host, network_decision, success,
-    status, error_type, duration_ms, input_tokens,
-    output_tokens, cached_input_tokens, reasoning_output_tokens,
-    safe_attribute_keys_json, unknown_attribute_keys_json, redacted_attribute_count, source, schema_version
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`;
-
-function nullable(value: string | number | undefined) {
-  return value ?? null;
+function eventValues(event: NormalizedTelemetryEvent) {
+  return [
+    event.id, event.fingerprint, event.occurredAt, event.receivedAt, event.eventName, event.category, nil(event.environment), nil(event.severityText), nil(event.severityNumber),
+    nil(event.sessionId), nil(event.threadId), nil(event.taskId), nil(event.projectId), nil(event.projectName), nil(event.repositoryId), nil(event.workspaceId), nil(event.model),
+    nil(event.toolName), nil(event.toolType), nil(event.toolStatus), nil(event.decision), nil(event.approvalDecision), nil(event.mcpServer), nil(event.mcpTool), nil(event.networkHost),
+    nil(event.networkDecision), event.success === undefined ? null : event.success ? 1 : 0, nil(event.status), nil(event.errorType), nil(event.durationMs), nil(event.inputTokens),
+    nil(event.outputTokens), nil(event.cachedInputTokens), nil(event.reasoningTokens), JSON.stringify(event.safeAttributeKeys), JSON.stringify(event.unknownAttributeKeys),
+    event.redactedAttributeCount, event.source, event.schemaVersion, nil(event.eventKind), nil(event.reasoningEffort), nil(event.cacheWriteTokens), nil(event.reasoningTokens), nil(event.toolTokens),
+    nil(event.ttftMs), nil(event.toolNamespace), nil(event.callIdHash), nil(event.toolExecutionState), nil(event.approvalPolicy), nil(event.sandboxPolicy), nil(event.agentName),
+    nil(event.providerName), nil(event.originator), nil(event.mcpServerOrigin), nil(event.appVersion), nil(event.serviceName), nil(event.serviceVersion), nil(event.startupPhase),
+    nil(event.startupStatus), nil(event.terminalType),
+  ];
 }
 
 export async function insertTelemetryEvents(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]) {
   let inserted = 0;
   for (let offset = 0; offset < events.length; offset += 50) {
-    const statements = events.slice(offset, offset + 50).map((event) => database.prepare(INSERT_SQL).bind(
-      event.id,
-      event.fingerprint,
-      event.occurredAt,
-      event.receivedAt,
-      event.eventName,
-      event.category,
-      nullable(event.environment),
-      nullable(event.severityText),
-      nullable(event.severityNumber),
-      nullable(event.sessionId),
-      nullable(event.threadId),
-      nullable(event.taskId),
-      nullable(event.projectId),
-      nullable(event.projectName),
-      nullable(event.repositoryId),
-      nullable(event.workspaceId),
-      nullable(event.model),
-      nullable(event.toolName),
-      nullable(event.toolType),
-      nullable(event.toolStatus),
-      nullable(event.decision),
-      nullable(event.approvalDecision),
-      nullable(event.mcpServer),
-      nullable(event.mcpTool),
-      nullable(event.networkHost),
-      nullable(event.networkDecision),
-      event.success === undefined ? null : event.success ? 1 : 0,
-      nullable(event.status),
-      nullable(event.errorType),
-      nullable(event.durationMs),
-      nullable(event.inputTokens),
-      nullable(event.outputTokens),
-      nullable(event.cachedInputTokens),
-      nullable(event.reasoningOutputTokens),
-      JSON.stringify(event.safeAttributeKeys),
-      JSON.stringify(event.unknownAttributeKeys),
-      event.redactedAttributeCount,
-      event.source,
-      event.schemaVersion,
-    ));
-    const results = await database.batch(statements);
+    const results = await database.batch(events.slice(offset, offset + 50).map((event) => database.prepare(INSERT_SQL).bind(...eventValues(event))));
     if (results.some((result) => !result.success)) throw new Error("Telemetry storage batch failed.");
-    inserted += results.reduce((total, result) => total + (result.meta?.changes ?? 0), 0);
+    inserted += results.reduce((sum, result) => sum + (result.meta?.changes ?? 0), 0);
   }
   return inserted;
 }
@@ -93,202 +52,110 @@ export async function deleteExpiredTelemetry(database: D1DatabaseLike, retention
   return result.meta?.changes ?? 0;
 }
 
-interface EventRow {
-  id: string;
-  event_name: string;
-  event_category: CodexActivityRecord["category"];
-  environment: string | null;
-  occurred_at: string;
-  received_at: string;
-  severity_text: string | null;
-  session_id: string | null;
-  thread_id: string | null;
-  task_id: string | null;
-  project_id: string | null;
-  project_name: string | null;
-  repository_id: string | null;
-  workspace_id: string | null;
-  model: string | null;
-  tool_name: string | null;
-  tool_type: string | null;
-  tool_status: string | null;
-  decision: string | null;
-  approval_decision: string | null;
-  mcp_server: string | null;
-  mcp_tool: string | null;
-  network_host: string | null;
-  network_decision: string | null;
-  success: number | null;
-  status: string | null;
-  error_type: string | null;
-  duration_ms: number | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  cached_input_tokens: number | null;
-  reasoning_output_tokens: number | null;
-  safe_attribute_keys_json: string;
-  unknown_attribute_keys_json: string;
-  source: "openai-codex-otel";
-  schema_version: 1;
-}
-
+type EventRow = Record<string, string | number | null> & { id: string; event_name: string; event_category: CodexActivityRecord["category"]; occurred_at: string; received_at: string; safe_attribute_keys_json: string; unknown_attribute_keys_json: string; source: "openai-codex-otel"; schema_version: 1 | 2 };
 interface CountRow { label: string; count: number }
-interface TimingRow { label: string; sample_count: number; average_ms: number; maximum_ms: number }
-interface ToolRow { label: string; count: number; failure_count: number; average_duration_ms: number | null; last_seen_at: string }
-interface DailyRow { day: string; events: number; errors: number; tool_executions: number }
-interface UsageRow { window: "7d" | "30d"; input_tokens: number; output_tokens: number; cached_input_tokens: number; reasoning_output_tokens: number; events_with_usage: number }
-interface SessionRow { session_id: string; project_name: string | null; model: string | null; event_count: number; error_count: number; tool_executions: number; first_seen_at: string; last_seen_at: string }
+interface CorrelationRow extends CountRow { dimension: string }
+interface TrendRow { label: string; events: number; errors: number; tool_executions: number; input_tokens: number | null; output_tokens: number | null; cached_tokens: number | null; cache_write_tokens: number | null; reasoning_tokens: number | null; tool_tokens: number | null }
+interface UsageRow { window: "24h" | "7d" | "30d"; event_count: number; input_tokens: number | null; input_samples: number; output_tokens: number | null; output_samples: number; cached_tokens: number | null; cached_samples: number; cache_write_tokens: number | null; cache_write_samples: number; reasoning_tokens: number | null; reasoning_samples: number; tool_tokens: number | null; tool_samples: number; usage_events: number; usage_sessions: number; usage_models: number }
+interface AvailabilityRow { input_samples: number; output_samples: number; cached_samples: number; cache_write_samples: number; reasoning_samples: number; tool_samples: number }
+interface TimingRow { label: string; sample_count: number; average_ms: number; p50_ms: number | null; p95_ms: number | null; p99_ms: number | null; minimum_ms: number; maximum_ms: number }
+interface ToolRow { label: string; related_events: number; completed_executions: number; success_count: number; failure_count: number; average_duration_ms: number | null; tool_tokens: number | null; last_seen_at: string }
+interface ModelRow { model: string; event_count: number; session_count: number; usage_event_count: number; input_tokens: number | null; output_tokens: number | null; cached_tokens: number | null; cache_write_tokens: number | null; reasoning_tokens: number | null; tool_tokens: number | null; average_ttft_ms: number | null; average_duration_ms: number | null; tool_executions: number; tool_failures: number; approval_events: number }
+interface ReasoningRow extends Omit<ModelRow, "model" | "tool_failures" | "approval_events"> { reasoning_effort: string }
+interface SessionRow { session_id: string; project_name: string | null; models: string | null; reasoning_efforts: string | null; event_count: number; usage_event_count: number; error_count: number; warning_count: number; tool_related_events: number; tool_executions: number; approval_events: number; input_tokens: number | null; output_tokens: number | null; cached_tokens: number | null; cache_write_tokens: number | null; reasoning_tokens: number | null; tool_tokens: number | null; average_ttft_ms: number | null; first_seen_at: string; last_seen_at: string }
 interface ProjectRow { project_id: string; project_name: string | null; event_count: number; session_count: number; last_seen_at: string }
 interface MetaRow { event_count: number; last_received_at: string | null; oldest_event_at: string | null; newest_event_at: string | null; today_event_count: number; observed_session_count_24h: number; failed_tool_count_30d: number }
 
-function rows<T>(result: D1ResultLike<T>) {
-  if (!result.success) throw new Error("Telemetry query failed.");
-  return result.results ?? [];
-}
+function rows<T>(result: D1ResultLike<T>) { if (!result.success) throw new Error("Telemetry query failed."); return result.results ?? []; }
+function keys(value: unknown) { try { const parsed = JSON.parse(String(value)); return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string").slice(0, 64) : []; } catch { return []; } }
+function optionalNumber(value: unknown) { return value === null || value === undefined ? undefined : Number(value); }
+function list(value: string | null) { return value ? value.split(",").map((item) => item.trim()).filter(Boolean) : []; }
 
-function parseKeys(value: string) {
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string").slice(0, 64) : [];
-  } catch {
-    return [];
-  }
-}
-
-function eventRecord(row: EventRow): CodexActivityRecord {
+function activity(row: EventRow): CodexActivityRecord {
+  const string = (name: string) => row[name] === null || row[name] === undefined ? undefined : String(row[name]);
+  const number = (name: string) => optionalNumber(row[name]);
   return {
-    id: row.id,
-    eventName: row.event_name,
-    category: row.event_category,
-    occurredAt: row.occurred_at,
-    receivedAt: row.received_at,
-    severity: row.severity_text ?? undefined,
-    sessionId: row.session_id ?? undefined,
-    threadId: row.thread_id ?? undefined,
-    taskId: row.task_id ?? undefined,
-    projectId: row.project_id ?? undefined,
-    projectName: row.project_name ?? undefined,
-    repositoryId: row.repository_id ?? undefined,
-    workspaceId: row.workspace_id ?? undefined,
-    environment: row.environment ?? undefined,
-    model: row.model ?? undefined,
-    toolName: row.tool_name ?? undefined,
-    toolType: row.tool_type ?? undefined,
-    toolStatus: row.tool_status ?? undefined,
-    decision: row.decision ?? undefined,
-    approvalDecision: row.approval_decision ?? undefined,
-    mcpServer: row.mcp_server ?? undefined,
-    mcpTool: row.mcp_tool ?? undefined,
-    networkHost: row.network_host ?? undefined,
-    networkDecision: row.network_decision ?? undefined,
-    success: row.success === null ? undefined : row.success === 1,
-    errorType: row.error_type ?? undefined,
-    status: row.status ?? undefined,
-    durationMs: row.duration_ms ?? undefined,
-    inputTokens: row.input_tokens ?? undefined,
-    outputTokens: row.output_tokens ?? undefined,
-    cachedInputTokens: row.cached_input_tokens ?? undefined,
-    reasoningOutputTokens: row.reasoning_output_tokens ?? undefined,
-    safeAttributeKeys: parseKeys(row.safe_attribute_keys_json),
-    unknownAttributeKeys: parseKeys(row.unknown_attribute_keys_json),
-    source: row.source,
-    schemaVersion: row.schema_version,
+    id: row.id, eventName: row.event_name, eventKind: string("event_kind"), category: row.event_category, occurredAt: row.occurred_at, receivedAt: row.received_at,
+    severity: string("severity_text"), sessionId: string("session_id"), threadId: string("thread_id"), taskId: string("task_id"), projectId: string("project_id"),
+    projectName: string("project_name"), repositoryId: string("repository_id"), workspaceId: string("workspace_id"), environment: string("environment"), model: string("model"),
+    reasoningEffort: string("reasoning_effort"), toolName: string("tool_name"), toolType: string("tool_type"), toolStatus: string("tool_status"), toolNamespace: string("tool_namespace"),
+    toolExecutionState: string("tool_execution_state") as CodexActivityRecord["toolExecutionState"], decision: string("decision"), approvalDecision: string("approval_decision"),
+    approvalPolicy: string("approval_policy"), sandboxPolicy: string("sandbox_policy"), mcpServer: string("mcp_server"), mcpTool: string("mcp_tool"), mcpServerOrigin: string("mcp_server_origin"),
+    networkHost: string("network_host"), networkDecision: string("network_decision"), agentName: string("agent_name"), providerName: string("provider_name"), originator: string("originator"),
+    appVersion: string("app_version"), serviceName: string("service_name"), serviceVersion: string("service_version"), startupPhase: string("startup_phase"), startupStatus: string("startup_status"), terminalType: string("terminal_type"),
+    success: row.success === null || row.success === undefined ? undefined : Number(row.success) === 1, errorType: string("error_type"), status: string("status"), durationMs: number("duration_ms"), ttftMs: number("ttft_ms"),
+    inputTokens: number("input_tokens"), outputTokens: number("output_tokens"), cachedInputTokens: number("cached_input_tokens"), reasoningOutputTokens: number("reasoning_output_tokens"),
+    cacheWriteTokens: number("cache_write_tokens"), reasoningTokens: number("reasoning_tokens") ?? number("reasoning_output_tokens"), toolTokens: number("tool_tokens"), safeAttributeKeys: keys(row.safe_attribute_keys_json), unknownAttributeKeys: keys(row.unknown_attribute_keys_json), source: row.source, schemaVersion: row.schema_version,
   };
 }
 
+function measured(total: number | null, samples: number, observed: number): CodexMeasuredValue {
+  if (observed === 0) return { availability: "unavailable", sampleCount: 0 };
+  if (samples === 0) return { availability: "no-samples", sampleCount: 0 };
+  return { availability: "available", value: Number(total ?? 0), sampleCount: Number(samples) };
+}
+
+const TOOL_TERMINAL = "tool_execution_state IN ('succeeded','failed')";
+const USAGE_FIELDS = "input_tokens IS NOT NULL OR output_tokens IS NOT NULL OR cached_input_tokens IS NOT NULL OR cache_write_tokens IS NOT NULL OR reasoning_tokens IS NOT NULL OR reasoning_output_tokens IS NOT NULL OR tool_tokens IS NOT NULL";
+const TREND_SELECT = `COUNT(*) AS events, SUM(CASE WHEN event_category = 'error' THEN 1 ELSE 0 END) AS errors, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS tool_executions, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cached_input_tokens) AS cached_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(COALESCE(reasoning_tokens, reasoning_output_tokens)) AS reasoning_tokens, SUM(tool_tokens) AS tool_tokens`;
+const TIMING_SQL = (value: "duration_ms" | "ttft_ms", label: string) => `WITH ranked AS (SELECT ${label} AS label, ${value} AS value, ROW_NUMBER() OVER (PARTITION BY ${label} ORDER BY ${value}) AS rn, COUNT(*) OVER (PARTITION BY ${label}) AS n FROM codex_telemetry_events WHERE occurred_at >= ? AND ${value} IS NOT NULL AND ${label} IS NOT NULL) SELECT label, MAX(n) AS sample_count, AVG(value) AS average_ms, AVG(CASE WHEN rn IN ((n + 1) / 2, (n + 2) / 2) THEN value END) AS p50_ms, CASE WHEN MAX(n) >= 20 THEN MIN(CASE WHEN rn >= ((n * 95 + 99) / 100) THEN value END) END AS p95_ms, CASE WHEN MAX(n) >= 100 THEN MIN(CASE WHEN rn >= ((n * 99 + 99) / 100) THEN value END) END AS p99_ms, MIN(value) AS minimum_ms, MAX(value) AS maximum_ms FROM ranked GROUP BY label ORDER BY sample_count DESC LIMIT 30`;
+
 export interface TelemetryDatabaseSnapshot {
-  activity: CodexActivityRecord[];
-  sevenDayTrend: CodexTelemetryTrendPoint[];
-  thirtyDayTrend: CodexTelemetryTrendPoint[];
-  twentyFourHourTrend: CodexTelemetryTrendPoint[];
-  usage: CodexUsageSnapshot[];
-  categories: CodexTelemetryBreakdown[];
-  models: CodexTelemetryBreakdown[];
-  tools: CodexTelemetryToolSummary[];
-  timings: CodexTelemetryTimingBreakdown[];
-  approvals: CodexTelemetryBreakdown[];
-  mcpServers: CodexTelemetryBreakdown[];
-  mcpTools: CodexTelemetryBreakdown[];
-  networkDecisions: CodexTelemetryBreakdown[];
-  networkHosts: CodexTelemetryBreakdown[];
-  sessions: CodexTelemetrySessionSummary[];
-  projects: CodexTelemetryProjectSummary[];
-  recentErrors: CodexActivityRecord[];
-  eventCount: number;
-  lastReceivedAt?: string;
-  oldestEventAt?: string;
-  newestEventAt?: string;
-  todayEventCount: number;
-  observedSessionCount24h: number;
-  failedToolCount30d: number;
+  activity: CodexActivityRecord[]; twentyFourHourTrend: CodexTelemetryTrendPoint[]; sevenDayTrend: CodexTelemetryTrendPoint[]; thirtyDayTrend: CodexTelemetryTrendPoint[];
+  usage: CodexUsageSnapshot[]; categories: CodexTelemetryBreakdown[]; models: CodexTelemetryBreakdown[]; modelAnalytics: CodexTelemetryModelSummary[];
+  reasoningEfforts: CodexTelemetryBreakdown[]; reasoningAnalytics: CodexTelemetryReasoningSummary[]; tools: CodexTelemetryToolSummary[]; timings: CodexTelemetryTimingBreakdown[]; ttft: CodexTelemetryTimingBreakdown[];
+  correlations: CodexTelemetryCorrelation[];
+  approvals: CodexTelemetryBreakdown[]; approvalPolicies: CodexTelemetryBreakdown[]; sandboxPolicies: CodexTelemetryBreakdown[]; mcpServers: CodexTelemetryBreakdown[];
+  mcpTools: CodexTelemetryBreakdown[]; mcpOrigins: CodexTelemetryBreakdown[]; toolNamespaces: CodexTelemetryBreakdown[]; agents: CodexTelemetryBreakdown[];
+  providers: CodexTelemetryBreakdown[]; originators: CodexTelemetryBreakdown[]; appVersions: CodexTelemetryBreakdown[]; serviceVersions: CodexTelemetryBreakdown[];
+  startupStatuses: CodexTelemetryBreakdown[]; terminalTypes: CodexTelemetryBreakdown[]; networkDecisions: CodexTelemetryBreakdown[]; networkHosts: CodexTelemetryBreakdown[];
+  sessions: CodexTelemetrySessionSummary[]; projects: CodexTelemetryProjectSummary[]; recentErrors: CodexActivityRecord[]; eventCount: number; lastReceivedAt?: string;
+  oldestEventAt?: string; newestEventAt?: string; todayEventCount: number; observedSessionCount24h: number; failedToolCount30d: number;
 }
 
 export async function readTelemetrySnapshot(database: D1DatabaseLike, now: Date): Promise<TelemetryDatabaseSnapshot> {
-  const thirtyDayCutoff = new Date(now.getTime() - 30 * 86_400_000).toISOString();
-  const sevenDayCutoff = new Date(now.getTime() - 7 * 86_400_000).toISOString();
-  const twentyFourHourCutoff = new Date(now.getTime() - 86_400_000).toISOString();
-  const todayCutoff = now.toISOString().slice(0, 10) + "T00:00:00.000Z";
+  const cutoff30 = new Date(now.getTime() - 30 * 86_400_000).toISOString(); const cutoff7 = new Date(now.getTime() - 7 * 86_400_000).toISOString(); const cutoff24 = new Date(now.getTime() - 86_400_000).toISOString(); const today = `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
+  const usageSelect = `COUNT(*) AS event_count, SUM(input_tokens) AS input_tokens, COUNT(input_tokens) AS input_samples, SUM(output_tokens) AS output_tokens, COUNT(output_tokens) AS output_samples, SUM(cached_input_tokens) AS cached_tokens, COUNT(cached_input_tokens) AS cached_samples, SUM(cache_write_tokens) AS cache_write_tokens, COUNT(cache_write_tokens) AS cache_write_samples, SUM(COALESCE(reasoning_tokens, reasoning_output_tokens)) AS reasoning_tokens, COUNT(COALESCE(reasoning_tokens, reasoning_output_tokens)) AS reasoning_samples, SUM(tool_tokens) AS tool_tokens, COUNT(tool_tokens) AS tool_samples, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_events, COUNT(DISTINCT CASE WHEN ${USAGE_FIELDS} THEN COALESCE(session_id,thread_id) END) AS usage_sessions, COUNT(DISTINCT CASE WHEN ${USAGE_FIELDS} THEN model END) AS usage_models`;
+  const breakdown = (column: string) => database.prepare(`SELECT ${column} AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND ${column} IS NOT NULL GROUP BY ${column} ORDER BY count DESC LIMIT 30`).bind(cutoff30);
   const statements = [
-    database.prepare("SELECT * FROM codex_telemetry_events WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT 100").bind(thirtyDayCutoff),
-    database.prepare("SELECT substr(occurred_at, 1, 10) AS day, COUNT(*) AS events, SUM(CASE WHEN event_category = 'error' THEN 1 ELSE 0 END) AS errors, SUM(CASE WHEN event_category = 'tool' THEN 1 ELSE 0 END) AS tool_executions FROM codex_telemetry_events WHERE occurred_at >= ? GROUP BY day ORDER BY day").bind(thirtyDayCutoff),
-    database.prepare("SELECT substr(occurred_at, 1, 13) || ':00:00.000Z' AS day, COUNT(*) AS events, SUM(CASE WHEN event_category = 'error' THEN 1 ELSE 0 END) AS errors, SUM(CASE WHEN event_category = 'tool' THEN 1 ELSE 0 END) AS tool_executions FROM codex_telemetry_events WHERE occurred_at >= ? GROUP BY day ORDER BY day").bind(twentyFourHourCutoff),
-    database.prepare("SELECT event_category AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? GROUP BY event_category ORDER BY count DESC").bind(thirtyDayCutoff),
-    database.prepare("SELECT model AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND model IS NOT NULL GROUP BY model ORDER BY count DESC LIMIT 20").bind(thirtyDayCutoff),
-    database.prepare("SELECT tool_name AS label, COUNT(*) AS count, SUM(CASE WHEN success = 0 OR tool_status IN ('failed', 'failure', 'error') THEN 1 ELSE 0 END) AS failure_count, AVG(duration_ms) AS average_duration_ms, MAX(occurred_at) AS last_seen_at FROM codex_telemetry_events WHERE occurred_at >= ? AND tool_name IS NOT NULL GROUP BY tool_name ORDER BY count DESC LIMIT 20").bind(thirtyDayCutoff),
-    database.prepare("SELECT event_category AS label, COUNT(duration_ms) AS sample_count, AVG(duration_ms) AS average_ms, MAX(duration_ms) AS maximum_ms FROM codex_telemetry_events WHERE occurred_at >= ? AND duration_ms IS NOT NULL GROUP BY event_category ORDER BY sample_count DESC").bind(thirtyDayCutoff),
-    database.prepare("SELECT approval_decision AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND approval_decision IS NOT NULL GROUP BY approval_decision ORDER BY count DESC").bind(thirtyDayCutoff),
-    database.prepare("SELECT mcp_server AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND mcp_server IS NOT NULL GROUP BY mcp_server ORDER BY count DESC LIMIT 20").bind(thirtyDayCutoff),
-    database.prepare("SELECT mcp_tool AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND mcp_tool IS NOT NULL GROUP BY mcp_tool ORDER BY count DESC LIMIT 20").bind(thirtyDayCutoff),
-    database.prepare("SELECT network_decision AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND network_decision IS NOT NULL GROUP BY network_decision ORDER BY count DESC").bind(thirtyDayCutoff),
-    database.prepare("SELECT network_host AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND network_host IS NOT NULL GROUP BY network_host ORDER BY count DESC LIMIT 20").bind(thirtyDayCutoff),
-    database.prepare("SELECT COALESCE(session_id, thread_id) AS session_id, MAX(project_name) AS project_name, MAX(model) AS model, COUNT(*) AS event_count, SUM(CASE WHEN event_category = 'error' THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN event_category = 'tool' THEN 1 ELSE 0 END) AS tool_executions, MIN(occurred_at) AS first_seen_at, MAX(occurred_at) AS last_seen_at FROM codex_telemetry_events WHERE occurred_at >= ? AND COALESCE(session_id, thread_id) IS NOT NULL GROUP BY COALESCE(session_id, thread_id) ORDER BY last_seen_at DESC LIMIT 50").bind(thirtyDayCutoff),
-    database.prepare("SELECT project_id, MAX(project_name) AS project_name, COUNT(*) AS event_count, COUNT(DISTINCT session_id) AS session_count, MAX(occurred_at) AS last_seen_at FROM codex_telemetry_events WHERE occurred_at >= ? AND project_id IS NOT NULL GROUP BY project_id ORDER BY last_seen_at DESC LIMIT 50").bind(thirtyDayCutoff),
-    database.prepare("SELECT * FROM codex_telemetry_events WHERE occurred_at >= ? AND event_category IN ('error', 'warning') ORDER BY occurred_at DESC LIMIT 25").bind(thirtyDayCutoff),
-    database.prepare("SELECT '7d' AS window, COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens, COALESCE(SUM(reasoning_output_tokens), 0) AS reasoning_output_tokens, SUM(CASE WHEN input_tokens IS NOT NULL OR output_tokens IS NOT NULL OR cached_input_tokens IS NOT NULL OR reasoning_output_tokens IS NOT NULL THEN 1 ELSE 0 END) AS events_with_usage FROM codex_telemetry_events WHERE occurred_at >= ? UNION ALL SELECT '30d' AS window, COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cached_input_tokens), 0), COALESCE(SUM(reasoning_output_tokens), 0), SUM(CASE WHEN input_tokens IS NOT NULL OR output_tokens IS NOT NULL OR cached_input_tokens IS NOT NULL OR reasoning_output_tokens IS NOT NULL THEN 1 ELSE 0 END) FROM codex_telemetry_events WHERE occurred_at >= ?").bind(sevenDayCutoff, thirtyDayCutoff),
-    database.prepare("SELECT COUNT(*) AS event_count, MAX(received_at) AS last_received_at, MIN(occurred_at) AS oldest_event_at, MAX(occurred_at) AS newest_event_at, SUM(CASE WHEN occurred_at >= ? THEN 1 ELSE 0 END) AS today_event_count, COUNT(DISTINCT CASE WHEN occurred_at >= ? THEN COALESCE(session_id, thread_id) END) AS observed_session_count_24h, SUM(CASE WHEN occurred_at >= ? AND tool_name IS NOT NULL AND (success = 0 OR tool_status IN ('failed', 'failure', 'error')) THEN 1 ELSE 0 END) AS failed_tool_count_30d FROM codex_telemetry_events").bind(todayCutoff, twentyFourHourCutoff, thirtyDayCutoff),
+    database.prepare("SELECT * FROM codex_telemetry_events WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT 100").bind(cutoff30),
+    database.prepare(`SELECT substr(occurred_at,1,10) AS label, ${TREND_SELECT} FROM codex_telemetry_events WHERE occurred_at >= ? GROUP BY label ORDER BY label`).bind(cutoff30),
+    database.prepare(`SELECT substr(occurred_at,1,13) || ':00:00.000Z' AS label, ${TREND_SELECT} FROM codex_telemetry_events WHERE occurred_at >= ? GROUP BY label ORDER BY label`).bind(cutoff24),
+    breakdown("event_category"), breakdown("model"), breakdown("reasoning_effort"),
+    database.prepare(`SELECT tool_name AS label, COUNT(*) AS related_events, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS completed_executions, COUNT(DISTINCT CASE WHEN tool_execution_state='succeeded' THEN COALESCE(call_id_hash,id) END) AS success_count, COUNT(DISTINCT CASE WHEN tool_execution_state='failed' THEN COALESCE(call_id_hash,id) END) AS failure_count, AVG(CASE WHEN ${TOOL_TERMINAL} THEN duration_ms END) AS average_duration_ms, SUM(tool_tokens) AS tool_tokens, MAX(occurred_at) AS last_seen_at FROM codex_telemetry_events WHERE occurred_at >= ? AND tool_name IS NOT NULL GROUP BY tool_name ORDER BY related_events DESC LIMIT 30`).bind(cutoff30),
+    database.prepare(TIMING_SQL("duration_ms", "event_category")).bind(cutoff30), database.prepare(TIMING_SQL("ttft_ms", "model")).bind(cutoff30),
+    database.prepare(`SELECT '24h' AS window, ${usageSelect} FROM codex_telemetry_events WHERE occurred_at >= ? UNION ALL SELECT '7d', ${usageSelect} FROM codex_telemetry_events WHERE occurred_at >= ? UNION ALL SELECT '30d', ${usageSelect} FROM codex_telemetry_events WHERE occurred_at >= ?`).bind(cutoff24, cutoff7, cutoff30),
+    database.prepare("SELECT COUNT(input_tokens) AS input_samples, COUNT(output_tokens) AS output_samples, COUNT(cached_input_tokens) AS cached_samples, COUNT(cache_write_tokens) AS cache_write_samples, COUNT(COALESCE(reasoning_tokens,reasoning_output_tokens)) AS reasoning_samples, COUNT(tool_tokens) AS tool_samples FROM codex_telemetry_events").bind(),
+    database.prepare(`SELECT model, COUNT(*) AS event_count, COUNT(DISTINCT COALESCE(session_id,thread_id)) AS session_count, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_event_count, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cached_input_tokens) AS cached_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)) AS reasoning_tokens, SUM(tool_tokens) AS tool_tokens, AVG(ttft_ms) AS average_ttft_ms, AVG(duration_ms) AS average_duration_ms, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS tool_executions, COUNT(DISTINCT CASE WHEN tool_execution_state='failed' THEN COALESCE(call_id_hash,id) END) AS tool_failures, SUM(CASE WHEN event_category IN ('approval','decision') THEN 1 ELSE 0 END) AS approval_events FROM codex_telemetry_events WHERE occurred_at >= ? AND model IS NOT NULL GROUP BY model ORDER BY event_count DESC LIMIT 30`).bind(cutoff30),
+    database.prepare(`SELECT reasoning_effort, COUNT(*) AS event_count, COUNT(DISTINCT COALESCE(session_id,thread_id)) AS session_count, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_event_count, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cached_input_tokens) AS cached_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)) AS reasoning_tokens, SUM(tool_tokens) AS tool_tokens, AVG(ttft_ms) AS average_ttft_ms, AVG(duration_ms) AS average_duration_ms, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS tool_executions FROM codex_telemetry_events WHERE occurred_at >= ? AND reasoning_effort IS NOT NULL GROUP BY reasoning_effort ORDER BY event_count DESC LIMIT 30`).bind(cutoff30),
+    database.prepare(`SELECT COALESCE(session_id,thread_id) AS session_id, MAX(project_name) AS project_name, GROUP_CONCAT(DISTINCT model) AS models, GROUP_CONCAT(DISTINCT reasoning_effort) AS reasoning_efforts, COUNT(*) AS event_count, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_event_count, SUM(CASE WHEN event_category='error' THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN event_category='warning' THEN 1 ELSE 0 END) AS warning_count, SUM(CASE WHEN event_category='tool' THEN 1 ELSE 0 END) AS tool_related_events, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS tool_executions, SUM(CASE WHEN event_category IN ('approval','decision') THEN 1 ELSE 0 END) AS approval_events, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cached_input_tokens) AS cached_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)) AS reasoning_tokens, SUM(tool_tokens) AS tool_tokens, AVG(ttft_ms) AS average_ttft_ms, MIN(occurred_at) AS first_seen_at, MAX(occurred_at) AS last_seen_at FROM codex_telemetry_events WHERE occurred_at >= ? AND COALESCE(session_id,thread_id) IS NOT NULL GROUP BY COALESCE(session_id,thread_id) ORDER BY last_seen_at DESC LIMIT 50`).bind(cutoff30),
+    database.prepare("SELECT project_id, MAX(project_name) AS project_name, COUNT(*) AS event_count, COUNT(DISTINCT COALESCE(session_id,thread_id)) AS session_count, MAX(occurred_at) AS last_seen_at FROM codex_telemetry_events WHERE occurred_at >= ? AND project_id IS NOT NULL GROUP BY project_id ORDER BY last_seen_at DESC LIMIT 50").bind(cutoff30),
+    database.prepare("SELECT * FROM codex_telemetry_events WHERE occurred_at >= ? AND event_category IN ('error','warning') ORDER BY occurred_at DESC LIMIT 25").bind(cutoff30),
+    breakdown("approval_decision"), breakdown("approval_policy"), breakdown("sandbox_policy"), breakdown("mcp_server"), breakdown("mcp_tool"), breakdown("mcp_server_origin"), breakdown("tool_namespace"), breakdown("agent_name"), breakdown("provider_name"), breakdown("originator"), breakdown("app_version"), breakdown("service_version"), breakdown("startup_status"), breakdown("terminal_type"), breakdown("network_decision"), breakdown("network_host"),
+    database.prepare(`SELECT 'model × tool' AS dimension, model || ' × ' || tool_name AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND model IS NOT NULL AND tool_name IS NOT NULL GROUP BY model,tool_name UNION ALL SELECT 'model × reasoning' AS dimension, model || ' × ' || reasoning_effort AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND model IS NOT NULL AND reasoning_effort IS NOT NULL GROUP BY model,reasoning_effort UNION ALL SELECT 'approval × model' AS dimension, approval_decision || ' × ' || model AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND approval_decision IS NOT NULL AND model IS NOT NULL GROUP BY approval_decision,model UNION ALL SELECT 'approval × tool' AS dimension, approval_decision || ' × ' || tool_name AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND approval_decision IS NOT NULL AND tool_name IS NOT NULL GROUP BY approval_decision,tool_name ORDER BY dimension,count DESC LIMIT 50`).bind(cutoff30, cutoff30, cutoff30, cutoff30),
+    database.prepare(`SELECT 'approval × reasoning' AS dimension, approval_decision || ' × ' || reasoning_effort AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND approval_decision IS NOT NULL AND reasoning_effort IS NOT NULL GROUP BY approval_decision,reasoning_effort UNION ALL SELECT 'sandbox × model' AS dimension, sandbox_policy || ' × ' || model AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND sandbox_policy IS NOT NULL AND model IS NOT NULL GROUP BY sandbox_policy,model UNION ALL SELECT 'sandbox × tool' AS dimension, sandbox_policy || ' × ' || tool_name AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND sandbox_policy IS NOT NULL AND tool_name IS NOT NULL GROUP BY sandbox_policy,tool_name UNION ALL SELECT 'MCP × model' AS dimension, mcp_server || ' × ' || model AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND mcp_server IS NOT NULL AND model IS NOT NULL GROUP BY mcp_server,model ORDER BY dimension,count DESC LIMIT 50`).bind(cutoff30, cutoff30, cutoff30, cutoff30),
+    database.prepare(`SELECT COUNT(*) AS event_count, MAX(received_at) AS last_received_at, MIN(occurred_at) AS oldest_event_at, MAX(occurred_at) AS newest_event_at, SUM(CASE WHEN occurred_at >= ? THEN 1 ELSE 0 END) AS today_event_count, COUNT(DISTINCT CASE WHEN occurred_at >= ? THEN COALESCE(session_id,thread_id) END) AS observed_session_count_24h, COUNT(DISTINCT CASE WHEN occurred_at >= ? AND tool_execution_state='failed' THEN COALESCE(call_id_hash,id) END) AS failed_tool_count_30d FROM codex_telemetry_events`).bind(today, cutoff24, cutoff30),
   ];
-  const results = await database.batch(statements);
-  if (results.length !== statements.length) throw new Error("Telemetry query batch returned an unexpected result count.");
-
-  const activity = rows(results[0] as unknown as D1ResultLike<EventRow>).map(eventRecord);
-  const daily = rows(results[1] as unknown as D1ResultLike<DailyRow>);
-  const hourly = rows(results[2] as unknown as D1ResultLike<DailyRow>);
-  const usageRows = rows(results[15] as unknown as D1ResultLike<UsageRow>);
-  const meta = rows(results[16] as unknown as D1ResultLike<MetaRow>)[0];
-  const usage: CodexUsageSnapshot[] = usageRows.map((row) => ({
-    window: row.window,
-    inputTokens: Number(row.input_tokens ?? 0),
-    outputTokens: Number(row.output_tokens ?? 0),
-    cachedInputTokens: Number(row.cached_input_tokens ?? 0),
-    reasoningOutputTokens: Number(row.reasoning_output_tokens ?? 0),
-    eventsWithUsage: Number(row.events_with_usage ?? 0),
-    capturedAt: now.toISOString(),
-  }));
-
+  const r = await database.batch(statements); if (r.length !== statements.length) throw new Error("Telemetry query batch returned an unexpected result count.");
+  const resultAt = <T,>(index: number) => r[index] as unknown as D1ResultLike<T>;
+  const breakdownRows = (index: number) => rows(resultAt<CountRow>(index)).map((x) => ({ label: x.label, count: Number(x.count) }));
+  const trend = (index: number) => rows(resultAt<TrendRow>(index)).map((x) => ({ label: x.label, events: Number(x.events), errors: Number(x.errors), toolExecutions: Number(x.tool_executions), inputTokens: optionalNumber(x.input_tokens), outputTokens: optionalNumber(x.output_tokens), cachedTokens: optionalNumber(x.cached_tokens), cacheWriteTokens: optionalNumber(x.cache_write_tokens), reasoningTokens: optionalNumber(x.reasoning_tokens), toolTokens: optionalNumber(x.tool_tokens) }));
+  const timing = (index: number) => rows(resultAt<TimingRow>(index)).map((x) => ({ label: x.label, sampleCount: Number(x.sample_count), averageMs: Number(x.average_ms), p50Ms: optionalNumber(x.p50_ms), p95Ms: optionalNumber(x.p95_ms), p99Ms: optionalNumber(x.p99_ms), minimumMs: Number(x.minimum_ms), maximumMs: Number(x.maximum_ms) }));
+  const availability = rows(resultAt<AvailabilityRow>(10))[0] ?? { input_samples: 0, output_samples: 0, cached_samples: 0, cache_write_samples: 0, reasoning_samples: 0, tool_samples: 0 };
+  const usage = rows(resultAt<UsageRow>(9)).map((x): CodexUsageSnapshot => ({ window: x.window, inputTokens: measured(x.input_tokens, Number(x.input_samples), Number(availability.input_samples)), outputTokens: measured(x.output_tokens, Number(x.output_samples), Number(availability.output_samples)), cachedInputTokens: measured(x.cached_tokens, Number(x.cached_samples), Number(availability.cached_samples)), cacheWriteTokens: measured(x.cache_write_tokens, Number(x.cache_write_samples), Number(availability.cache_write_samples)), reasoningTokens: measured(x.reasoning_tokens, Number(x.reasoning_samples), Number(availability.reasoning_samples)), toolTokens: measured(x.tool_tokens, Number(x.tool_samples), Number(availability.tool_samples)), eventsWithUsage: Number(x.usage_events), sessionsWithUsage: Number(x.usage_sessions), modelsWithUsage: Number(x.usage_models), capturedAt: now.toISOString() }));
+  const ttft = timing(8);
+  const modelAnalytics = rows(resultAt<ModelRow>(11)).map((x): CodexTelemetryModelSummary => { const percentiles = ttft.find((item) => item.label === x.model); return { model: x.model, eventCount: Number(x.event_count), sessionCount: Number(x.session_count), usageEventCount: Number(x.usage_event_count), inputTokens: optionalNumber(x.input_tokens), outputTokens: optionalNumber(x.output_tokens), cachedTokens: optionalNumber(x.cached_tokens), cacheWriteTokens: optionalNumber(x.cache_write_tokens), reasoningTokens: optionalNumber(x.reasoning_tokens), toolTokens: optionalNumber(x.tool_tokens), averageTtftMs: optionalNumber(x.average_ttft_ms), p50TtftMs: percentiles?.p50Ms, p95TtftMs: percentiles?.p95Ms, averageDurationMs: optionalNumber(x.average_duration_ms), toolExecutions: Number(x.tool_executions), toolFailures: Number(x.tool_failures), approvalEvents: Number(x.approval_events) }; });
+  const reasoningAnalytics = rows(resultAt<ReasoningRow>(12)).map((x): CodexTelemetryReasoningSummary => ({ reasoningEffort: x.reasoning_effort, eventCount: Number(x.event_count), sessionCount: Number(x.session_count), usageEventCount: Number(x.usage_event_count), inputTokens: optionalNumber(x.input_tokens), outputTokens: optionalNumber(x.output_tokens), cachedTokens: optionalNumber(x.cached_tokens), cacheWriteTokens: optionalNumber(x.cache_write_tokens), reasoningTokens: optionalNumber(x.reasoning_tokens), toolTokens: optionalNumber(x.tool_tokens), toolExecutions: Number(x.tool_executions), averageTtftMs: optionalNumber(x.average_ttft_ms), averageDurationMs: optionalNumber(x.average_duration_ms) }));
+  const sessions = rows(resultAt<SessionRow>(13)).map((x): CodexTelemetrySessionSummary => ({ sessionId: x.session_id, projectName: x.project_name ?? undefined, models: list(x.models), reasoningEfforts: list(x.reasoning_efforts), eventCount: Number(x.event_count), errorCount: Number(x.error_count), warningCount: Number(x.warning_count), toolRelatedEvents: Number(x.tool_related_events), toolExecutions: Number(x.tool_executions), usageEvents: Number(x.usage_event_count), approvalEvents: Number(x.approval_events), inputTokens: optionalNumber(x.input_tokens), outputTokens: optionalNumber(x.output_tokens), cachedTokens: optionalNumber(x.cached_tokens), cacheWriteTokens: optionalNumber(x.cache_write_tokens), reasoningTokens: optionalNumber(x.reasoning_tokens), toolTokens: optionalNumber(x.tool_tokens), averageTtftMs: optionalNumber(x.average_ttft_ms), firstSeenAt: x.first_seen_at, lastSeenAt: x.last_seen_at }));
+  const correlations = [32, 33].flatMap((index) => rows(resultAt<CorrelationRow>(index))).map((x) => ({ dimension: x.dimension, label: x.label, count: Number(x.count) }));
+  const meta = rows(resultAt<MetaRow>(34))[0];
   return {
-    activity,
-    twentyFourHourTrend: hourly.map((row) => ({ label: row.day, events: Number(row.events), errors: Number(row.errors), toolExecutions: Number(row.tool_executions) })),
-    sevenDayTrend: daily.filter((row) => row.day >= sevenDayCutoff.slice(0, 10)).map((row) => ({ label: row.day, events: Number(row.events), errors: Number(row.errors), toolExecutions: Number(row.tool_executions) })),
-    thirtyDayTrend: daily.map((row) => ({ label: row.day, events: Number(row.events), errors: Number(row.errors), toolExecutions: Number(row.tool_executions) })),
-    usage,
-    categories: rows(results[3] as unknown as D1ResultLike<CountRow>).map((row) => ({ label: row.label, count: Number(row.count) })),
-    models: rows(results[4] as unknown as D1ResultLike<CountRow>).map((row) => ({ label: row.label, count: Number(row.count) })),
-    tools: rows(results[5] as unknown as D1ResultLike<ToolRow>).map((row) => ({ label: row.label, count: Number(row.count), failureCount: Number(row.failure_count), averageDurationMs: row.average_duration_ms === null ? undefined : Number(row.average_duration_ms), lastSeenAt: row.last_seen_at })),
-    timings: rows(results[6] as unknown as D1ResultLike<TimingRow>).map((row) => ({ label: row.label, sampleCount: Number(row.sample_count), averageMs: Number(row.average_ms), maximumMs: Number(row.maximum_ms) })),
-    approvals: rows(results[7] as unknown as D1ResultLike<CountRow>).map((row) => ({ label: row.label, count: Number(row.count) })),
-    mcpServers: rows(results[8] as unknown as D1ResultLike<CountRow>).map((row) => ({ label: row.label, count: Number(row.count) })),
-    mcpTools: rows(results[9] as unknown as D1ResultLike<CountRow>).map((row) => ({ label: row.label, count: Number(row.count) })),
-    networkDecisions: rows(results[10] as unknown as D1ResultLike<CountRow>).map((row) => ({ label: row.label, count: Number(row.count) })),
-    networkHosts: rows(results[11] as unknown as D1ResultLike<CountRow>).map((row) => ({ label: row.label, count: Number(row.count) })),
-    sessions: rows(results[12] as unknown as D1ResultLike<SessionRow>).map((row) => ({ sessionId: row.session_id, projectName: row.project_name ?? undefined, model: row.model ?? undefined, eventCount: Number(row.event_count), errorCount: Number(row.error_count), toolExecutions: Number(row.tool_executions), firstSeenAt: row.first_seen_at, lastSeenAt: row.last_seen_at })),
-    projects: rows(results[13] as unknown as D1ResultLike<ProjectRow>).map((row) => ({ projectId: row.project_id, projectName: row.project_name ?? undefined, eventCount: Number(row.event_count), sessionCount: Number(row.session_count), lastSeenAt: row.last_seen_at })),
-    recentErrors: rows(results[14] as unknown as D1ResultLike<EventRow>).map(eventRecord),
-    eventCount: Number(meta?.event_count ?? 0),
-    lastReceivedAt: meta?.last_received_at ?? undefined,
-    oldestEventAt: meta?.oldest_event_at ?? undefined,
-    newestEventAt: meta?.newest_event_at ?? undefined,
-    todayEventCount: Number(meta?.today_event_count ?? 0),
-    observedSessionCount24h: Number(meta?.observed_session_count_24h ?? 0),
-    failedToolCount30d: Number(meta?.failed_tool_count_30d ?? 0),
+    activity: rows(resultAt<EventRow>(0)).map(activity), thirtyDayTrend: trend(1), sevenDayTrend: trend(1).filter((x) => x.label >= cutoff7.slice(0,10)), twentyFourHourTrend: trend(2), usage,
+    categories: breakdownRows(3), models: breakdownRows(4), reasoningEfforts: breakdownRows(5), reasoningAnalytics, correlations,
+    tools: rows(resultAt<ToolRow>(6)).map((x) => { const completed = Number(x.completed_executions); const failures = Number(x.failure_count); return { label: x.label, relatedEventCount: Number(x.related_events), completedExecutionCount: completed, successCount: Number(x.success_count), failureCount: failures, failureRate: completed ? failures / completed : undefined, averageDurationMs: optionalNumber(x.average_duration_ms), toolTokens: optionalNumber(x.tool_tokens), lastSeenAt: x.last_seen_at }; }),
+    timings: timing(7), ttft, modelAnalytics, sessions,
+    projects: rows(resultAt<ProjectRow>(14)).map((x) => ({ projectId: x.project_id, projectName: x.project_name ?? undefined, eventCount: Number(x.event_count), sessionCount: Number(x.session_count), lastSeenAt: x.last_seen_at })), recentErrors: rows(resultAt<EventRow>(15)).map(activity),
+    approvals: breakdownRows(16), approvalPolicies: breakdownRows(17), sandboxPolicies: breakdownRows(18), mcpServers: breakdownRows(19), mcpTools: breakdownRows(20), mcpOrigins: breakdownRows(21), toolNamespaces: breakdownRows(22), agents: breakdownRows(23), providers: breakdownRows(24), originators: breakdownRows(25), appVersions: breakdownRows(26), serviceVersions: breakdownRows(27), startupStatuses: breakdownRows(28), terminalTypes: breakdownRows(29), networkDecisions: breakdownRows(30), networkHosts: breakdownRows(31),
+    eventCount: Number(meta?.event_count ?? 0), lastReceivedAt: meta?.last_received_at ?? undefined, oldestEventAt: meta?.oldest_event_at ?? undefined, newestEventAt: meta?.newest_event_at ?? undefined, todayEventCount: Number(meta?.today_event_count ?? 0), observedSessionCount24h: Number(meta?.observed_session_count_24h ?? 0), failedToolCount30d: Number(meta?.failed_tool_count_30d ?? 0),
   };
 }

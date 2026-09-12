@@ -134,19 +134,19 @@ Restart Codex after changing the configuration. The exporter supports OTLP/HTTP 
 
 ### Event normalization and privacy
 
-The normalizer recognizes the current Codex operational event families, including conversation starts, API requests, SSE/WebSocket events carrying legitimate token counts, tool and approval decisions, tool results, MCP activity, and network proxy decisions. It maps them into session, API-request, decision, tool, MCP, network, usage, warning, error, or unknown categories. Unknown events are retained only as a bounded Codex-style event name plus sanitized attribute-key names so the schema can evolve safely.
+The normalizer recognizes the current Codex operational event families, including startup, session, model/API, usage, tool, approval, MCP, network, warning, and error events. OTLP `event.kind` participates in event identity when a dedicated event name or safe Codex body is absent. Category selection uses explicit event semantics first and reviewed retained fields second; a session identifier by itself does not force an otherwise unknown event into a known category. Unknown events retain only a bounded event identity and sanitized attribute-key names so schema drift remains diagnosable.
 
-The following are never persisted: authorization or cookie headers, API keys, access or refresh tokens, passwords, private keys, client secrets, prompt text, request/response bodies, commands, tool arguments, stdout/stderr, or full tool results. Arbitrary unknown attribute values are not stored. Identifiers and recognized operational scalar fields are length- and range-bounded before storage. Ingestion payloads are capped at 1 MiB and 500 log records.
+The following are never persisted: user email/account identity, host names, reasoning summaries, authorization or cookie headers, API keys, access or refresh tokens, passwords, private keys, client secrets, prompt text, request/response bodies, commands, tool arguments, stdout/stderr, or full tool results. Endpoint values and arbitrary unknown attribute values are also discarded. Identifiers and recognized operational scalar fields are length- and range-bounded before storage. Raw `call_id` is replaced with a one-way SHA-256 correlation hash before persistence. Ingestion payloads remain capped at 1 MiB and 500 log records.
 
 Prompt logging is off by default and must remain off unless a separate privacy review explicitly authorizes it. Even if prompt or tool-output fields arrive accidentally, the ingestion boundary drops them before D1 writes.
 
 ### D1 schema, retention, and bindings
 
-`migrations/0001_codex_telemetry.sql` creates the event table and indexes for time, category, session/thread, project, model, tool, MCP server, network decision, and success/failure queries. The schema has explicit optional fields for environment, task/project/repository/workspace context, tool type/status, approvals, MCP server/tool, safe network host/decision, duration, success, safe error class, provenance, and schema version. Event fingerprints have a unique constraint so collector retries are idempotent. Ingestion uses prepared statements and D1 batches capped at 50 writes.
+`migrations/0001_codex_telemetry.sql` creates the base event table. The additive `migrations/0002_codex_analytics_v2.sql` adds reviewed scalar fields for event kind, reasoning effort, cache-write/reasoning/tool tokens, TTFT, tool namespace and lifecycle, hashed call correlation, approval/sandbox policy, MCP origin, agent/provider/originator, and version/startup diagnostics. It also best-effort reclassifies legacy `unknown` rows only from values already retained by v1. Values discarded by v1 cannot be recovered. Schema-v1 and schema-v2 rows remain queryable together. Event fingerprints retain their unique constraint, and ingestion continues to use prepared statements and D1 batches capped at 50 writes.
 
 Raw events default to 30-day retention through `CODEX_TELEMETRY_RETENTION_DAYS`; cleanup runs after successful ingestion. The configured value is bounded to 1–365 days. Long-term rollups are intentionally not fabricated or precomputed yet; add them only when a real product requirement defines their fields and retention.
 
-Before an authorized deployment, create the production D1 database, replace the all-zero placeholder `database_id` in `wrangler.jsonc`, apply the checked-in migration, and create the encrypted Worker secret named `CODEX_TELEMETRY_INGEST_KEY`. Do not put the secret value in Wrangler configuration. Local schema verification can use:
+Before an authorized deployment, apply pending checked-in migrations to the configured D1 database and confirm the encrypted Worker secret named `CODEX_TELEMETRY_INGEST_KEY` remains available. Do not put the secret value in Wrangler configuration. Local schema verification can use:
 
 ```bash
 npx wrangler d1 migrations apply codex-command-center-telemetry --local
@@ -156,9 +156,9 @@ Applying remote migrations, creating encrypted production secrets, configuring A
 
 ### Dashboard semantics
 
-Codex Activity reports real stored events today; observed sessions over 24 hours; exact 24-hour, 7-day, and 30-day trends; request/tool/failure/approval/MCP/network/error counts; event timelines; model/tool/category/timing breakdowns; sessions; explicit project relationships; and recent errors or warnings. Missing session, project, model, approval, MCP, network, tool, timing, or usage fields remain visibly unavailable or empty.
+Codex Activity reports real stored events, 24-hour/7-day/30-day trends, event categories, models, reasoning effort, tool-related events, deduplicated completed tool executions, failures, approvals, sandbox policy, MCP dimensions, agent/provider/originator dimensions, startup/version diagnostics, timings, sessions, and recent warnings/errors. Tool lifecycle events with the same hashed call identifier count as one completed execution. When terminal execution semantics are absent, the UI reports tool-related events without pretending they are completed calls.
 
-Usage reports only token-count fields legitimately present in telemetry. Operational requests, events, and tool executions are labeled as activity. The dashboard never derives or displays account billing totals, credit balances, plan limits, rate-limit allocations, or monetary cost from these logs.
+Usage reports only token counts legitimately emitted by telemetry: input, output, cached/read, cache-write, reasoning, and tool tokens. It provides 24-hour, 7-day, and 30-day windows, token trends, model/session summaries, tool analytics, and TTFT/duration sample statistics. A reported zero means Codex emitted zero; `No samples` means the field exists in retained data but not in the selected window; `Unavailable` means the field has never been observed in retained data. Percentiles require minimum sample sizes, and no cache-hit percentage is inferred because the available counters do not establish a verified denominator. The dashboard never derives account billing totals, credit balances, plan limits, rate-limit allocations, reset timers, or monetary cost from these logs.
 
 ## GitHub snapshot and request design
 
