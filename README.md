@@ -329,7 +329,7 @@ CI runs the website, D1, Worker, bundled-overlay frontend, Rust formatting, and 
 
 ## Future integrations
 
-Planned provider seams include project telemetry, Liquidation Terminal telemetry, multiple GitHub repositories, and additional read-only providers. Each integration must preserve typed results, server-only credentials, bounded concurrency, explicit freshness/failure semantics, honest unavailable states, and the rule that normal views read compact summaries rather than raw analytical history.
+Planned provider seams include project telemetry, multiple GitHub repositories, and additional read-only providers. Each integration must preserve typed results, server-only credentials, bounded concurrency, explicit freshness/failure semantics, honest unavailable states, and the rule that normal views read compact summaries rather than raw analytical history.
 
 ## Git workflow
 
