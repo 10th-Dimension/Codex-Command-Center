@@ -85,8 +85,12 @@ INSERT INTO codex_rollup_hourly
 SELECT substr(occurred_at,1,13) || ':00:00.000Z',COUNT(*),COALESCE(SUM(input_tokens),0),COUNT(input_tokens),
   COALESCE(SUM(output_tokens),0),COUNT(output_tokens),COALESCE(SUM(cached_input_tokens),0),COUNT(cached_input_tokens),
   COALESCE(SUM(cache_write_tokens),0),COUNT(cache_write_tokens),COALESCE(SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)),0),COUNT(COALESCE(reasoning_tokens,reasoning_output_tokens)),
-  COALESCE(SUM(tool_tokens),0),COUNT(tool_tokens),SUM(event_category='error'),SUM(event_category='warning'),
-  SUM(tool_execution_state IN ('succeeded','failed')),SUM(tool_execution_state='failed'),SUM(event_category IN ('approval','decision')),
+  COALESCE(SUM(tool_tokens),0),COUNT(tool_tokens),
+  SUM(CASE WHEN event_category='error' THEN 1 ELSE 0 END),
+  SUM(CASE WHEN event_category='warning' THEN 1 ELSE 0 END),
+  SUM(CASE WHEN tool_execution_state IN ('succeeded','failed') THEN 1 ELSE 0 END),
+  SUM(CASE WHEN tool_execution_state='failed' THEN 1 ELSE 0 END),
+  SUM(CASE WHEN event_category IN ('approval','decision') THEN 1 ELSE 0 END),
   COALESCE(SUM(ttft_ms),0),COUNT(ttft_ms),COALESCE(SUM(duration_ms),0),COUNT(duration_ms),MAX(received_at)
 FROM codex_telemetry_events GROUP BY substr(occurred_at,1,13);
 
@@ -114,8 +118,12 @@ SELECT rollup_session_id,MAX(CASE WHEN recency=1 THEN project_name END),MIN(occu
   MAX(CASE WHEN recency=1 THEN model END),MAX(CASE WHEN recency=1 THEN reasoning_effort END),COUNT(*),
   COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cached_input_tokens),0),COALESCE(SUM(cache_write_tokens),0),
   COALESCE(SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)),0),COALESCE(SUM(tool_tokens),0),
-  SUM(tool_execution_state IN ('succeeded','failed')),SUM(tool_execution_state='failed'),SUM(event_category='error'),SUM(event_category='warning'),
-  SUM(event_category IN ('approval','decision')),COALESCE(SUM(ttft_ms),0),COUNT(ttft_ms)
+  SUM(CASE WHEN tool_execution_state IN ('succeeded','failed') THEN 1 ELSE 0 END),
+  SUM(CASE WHEN tool_execution_state='failed' THEN 1 ELSE 0 END),
+  SUM(CASE WHEN event_category='error' THEN 1 ELSE 0 END),
+  SUM(CASE WHEN event_category='warning' THEN 1 ELSE 0 END),
+  SUM(CASE WHEN event_category IN ('approval','decision') THEN 1 ELSE 0 END),
+  COALESCE(SUM(ttft_ms),0),COUNT(ttft_ms)
 FROM ranked GROUP BY rollup_session_id;
 `;
 
