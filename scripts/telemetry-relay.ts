@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 export const TELEMETRY_RELAY_HOST = "127.0.0.1";
 export const TELEMETRY_RELAY_PORT = 14318;
 export const TELEMETRY_RELAY_PATH = "/v1/logs";
+export const TELEMETRY_RELAY_HEALTH_PATH = "/health";
 export const TELEMETRY_RELAY_MAX_BYTES = 1_048_576;
 export const OVERLAY_RELAY_PATH = "/v1/overlay";
 export const OVERLAY_UPSTREAM_PATH = "/api/overlay";
@@ -167,6 +168,18 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
     response.setHeader("cache-control", "no-store");
     response.setHeader("x-content-type-options", "nosniff");
 
+    if (request.method === "GET" && request.url === TELEMETRY_RELAY_HEALTH_PATH) {
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ status: "ok", service: "codex-telemetry-relay" }));
+      return;
+    }
+
+    if (request.url?.startsWith(TELEMETRY_RELAY_HEALTH_PATH)) {
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "not_found" }));
+      return;
+    }
+
     if (request.method === "GET" && request.url?.startsWith(OVERLAY_RELAY_PATH)) {
       const range = parseOverlayRequestUrl(request.url);
       if (!range) {
@@ -245,9 +258,24 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
   });
 }
 
+function stopWithParent(server: ReturnType<typeof createServer>) {
+  const parentPid = Number(process.env.CODEX_LIVE_PARENT_PID ?? "");
+  if (!Number.isSafeInteger(parentPid) || parentPid <= 0 || parentPid === process.pid) return;
+  const timer = setInterval(() => {
+    try {
+      process.kill(parentPid, 0);
+    } catch {
+      clearInterval(timer);
+      server.close(() => process.exit(0));
+    }
+  }, 2_000);
+  timer.unref();
+}
+
 async function main() {
   const configuration = await loadRelayEnvironment();
   const server = createTelemetryRelay(configuration);
+  stopWithParent(server);
   server.listen(TELEMETRY_RELAY_PORT, TELEMETRY_RELAY_HOST, () => {
     console.log(`Codex telemetry relay listening on loopback port ${TELEMETRY_RELAY_PORT}.`);
   });

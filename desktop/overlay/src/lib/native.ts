@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { load } from "@tauri-apps/plugin-store";
 import type { OverlaySnapshot } from "../../../../src/lib/overlay/contracts";
@@ -17,15 +18,19 @@ export interface NativeState {
   effectiveEffect: OverlayEffect;
   followChatgpt: boolean;
   chatgptRunning: boolean;
+  relayStatus: "checking" | "starting" | "online" | "external" | "offline" | "error";
+  relayOwned: boolean;
 }
 
 export type NativeAction =
   | { kind: "layout"; value: OverlayLayout }
   | { kind: "show-settings" }
+  | { kind: "recover-overlay" }
   | { kind: "click-through"; value: boolean }
   | { kind: "lock-position"; value: boolean }
   | { kind: "always-on-top"; value: boolean }
-  | { kind: "chatgpt-running"; value: boolean };
+  | { kind: "chatgpt-running"; value: boolean }
+  | { kind: "relay-status"; value: NativeState["relayStatus"]; owned: boolean };
 
 export async function loadSettings(): Promise<unknown> {
   const store = await load(STORE_FILE, { autoSave: 150 });
@@ -61,10 +66,14 @@ export function applyWindowSettings(settings: DesktopOverlaySettings) {
 export function setLayout(layout: OverlayLayout) { return invoke<void>("set_layout", { layout }); }
 export function setCorner(corner: OverlayCorner) { return invoke<void>("set_corner", { corner }); }
 export function startDrag(edgeSnapping: boolean) { return invoke<void>("start_drag", { edgeSnapping }); }
+const resizeDirections = { north: "North", "north-east": "NorthEast", east: "East", "south-east": "SouthEast", south: "South", "south-west": "SouthWest", west: "West", "north-west": "NorthWest" } as const;
+export function startResize(direction: keyof typeof resizeDirections) { return getCurrentWindow().startResizeDragging(resizeDirections[direction]); }
+export function recoverOverlay() { return invoke<void>("recover_overlay"); }
 export function toggleVisibility() { return invoke<void>("toggle_visibility"); }
 export function hideOverlay() { return invoke<void>("hide_overlay"); }
 export function quitOverlay() { return invoke<void>("quit_overlay"); }
 export function configureHotkeys(showHide: string, clickThrough: string) { return invoke<NativeState>("configure_hotkeys", { showHide, clickThrough }); }
+export function controlRelay(action: "start" | "restart" | "stop") { return invoke<NativeState>("control_relay", { action }); }
 export function onNativeAction(handler: (action: NativeAction) => void) { return listen<NativeAction>("native-action", (event) => handler(event.payload)); }
 export function openDashboard() { return invoke<void>("open_dashboard"); }
 export async function setAutostart(enabled: boolean) { if (enabled) await enable(); else await disable(); }

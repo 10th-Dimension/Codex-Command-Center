@@ -1,4 +1,16 @@
-use std::{str::FromStr, sync::Mutex, thread, time::Duration};
+use std::{
+    io::{Read, Write},
+    net::{SocketAddr, TcpStream},
+    path::PathBuf,
+    process::{Child, Command, Stdio},
+    str::FromStr,
+    sync::Mutex,
+    thread,
+    time::Duration,
+};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -21,6 +33,12 @@ use windows_sys::Win32::{
 };
 
 const RELAY_OVERLAY_URL: &str = "http://127.0.0.1:14318/v1/overlay";
+const RELAY_HEALTH_REQUEST: &[u8] =
+    b"GET /health HTTP/1.1\r\nHost: 127.0.0.1:14318\r\nConnection: close\r\n\r\n";
+const RELAY_HEALTH_MARKER: &str = "\"service\":\"codex-telemetry-relay\"";
+const RELAY_ADDRESS: &str = "127.0.0.1:14318";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DASHBOARD_URL: &str = "https://codex-command-center.chasewilcox93.workers.dev";
 const MAX_SNAPSHOT_BYTES: u64 = 262_144;
 const DEFAULT_SHOW_HIDE: &str = "Ctrl+Shift+Space";
@@ -40,6 +58,10 @@ struct OverlayNativeState {
     edge_snapping: bool,
     follow_chatgpt: bool,
     chatgpt_running: bool,
+    relay_child: Option<Child>,
+    relay_starting: bool,
+    relay_manual_stop: bool,
+    relay_status: String,
 }
 
 #[derive(Serialize)]
@@ -53,6 +75,8 @@ struct NativeStatePayload {
     effective_effect: String,
     follow_chatgpt: bool,
     chatgpt_running: bool,
+    relay_status: String,
+    relay_owned: bool,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +101,209 @@ fn state_payload(state: &OverlayNativeState) -> NativeStatePayload {
         effective_effect: state.effective_effect.clone(),
         follow_chatgpt: state.follow_chatgpt,
         chatgpt_running: state.chatgpt_running,
+        relay_status: state.relay_status.clone(),
+        relay_owned: state.relay_child.is_some(),
+    }
+}
+
+fn relay_is_healthy() -> bool {
+    let address = match RELAY_ADDRESS.parse::<SocketAddr>() {
+        Ok(address) => address,
+        Err(_) => return false,
+    };
+    let mut stream = match TcpStream::connect_timeout(&address, Duration::from_millis(400)) {
+        Ok(stream) => stream,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    if stream.write_all(RELAY_HEALTH_REQUEST).is_err() {
+        return false;
+    }
+    let mut response = Vec::with_capacity(512);
+    if stream.take(2_048).read_to_end(&mut response).is_err() {
+        return false;
+    }
+    let response = String::from_utf8_lossy(&response);
+    response.starts_with("HTTP/1.1 200") && response.contains(RELAY_HEALTH_MARKER)
+}
+
+fn repository_root() -> Result<PathBuf, String> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .canonicalize()
+        .map_err(|_| "relay_repository_unavailable".to_string())?;
+    if !root.join("scripts").join("telemetry-relay.ts").is_file()
+        || !root
+            .join("node_modules")
+            .join("tsx")
+            .join("dist")
+            .join("cli.mjs")
+            .is_file()
+    {
+        return Err("relay_runtime_unavailable".into());
+    }
+    Ok(root)
+}
+
+fn emit_relay_status(app: &AppHandle, status: &str, owned: bool) {
+    let _ = app.emit(
+        "native-action",
+        serde_json::json!({ "kind": "relay-status", "value": status, "owned": owned }),
+    );
+}
+
+fn update_relay_status(app: &AppHandle, status: &str) {
+    let changed = with_state(app, |state| {
+        let changed = state.relay_status != status;
+        state.relay_status = status.into();
+        (changed, state.relay_child.is_some())
+    })
+    .unwrap_or((false, false));
+    if changed.0 {
+        emit_relay_status(app, status, changed.1);
+    }
+}
+
+fn reap_finished_relay(app: &AppHandle) {
+    let stopped = with_state(app, |state| {
+        let finished = state
+            .relay_child
+            .as_mut()
+            .and_then(|child| child.try_wait().ok().flatten())
+            .is_some();
+        if finished {
+            state.relay_child = None;
+        }
+        finished
+    })
+    .unwrap_or(false);
+    if stopped {
+        update_relay_status(app, "offline");
+    }
+}
+
+fn start_relay(app: &AppHandle) -> Result<(), String> {
+    reap_finished_relay(app);
+    if relay_is_healthy() {
+        let owned = with_state(app, |state| state.relay_child.is_some())?;
+        update_relay_status(app, if owned { "online" } else { "external" });
+        return Ok(());
+    }
+    let should_start = with_state(app, |state| {
+        if state.relay_starting || state.relay_child.is_some() {
+            false
+        } else {
+            state.relay_starting = true;
+            true
+        }
+    })?;
+    if !should_start {
+        return Ok(());
+    }
+    update_relay_status(app, "starting");
+    let result = (|| {
+        let root = repository_root()?;
+        let mut command = Command::new("node.exe");
+        command
+            .arg(
+                root.join("node_modules")
+                    .join("tsx")
+                    .join("dist")
+                    .join("cli.mjs"),
+            )
+            .arg(root.join("scripts").join("telemetry-relay.ts"))
+            .current_dir(&root)
+            .env("CODEX_LIVE_PARENT_PID", std::process::id().to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+        let child = command
+            .spawn()
+            .map_err(|_| "relay_start_failed".to_string())?;
+        with_state(app, |state| state.relay_child = Some(child))?;
+        for _ in 0..25 {
+            if relay_is_healthy() {
+                update_relay_status(app, "online");
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        Err("relay_start_failed".into())
+    })();
+    let _ = with_state(app, |state| state.relay_starting = false);
+    if result.is_err() {
+        let child = with_state(app, |state| state.relay_child.take())
+            .ok()
+            .flatten();
+        if let Some(mut child) = child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        update_relay_status(app, "error");
+    }
+    result
+}
+
+fn stop_owned_relay(app: &AppHandle) -> Result<bool, String> {
+    let child = with_state(app, |state| state.relay_child.take())?;
+    let Some(mut child) = child else {
+        update_relay_status(
+            app,
+            if relay_is_healthy() {
+                "external"
+            } else {
+                "offline"
+            },
+        );
+        return Ok(false);
+    };
+    child.kill().map_err(|_| "relay_stop_failed".to_string())?;
+    child.wait().map_err(|_| "relay_stop_failed".to_string())?;
+    update_relay_status(app, "offline");
+    Ok(true)
+}
+
+fn restart_owned_relay(app: &AppHandle) -> Result<(), String> {
+    if !stop_owned_relay(app)? && relay_is_healthy() {
+        return Err("relay_not_owned".into());
+    }
+    start_relay(app)
+}
+
+fn start_relay_manually(app: &AppHandle) -> Result<(), String> {
+    with_state(app, |state| state.relay_manual_stop = false)?;
+    start_relay(app)
+}
+
+fn restart_relay_manually(app: &AppHandle) -> Result<(), String> {
+    with_state(app, |state| state.relay_manual_stop = false)?;
+    restart_owned_relay(app)
+}
+
+fn stop_relay_manually(app: &AppHandle) -> Result<(), String> {
+    let stopped = stop_owned_relay(app)?;
+    if !stopped && relay_is_healthy() {
+        return Err("relay_not_owned".into());
+    }
+    with_state(app, |state| state.relay_manual_stop = true)
+}
+
+fn reconcile_relay(app: &AppHandle, chatgpt_running: bool) {
+    let (follow, manual_stop) =
+        with_state(app, |state| (state.follow_chatgpt, state.relay_manual_stop))
+            .unwrap_or((true, false));
+    if manual_stop {
+        return;
+    }
+    if follow && !chatgpt_running {
+        let _ = stop_owned_relay(app);
+    } else {
+        let _ = start_relay(app);
     }
 }
 
@@ -146,6 +373,7 @@ fn start_chatgpt_watcher(app: AppHandle) {
     thread::spawn(move || loop {
         if let Some(running) = chatgpt_process_running() {
             apply_follow_state(&app, running);
+            reconcile_relay(&app, running);
         }
         thread::sleep(Duration::from_secs(5));
     });
@@ -205,6 +433,30 @@ fn set_click_through_native(
             serde_json::json!({ "kind": "click-through", "value": enabled }),
         );
     }
+    Ok(())
+}
+
+#[tauri::command]
+fn recover_overlay(app: AppHandle) -> Result<(), String> {
+    let window = main_window(&app)?;
+    window
+        .set_ignore_cursor_events(false)
+        .map_err(|_| "click_through_update_failed".to_string())?;
+    window
+        .set_resizable(true)
+        .map_err(|_| "resize_update_failed".to_string())?;
+    window
+        .show()
+        .map_err(|_| "window_show_failed".to_string())?;
+    let _ = window.set_focus();
+    with_state(&app, |state| {
+        state.click_through = false;
+        state.lock_position = false;
+    })?;
+    let _ = app.emit(
+        "native-action",
+        serde_json::json!({ "kind": "recover-overlay" }),
+    );
     Ok(())
 }
 
@@ -425,6 +677,7 @@ fn apply_window_settings(
         state.follow_chatgpt = settings.follow_chatgpt;
     })?;
     let running = with_state(&app, |state| state.chatgpt_running)?;
+    reconcile_relay(&app, running);
     if settings.follow_chatgpt && !running {
         let _ = window.hide();
     } else {
@@ -473,7 +726,19 @@ fn hide_overlay(window: WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 fn quit_overlay(app: AppHandle) {
+    let _ = stop_owned_relay(&app);
     app.exit(0);
+}
+
+#[tauri::command]
+fn control_relay(app: AppHandle, action: String) -> Result<NativeStatePayload, String> {
+    match action.as_str() {
+        "start" => start_relay_manually(&app)?,
+        "restart" => restart_relay_manually(&app)?,
+        "stop" => stop_relay_manually(&app)?,
+        _ => return Err("invalid_relay_action".into()),
+    }
+    with_state(&app, |state| state_payload(state))
 }
 
 #[tauri::command]
@@ -536,6 +801,7 @@ fn emit_layout(app: &AppHandle, layout: &str) {
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let items = [
         ("show", "Show overlay"),
+        ("recover", "Recover Overlay"),
         ("hide", "Hide overlay"),
         ("mini", "Mini"),
         ("standard", "Standard"),
@@ -546,6 +812,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         ("lock-position", "Lock position"),
         ("settings", "Settings"),
         ("dashboard", "Open Command Center"),
+        ("relay-start", "Start Relay"),
+        ("relay-restart", "Restart Relay"),
+        ("relay-stop", "Stop Relay"),
         ("autostart", "Start with Windows"),
         ("quit", "Quit"),
     ]
@@ -588,6 +857,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                     let _ = window.hide();
                 }
             }
+            "recover" => {
+                let _ = recover_overlay(app.clone());
+            }
             "mini" | "standard" | "expanded" | "strip" => emit_layout(app, event.id().as_ref()),
             "always-on-top" => {
                 let next = with_state(app, |state| !state.always_on_top).unwrap_or(true);
@@ -627,6 +899,15 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "dashboard" => {
                 let _ = app.opener().open_url(DASHBOARD_URL, None::<&str>);
             }
+            "relay-start" => {
+                let _ = start_relay_manually(app);
+            }
+            "relay-restart" => {
+                let _ = restart_relay_manually(app);
+            }
+            "relay-stop" => {
+                let _ = stop_relay_manually(app);
+            }
             "autostart" => {
                 let manager = app.autolaunch();
                 if manager.is_enabled().unwrap_or(false) {
@@ -635,7 +916,10 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                     let _ = manager.enable();
                 }
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                let _ = stop_owned_relay(app);
+                app.exit(0);
+            }
             _ => {}
         })
         .build(app)?;
@@ -698,6 +982,7 @@ pub fn run() {
             effective_effect: "translucent".into(),
             follow_chatgpt: true,
             chatgpt_running: chatgpt_process_running().unwrap_or(true),
+            relay_status: "checking".into(),
             ..Default::default()
         }))
         .invoke_handler(tauri::generate_handler![
@@ -711,7 +996,9 @@ pub fn run() {
             hide_overlay,
             quit_overlay,
             open_dashboard,
-            configure_hotkeys
+            configure_hotkeys,
+            control_relay,
+            recover_overlay
         ])
         .setup(|app| {
             let registration =
@@ -729,6 +1016,9 @@ pub fn run() {
             })
             .map_err(std::io::Error::other)?;
             build_tray(app.handle())?;
+            let chatgpt_running =
+                with_state(app.handle(), |state| state.chatgpt_running).unwrap_or(true);
+            reconcile_relay(app.handle(), chatgpt_running);
             start_chatgpt_watcher(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
                 let _ = ensure_window_visible(&window);

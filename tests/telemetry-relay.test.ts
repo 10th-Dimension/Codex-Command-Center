@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { createTelemetryRelay, isSafeOverlayPayload, OVERLAY_UPSTREAM_PATH, TELEMETRY_RELAY_HOST } from "../scripts/telemetry-relay";
+import { createTelemetryRelay, isSafeOverlayPayload, OVERLAY_UPSTREAM_PATH, TELEMETRY_RELAY_HEALTH_PATH, TELEMETRY_RELAY_HOST } from "../scripts/telemetry-relay";
 
 const relayConfiguration = {
   TELEMETRY_COLLECTOR_URL: "https://command-center.example/api/telemetry/ingest",
@@ -36,6 +36,24 @@ function listen(server: ReturnType<typeof createServer>) {
 function close(server: ReturnType<typeof createServer>) {
   return new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
+
+test("relay health check is local, bounded, and does not contact the upstream", async () => {
+  let calls = 0;
+  const relay = createTelemetryRelay(relayConfiguration, {
+    fetchImpl: async () => { calls += 1; return new Response(); },
+  });
+  const relayPort = await listen(relay);
+  try {
+    const response = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}${TELEMETRY_RELAY_HEALTH_PATH}`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { status: "ok", service: "codex-telemetry-relay" });
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(calls, 0);
+    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/health/extra`)).status, 404);
+  } finally {
+    await close(relay);
+  }
+});
 
 test("local relay binds to loopback and forwards OTLP with Access and ingestion headers", async () => {
   let captured: { headers: Headers; body: string } | undefined;

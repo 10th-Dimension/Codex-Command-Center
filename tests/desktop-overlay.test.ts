@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { telemetryFreshness } from "../desktop/overlay/src/lib/freshness";
-import { defaultDesktopOverlaySettings, isSafeHexColor, isSafeHotkey, parseDesktopOverlaySettings, resolveLayout, shouldPollRemote } from "../desktop/overlay/src/lib/settings";
+import { defaultDesktopOverlaySettings, isSafeHexColor, isSafeHotkey, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, resolveLayout, shouldPollRemote } from "../desktop/overlay/src/lib/settings";
 
 test("desktop settings preserve supported choices and bound unsafe values", () => {
   const parsed = parseDesktopOverlaySettings({ opacity: 2, fontScale: 400, refreshSeconds: 1, layout: "expanded", density: "comfortable", textColor: "red", surface: "light" });
@@ -34,13 +34,40 @@ test("desktop layout resolution remains usable when resized", () => {
   assert.equal(resolveLayout(600, 90, "standard"), "strip");
 });
 
-test("telemetry freshness distinguishes live, recent, stale, and unavailable", () => {
+test("telemetry freshness distinguishes healthy activity, idle time, degraded paths, and unavailable data", () => {
   const now = Date.parse("2026-09-12T12:00:00.000Z");
   assert.equal(telemetryFreshness("2026-09-12T11:59:52.000Z", now).state, "live");
   assert.equal(telemetryFreshness("2026-09-12T11:59:20.000Z", now).label, "40s ago");
   assert.equal(telemetryFreshness("2026-09-12T11:58:00.000Z", now).label, "2m ago");
-  assert.equal(telemetryFreshness("2026-09-12T11:50:00.000Z", now).state, "stale");
+  assert.deepEqual(telemetryFreshness("2026-09-12T11:48:00.000Z", now), { state: "idle", label: "Idle · 12m", ageSeconds: 720 });
+  assert.equal(telemetryFreshness("2026-09-12T10:50:00.000Z", now).label, "Idle · 1h");
+  assert.equal(telemetryFreshness("2026-09-12T11:59:52.000Z", now, false).state, "stale");
   assert.equal(telemetryFreshness(undefined, now).state, "unavailable");
+});
+
+test("overlay quick controls reuse supported ranges, layouts, and the existing snapshot fetch", async () => {
+  assert.deepEqual(overlayRanges, ["24h", "7d", "30d"]);
+  assert.deepEqual(overlayLayouts, ["mini", "standard", "expanded", "strip"]);
+  const [app, native, rust, main] = await Promise.all([
+    readFile(new URL("../desktop/overlay/src/App.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/overlay/src/lib/native.ts", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/overlay/src-tauri/src/lib.rs", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/overlay/src-tauri/src/main.rs", import.meta.url), "utf8"),
+  ]);
+  assert.ok((app.match(/overlayRanges\.map/g) ?? []).length >= 2);
+  assert.ok((app.match(/overlayLayouts\.map/g) ?? []).length >= 2);
+  assert.match(app, /Click-through enabled · Ctrl\+Shift\+O to regain control/);
+  assert.match(native, /invoke<OverlaySnapshot>\("fetch_overlay", \{ range \}\)/);
+  assert.match(rust, /\.query\(&\[\("range", range\)\]\)/);
+  assert.match(native, /kind: "recover-overlay"/);
+  assert.match(rust, /\("recover", "Recover Overlay"\)/);
+  assert.match(rust, /fn recover_overlay[\s\S]+click_through = false;[\s\S]+lock_position = false;/);
+  assert.match(native, /startResizeDragging/);
+  assert.match(app, /function ResizeHandles/);
+  assert.match(app, /Recover movement/);
+  assert.match(rust, /DEFAULT_CLICK_THROUGH: &str = "Ctrl\+Shift\+O"/);
+  assert.match(main, /cfg_attr\(windows, windows_subsystem = "windows"\)/);
+  assert.doesNotMatch([app, native, rust].join("\n"), /codex_telemetry_events/i);
 });
 
 test("process-aware polling suspends network work while ChatGPT is closed or the overlay is hidden", () => {
@@ -49,6 +76,31 @@ test("process-aware polling suspends network work while ChatGPT is closed or the
   assert.equal(shouldPollRemote(true, true, true), true);
   assert.equal(shouldPollRemote(true, true, false), false);
   assert.equal(shouldPollRemote(false, false, true), true);
+});
+
+test("native overlay owns a hidden relay child and exposes safe lifecycle controls", async () => {
+  const [rust, native, relay, shortcut] = await Promise.all([
+    readFile(new URL("../desktop/overlay/src-tauri/src/lib.rs", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/overlay/src/lib/native.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/telemetry-relay.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/install-codex-live-shortcut.vbs", import.meta.url), "utf8"),
+  ]);
+  assert.match(rust, /relay_child: Option<Child>/);
+  assert.match(rust, /creation_flags\(CREATE_NO_WINDOW\)/);
+  assert.match(rust, /fn relay_is_healthy/);
+  assert.match(rust, /fn reconcile_relay/);
+  assert.match(rust, /stop_owned_relay/);
+  assert.match(rust, /relay_manual_stop/);
+  assert.match(rust, /CODEX_LIVE_PARENT_PID/);
+  assert.match(relay, /stopWithParent/);
+  assert.match(rust, /\("relay-start", "Start Relay"\)/);
+  assert.match(rust, /\("relay-restart", "Restart Relay"\)/);
+  assert.match(rust, /\("relay-stop", "Stop Relay"\)/);
+  assert.match(native, /control_relay/);
+  assert.match(relay, /codex-telemetry-relay/);
+  assert.match(shortcut, /Codex Live\.lnk/);
+  assert.match(shortcut, /codex-command-center-overlay\.exe/);
+  assert.doesNotMatch([rust, native, shortcut].join("\n"), /CF_ACCESS_CLIENT|GITHUB_TOKEN|TELEMETRY_INGEST_KEY|authorization/i);
 });
 
 test("desktop frontend models and capabilities contain no credential fields or broad permissions", async () => {

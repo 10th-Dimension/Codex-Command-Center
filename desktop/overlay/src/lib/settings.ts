@@ -1,4 +1,8 @@
-export type OverlayLayout = "mini" | "standard" | "expanded" | "strip";
+export const overlayLayouts = ["mini", "standard", "expanded", "strip"] as const;
+export const overlayRanges = ["24h", "7d", "30d"] as const;
+
+export type OverlayLayout = typeof overlayLayouts[number];
+export type OverlayRange = typeof overlayRanges[number];
 export type OverlayDensity = "tight" | "comfortable";
 export type OverlayEffect = "translucent" | "mica" | "acrylic" | "solid";
 export type OverlaySurface = "dark" | "light";
@@ -7,7 +11,7 @@ export type OverlayCorner = "free" | "top-left" | "top-right" | "bottom-left" | 
 
 export interface DesktopOverlaySettings {
   layout: OverlayLayout;
-  range: "24h" | "7d" | "30d";
+  range: OverlayRange;
   effect: OverlayEffect;
   surface: OverlaySurface;
   opacity: number;
@@ -73,8 +77,8 @@ export function isSafeHotkey(value: unknown): value is string {
 export function parseDesktopOverlaySettings(value: unknown): DesktopOverlaySettings {
   const input = value && typeof value === "object" ? value as Partial<DesktopOverlaySettings> : {};
   return {
-    layout: choice(input.layout, ["mini", "standard", "expanded", "strip"] as const, defaultDesktopOverlaySettings.layout),
-    range: choice(input.range, ["24h", "7d", "30d"] as const, defaultDesktopOverlaySettings.range),
+    layout: choice(input.layout, overlayLayouts, defaultDesktopOverlaySettings.layout),
+    range: choice(input.range, overlayRanges, defaultDesktopOverlaySettings.range),
     effect: choice(input.effect, ["translucent", "mica", "acrylic", "solid"] as const, defaultDesktopOverlaySettings.effect),
     surface: choice(input.surface, ["dark", "light"] as const, defaultDesktopOverlaySettings.surface),
     opacity: bounded(input.opacity, 20, 100, defaultDesktopOverlaySettings.opacity),

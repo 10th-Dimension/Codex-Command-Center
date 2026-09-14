@@ -29,13 +29,14 @@ class Statement implements D1PreparedStatementLike {
 class SnapshotD1 implements D1DatabaseLike {
   statements: Statement[] = [];
   existingSnapshots: Record<string, unknown>[] = [];
+  sessionRows: Record<string, unknown>[] = [{ session_id: "session-1", project_name: "Command Center", first_seen_at: "2026-09-13T11:00:00.000Z", last_seen_at: "2026-09-13T11:50:00.000Z", latest_model: "model-0", latest_reasoning_effort: "xhigh", event_count: 3, input_tokens: 18, output_tokens: 4, cached_tokens: 5, cache_write_tokens: 0, reasoning_tokens: 7, tool_tokens: 3, completed_tools: 2, failed_tools: 1, error_count: 1, warning_count: 0, approvals: 1, ttft_sum_ms: 300, ttft_sample_count: 2, range_session_count: 1 }];
   prepare(sql: string) { const statement = new Statement(this, sql); this.statements.push(statement); return statement; }
   async batch<T>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> { return statements.map((statement) => this.execute(statement as Statement) as D1ResultLike<T>); }
   execute(statement: Statement): D1ResultLike {
     if (statement.sql.includes("FROM codex_rollup_hourly")) return { success: true, results: [{ label: "2026-09-13T11:00:00.000Z", event_count: 3, input_tokens: 18, input_samples: 2, output_tokens: 4, output_samples: 1, cached_tokens: 5, cached_samples: 1, cache_write_tokens: 0, cache_write_samples: 0, reasoning_tokens: 7, reasoning_samples: 1, tool_tokens: 3, tool_token_samples: 1, error_count: 1, warning_count: 0, completed_tools: 2, failed_tools: 1, approvals: 1, ttft_sum_ms: 300, ttft_sample_count: 2, duration_sum_ms: 900, duration_sample_count: 3, last_received_at: "2026-09-13T11:50:00.000Z" }] };
     if (statement.sql.includes("FROM codex_rollup_model_hourly")) return { success: true, results: Array.from({ length: 12 }, (_, index) => ({ label: `model-${index}`, count: 12 - index })).slice(0, 8) };
     if (statement.sql.includes("FROM codex_rollup_reasoning_hourly")) return { success: true, results: [{ label: "xhigh", count: 2 }] };
-    if (statement.sql.includes("FROM codex_session_summary")) return { success: true, results: [{ session_id: "session-1", project_name: "Command Center", first_seen_at: "2026-09-13T11:00:00.000Z", last_seen_at: "2026-09-13T11:50:00.000Z", latest_model: "model-0", latest_reasoning_effort: "xhigh", event_count: 3, input_tokens: 18, output_tokens: 4, cached_tokens: 5, cache_write_tokens: 0, reasoning_tokens: 7, tool_tokens: 3, completed_tools: 2, failed_tools: 1, error_count: 1, warning_count: 0, approvals: 1, ttft_sum_ms: 300, ttft_sample_count: 2, range_session_count: 1 }] };
+    if (statement.sql.includes("FROM codex_session_summary")) return { success: true, results: this.sessionRows };
     if (statement.sql.includes("FROM codex_dashboard_snapshot")) return { success: true, results: this.existingSnapshots };
     return { success: true, meta: { changes: 1 } };
   }
@@ -57,6 +58,28 @@ test("rollups group a batch by hour, model, reasoning, and session", () => {
   assert.equal(session?.eventCount, 3);
   assert.equal(session?.approvals, 1);
   assert.equal(session?.durationSumMs, 900);
+});
+
+test("session latest dimensions follow telemetry time and never cross session boundaries", () => {
+  const grouped = groupTelemetryRollups([
+    event({ id: "new", fingerprint: "new", sessionId: "session-a", occurredAt: "2026-09-13T11:55:00.000Z", model: "gpt-5.6-sol", reasoningEffort: "medium" }),
+    event({ id: "old", fingerprint: "old", sessionId: "session-a", occurredAt: "2026-09-13T11:05:00.000Z", model: "gpt-5.6-luna", reasoningEffort: "low" }),
+    event({ id: "missing", fingerprint: "missing", sessionId: "session-b", occurredAt: "2026-09-13T11:59:00.000Z" }),
+  ]);
+  assert.equal(grouped.sessions.get("session-a")?.latestModel, "gpt-5.6-sol");
+  assert.equal(grouped.sessions.get("session-a")?.latestReasoningEffort, "medium");
+  assert.equal(grouped.sessions.get("session-b")?.latestModel, undefined);
+  assert.equal(grouped.sessions.get("session-b")?.latestReasoningEffort, undefined);
+});
+
+test("session model and reasoning retain independent latest non-null observations", () => {
+  const grouped = groupTelemetryRollups([
+    event({ id: "model", fingerprint: "model", sessionId: "one", occurredAt: "2026-09-13T11:10:00.000Z", model: "gpt-future-model" }),
+    event({ id: "reasoning", fingerprint: "reasoning", sessionId: "one", occurredAt: "2026-09-13T11:20:00.000Z", reasoningEffort: "future-effort" }),
+    event({ id: "empty", fingerprint: "empty", sessionId: "one", occurredAt: "2026-09-13T11:30:00.000Z" }),
+  ]);
+  assert.equal(grouped.sessions.get("one")?.latestModel, "gpt-future-model");
+  assert.equal(grouped.sessions.get("one")?.latestReasoningEffort, "future-effort");
 });
 
 test("rollup writes are bounded to grouped upserts rather than event-by-event writes", async () => {
@@ -83,6 +106,18 @@ test("materialized snapshots preserve measured missingness, averages, bounds, an
   const write = database.statements.find((statement) => statement.sql.startsWith("INSERT INTO codex_dashboard_snapshot"));
   assert.ok(write);
   assert.ok(String(write.values[3]).length < 262_144);
+});
+
+test("materialized snapshot keeps the newest observed model and reasoning first", async () => {
+  const database = new SnapshotD1();
+  const base = database.sessionRows[0];
+  database.sessionRows = [
+    { ...base, session_id: "new-sol", last_seen_at: "2026-09-13T11:58:00.000Z", latest_model: "gpt-5.6-sol", latest_reasoning_effort: "medium", range_session_count: 2 },
+    { ...base, session_id: "old-luna", last_seen_at: "2026-09-13T11:20:00.000Z", latest_model: "gpt-5.6-luna", latest_reasoning_effort: "low", range_session_count: 2 },
+  ];
+  const snapshot = await buildMaterializedSnapshot(database, "24h", now);
+  assert.equal(snapshot.sessions[0].models[0], "gpt-5.6-sol");
+  assert.equal(snapshot.sessions[0].reasoningEfforts[0], "medium");
 });
 
 test("snapshot freshness refreshes only stale ranges", async () => {
