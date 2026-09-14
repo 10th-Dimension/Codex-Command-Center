@@ -278,6 +278,7 @@ function safeNativeMessage(error: unknown) {
   const detail = String(error);
   if (/shortcut/i.test(detail)) return detail.replace(/^Error:\s*/i, "").slice(0, 160);
   if (detail.includes("relay_not_owned")) return "That relay was not started by Codex Live, so it was left untouched.";
+  if (detail.includes("node_runtime_not_found")) return "Node.js runtime not found. Install Node.js 22 or newer and try again.";
   if (detail.includes("relay_runtime_unavailable")) return "Build dependencies for the local relay are unavailable.";
   if (detail.includes("relay_start_failed")) return "The local relay could not start. Check the local configuration and port.";
   if (detail.includes("relay_stop_failed")) return "The Codex Live-owned relay could not be stopped.";
