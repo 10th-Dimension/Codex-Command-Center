@@ -1,4 +1,6 @@
 use std::{
+    ffi::{OsStr, OsString},
+    fs::OpenOptions,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::PathBuf,
@@ -6,7 +8,7 @@ use std::{
     str::FromStr,
     sync::Mutex,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[cfg(windows)]
@@ -44,6 +46,8 @@ const MAX_SNAPSHOT_BYTES: u64 = 262_144;
 const DEFAULT_SHOW_HIDE: &str = "Ctrl+Shift+Space";
 const DEFAULT_CLICK_THROUGH: &str = "Ctrl+Shift+O";
 const CHATGPT_PROCESS_NAME: &str = "ChatGPT.exe";
+const RELAY_STARTUP_DEADLINE: Duration = Duration::from_secs(12);
+const RELAY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
 struct OverlayNativeState {
@@ -128,24 +132,252 @@ fn relay_is_healthy() -> bool {
     response.starts_with("HTTP/1.1 200") && response.contains(RELAY_HEALTH_MARKER)
 }
 
+#[cfg(windows)]
+fn normalize_command_path(path: PathBuf) -> PathBuf {
+    let value = path.to_string_lossy();
+    if let Some(unc_path) = value.strip_prefix("\\\\?\\UNC\\") {
+        return PathBuf::from(format!("\\\\{unc_path}"));
+    }
+    if let Some(dos_path) = value.strip_prefix("\\\\?\\") {
+        return PathBuf::from(dos_path);
+    }
+    path
+}
+
+#[cfg(not(windows))]
+fn normalize_command_path(path: PathBuf) -> PathBuf {
+    path
+}
+
 fn repository_root() -> Result<PathBuf, String> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let root = match PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("..")
         .canonicalize()
-        .map_err(|_| "relay_repository_unavailable".to_string())?;
-    if !root.join("scripts").join("telemetry-relay.ts").is_file()
-        || !root
-            .join("node_modules")
-            .join("tsx")
-            .join("dist")
-            .join("cli.mjs")
-            .is_file()
     {
+        Ok(root) => normalize_command_path(root),
+        Err(_) => {
+            relay_diagnostic("repository root resolution failed");
+            return Err("relay_repository_unavailable".to_string());
+        }
+    };
+    let relay_script = root.join("scripts").join("telemetry-relay.ts");
+    let tsx_cli = root
+        .join("node_modules")
+        .join("tsx")
+        .join("dist")
+        .join("cli.mjs");
+    if !relay_script.is_file() || !tsx_cli.is_file() {
+        relay_diagnostic(format!(
+            "repository root resolved; root={}; tsx_exists={}; relay_script_exists={}",
+            root.display(),
+            tsx_cli.is_file(),
+            relay_script.is_file()
+        ));
         return Err("relay_runtime_unavailable".into());
     }
+    relay_diagnostic(format!(
+        "repository root resolved; root={}; tsx_exists=true; relay_script_exists=true",
+        root.display()
+    ));
     Ok(root)
+}
+
+fn relay_diagnostic(message: impl AsRef<str>) {
+    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let path = PathBuf::from(local_app_data)
+        .join("Codex Live")
+        .join("relay-diagnostics.log");
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(file, "{}", message.as_ref());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn resolver_finds_node_in_a_discovered_candidate() {
+        let root =
+            std::env::temp_dir().join(format!("codex-live-node-resolver-{}", std::process::id()));
+        let node_dir = root.join("runtime");
+        fs::create_dir_all(&node_dir).expect("create test runtime directory");
+        let node = node_dir.join("node.exe");
+        fs::write(&node, b"test runtime").expect("create test runtime");
+
+        let path = std::env::join_paths([root.join("missing"), node_dir.clone()]).unwrap();
+        let result = first_existing_node(node_candidates_from_sources(Some(path), None, &[]));
+        assert_eq!(result.unwrap(), node);
+        fs::remove_dir_all(root).expect("remove test runtime directory");
+    }
+
+    #[test]
+    fn resolver_returns_safe_error_when_node_is_unavailable() {
+        let result = first_existing_node([PathBuf::from("definitely-not-a-node.exe")]);
+        assert_eq!(result, Err("node_runtime_not_found".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn command_paths_strip_windows_extended_prefixes_for_node() {
+        assert_eq!(
+            normalize_command_path(PathBuf::from("\\\\?\\E:\\Codex-Command-Center")),
+            PathBuf::from("E:\\Codex-Command-Center")
+        );
+    }
+
+    #[test]
+    fn startup_wait_allows_health_after_the_old_limit() {
+        let started = Instant::now();
+        let deadline = started + RELAY_STARTUP_DEADLINE;
+        assert_eq!(
+            relay_startup_decision(
+                started + Duration::from_millis(3_000),
+                deadline,
+                true,
+                false,
+            ),
+            RelayStartupDecision::Ready
+        );
+    }
+
+    #[test]
+    fn startup_wait_fails_immediately_when_child_exits() {
+        let started = Instant::now();
+        assert_eq!(
+            relay_startup_decision(
+                started + Duration::from_millis(200),
+                started + RELAY_STARTUP_DEADLINE,
+                false,
+                true,
+            ),
+            RelayStartupDecision::Failed
+        );
+    }
+
+    #[test]
+    fn startup_wait_fails_at_the_bounded_deadline() {
+        let started = Instant::now();
+        let deadline = started + RELAY_STARTUP_DEADLINE;
+        assert_eq!(
+            relay_startup_decision(deadline, deadline, false, false),
+            RelayStartupDecision::Failed
+        );
+        assert_eq!(RELAY_STARTUP_DEADLINE, Duration::from_secs(12));
+    }
+}
+
+fn node_path_from_source(source: &PathBuf) -> PathBuf {
+    if source
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("node.exe"))
+    {
+        source.clone()
+    } else {
+        source.join("node.exe")
+    }
+}
+
+fn node_candidates_from_sources(
+    path: Option<OsString>,
+    nvm_symlink: Option<OsString>,
+    standard_roots: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = path {
+        candidates.extend(std::env::split_paths(&path).map(|entry| entry.join("node.exe")));
+    }
+    if let Some(nvm_symlink) = nvm_symlink {
+        candidates.push(node_path_from_source(&PathBuf::from(nvm_symlink)));
+    }
+    candidates.extend(
+        standard_roots
+            .iter()
+            .map(|root| root.join("nodejs").join("node.exe")),
+    );
+    candidates
+}
+
+fn first_existing_node(candidates: impl IntoIterator<Item = PathBuf>) -> Result<PathBuf, String> {
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| "node_runtime_not_found".to_string())
+}
+
+fn resolve_node_executable() -> Result<PathBuf, String> {
+    let standard_roots = ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let result = first_existing_node(node_candidates_from_sources(
+        std::env::var_os("PATH"),
+        std::env::var_os("NVM_SYMLINK"),
+        &standard_roots,
+    ));
+    match &result {
+        Ok(path) => relay_diagnostic(format!("node executable resolved; path={}", path.display())),
+        Err(_) => relay_diagnostic("node executable resolution failed; no candidate exists"),
+    }
+    result
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RelayStartupDecision {
+    Continue,
+    Ready,
+    Failed,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RelayChildState {
+    Running,
+    Exited(Option<i32>),
+    PollFailed,
+}
+
+fn poll_owned_relay_child(app: &AppHandle) -> Result<RelayChildState, String> {
+    with_state(app, |state| {
+        let Some(child) = state.relay_child.as_mut() else {
+            return RelayChildState::PollFailed;
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => RelayChildState::Exited(status.code()),
+            Ok(None) => RelayChildState::Running,
+            Err(_) => RelayChildState::PollFailed,
+        }
+    })
+}
+
+fn relay_startup_decision(
+    now: Instant,
+    deadline: Instant,
+    healthy: bool,
+    child_exited: bool,
+) -> RelayStartupDecision {
+    if child_exited {
+        RelayStartupDecision::Failed
+    } else if healthy {
+        RelayStartupDecision::Ready
+    } else if now >= deadline {
+        RelayStartupDecision::Failed
+    } else {
+        RelayStartupDecision::Continue
+    }
 }
 
 fn emit_relay_status(app: &AppHandle, status: &str, owned: bool) {
@@ -205,8 +437,10 @@ fn start_relay(app: &AppHandle) -> Result<(), String> {
     }
     update_relay_status(app, "starting");
     let result = (|| {
+        relay_diagnostic("relay startup requested");
         let root = repository_root()?;
-        let mut command = Command::new("node.exe");
+        let node_executable = resolve_node_executable()?;
+        let mut command = Command::new(node_executable);
         command
             .arg(
                 root.join("node_modules")
@@ -222,18 +456,51 @@ fn start_relay(app: &AppHandle) -> Result<(), String> {
             .stderr(Stdio::null());
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
-        let child = command
-            .spawn()
-            .map_err(|_| "relay_start_failed".to_string())?;
-        with_state(app, |state| state.relay_child = Some(child))?;
-        for _ in 0..25 {
-            if relay_is_healthy() {
-                update_relay_status(app, "online");
-                return Ok(());
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                relay_diagnostic(format!(
+                    "relay spawn failed; kind={:?}; raw_os_error={:?}",
+                    error.kind(),
+                    error.raw_os_error()
+                ));
+                return Err("relay_start_failed".to_string());
             }
-            thread::sleep(Duration::from_millis(100));
+        };
+        relay_diagnostic(format!("relay spawn succeeded; child_pid={}", child.id()));
+        with_state(app, |state| state.relay_child = Some(child))?;
+        let deadline = Instant::now() + RELAY_STARTUP_DEADLINE;
+        loop {
+            let child_exited = match poll_owned_relay_child(app)? {
+                RelayChildState::Running => false,
+                RelayChildState::Exited(code) => {
+                    relay_diagnostic(format!(
+                        "relay child exited before health; exit_code={:?}",
+                        code
+                    ));
+                    true
+                }
+                RelayChildState::PollFailed => {
+                    relay_diagnostic("relay child status could not be read before health");
+                    return Err("relay_start_failed".into());
+                }
+            };
+            let healthy = !child_exited && relay_is_healthy();
+            match relay_startup_decision(Instant::now(), deadline, healthy, child_exited) {
+                RelayStartupDecision::Ready => {
+                    relay_diagnostic("relay health became ready");
+                    update_relay_status(app, "online");
+                    return Ok(());
+                }
+                RelayStartupDecision::Failed => {
+                    if !child_exited {
+                        relay_diagnostic("relay startup deadline expired before health");
+                    }
+                    return Err("relay_start_failed".into());
+                }
+                RelayStartupDecision::Continue => thread::sleep(RELAY_HEALTH_POLL_INTERVAL),
+            }
         }
-        Err("relay_start_failed".into())
     })();
     let _ = with_state(app, |state| state.relay_starting = false);
     if result.is_err() {
