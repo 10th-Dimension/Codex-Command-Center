@@ -17,6 +17,12 @@
 	"version_metadata": {
 		"binding": "CF_VERSION_METADATA"
 	},
+	"secrets": {
+		"required": [
+			"GITHUB_TOKEN",
+			"CODEX_TELEMETRY_INGEST_KEY"
+		]
+	},
 	"d1_databases": [
 		{
 			"binding": "CODEX_TELEMETRY_DB",
@@ -26,8 +32,8 @@
 		}
 	],
 	"vars": {
-  "CODEX_TELEMETRY_RETENTION_DAYS": "30",
-  "GITHUB_OWNER": "10th-Dimension",
-  "GITHUB_REPOSITORY": "Codex-Command-Center"
-}
+		"CODEX_TELEMETRY_RETENTION_DAYS": "30",
+		"GITHUB_OWNER": "10th-Dimension",
+		"GITHUB_REPOSITORY": "Codex-Command-Center"
+	}
 }

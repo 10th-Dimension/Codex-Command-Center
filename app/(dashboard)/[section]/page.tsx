@@ -1,41 +1,10 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
-import {
-  ActivityPage,
-  BuildCIHealthPage,
-  DataSourcesPage,
-  PullRequestsIssuesPage,
-  RepositoriesPage,
-} from "@/components/dashboard/operational-pages";
-import { SectionPage } from "@/components/dashboard/section-page";
-import { CodexActivityPage, UsagePage } from "@/components/dashboard/codex-pages";
-import { getDashboardSnapshot } from "@/lib/dashboard/queries";
-import { navigationItems, sectionContent } from "@/lib/navigation";
+import { legacySectionRedirects } from "@/lib/navigation";
 
-export function generateStaticParams() {
-  return navigationItems.filter((item) => item.href !== "/").map((item) => ({ section: item.href.slice(1) }));
-}
-
-export default async function SectionRoute({
-  params,
-}: Readonly<{ params: Promise<{ section: string }> }>) {
+export default async function LegacySectionRoute({ params }: Readonly<{ params: Promise<{ section: string }> }>) {
   const { section } = await params;
-  const content = sectionContent[section];
-
-  if (!content) {
-    notFound();
-  }
-
-  if (section === "repositories" || section === "activity" || section === "pull-requests-issues" || section === "build-ci-health" || section === "codex-activity" || section === "usage" || section === "data-sources") {
-    const snapshot = await getDashboardSnapshot();
-    if (section === "repositories") return <RepositoriesPage snapshot={snapshot} />;
-    if (section === "activity") return <ActivityPage snapshot={snapshot} />;
-    if (section === "pull-requests-issues") return <PullRequestsIssuesPage snapshot={snapshot} />;
-    if (section === "build-ci-health") return <BuildCIHealthPage snapshot={snapshot} />;
-    if (section === "codex-activity") return <CodexActivityPage snapshot={snapshot} />;
-    if (section === "usage") return <UsagePage snapshot={snapshot} />;
-    return <DataSourcesPage snapshot={snapshot} />;
-  }
-
-  return <SectionPage content={content} />;
+  const destination = legacySectionRedirects[section];
+  if (!destination) notFound();
+  redirect(destination);
 }

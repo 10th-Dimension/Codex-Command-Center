@@ -2,21 +2,27 @@
 
 Codex Command Center is a private, extensible engineering dashboard for trusted repository, delivery, project, and agent signals. Its live adapters read a configured private GitHub repository and privacy-filtered Codex OpenTelemetry logs stored in Cloudflare D1. Unavailable or empty data stays explicit; the application never manufactures dashboard metrics.
 
-The application has one shared source tree and two supported local workflows:
+The project has two related product surfaces and one shared server/provider architecture:
 
-- Next.js 16 App Router for normal local development and production-build validation.
-- vinext and the Cloudflare Vite plugin for future Cloudflare Workers builds and local Worker previews.
+- **Codex Command Center website:** the full Next.js 16 observability dashboard, deployed through vinext on Cloudflare Workers.
+- **Codex Live Windows overlay:** a compact, bundled Tauri v2 application that runs independently of a browser and reads only a privacy-filtered snapshot through the local relay.
 
-## Production deployment is currently blocked
+## Production security posture
 
-Do not expose this dashboard publicly. A first production deployment is forbidden until Cloudflare Zero Trust / Access is configured for the Worker, the Access policy denies anonymous requests before application execution, and an authorized-user policy has been tested. There is intentionally no homemade username/password system in this repository. Application-level Access JWT verification can be considered later as defense in depth.
+Production is live and must remain private behind Cloudflare Zero Trust / Access. The Access policy must deny anonymous requests before application execution. There is intentionally no homemade username/password system in this repository. Application-level Access JWT verification can be considered later as defense in depth.
 
-No deploy command is run by CI. The deployment script exists only for a future, explicitly authorized deployment after the Access gate and encrypted runtime configuration are ready.
+No deploy command is run by CI. Deployment remains an explicitly authorized operation and requires the Access gate plus encrypted runtime configuration.
 
 ## Requirements and installation
 
 - Node.js 22 or newer
 - npm
+
+Building the native Windows overlay additionally requires:
+
+- Rust stable 1.77.2 or newer, preferably installed with `rustup`.
+- Visual Studio 2022 Build Tools with the **Desktop development with C++** workload and a current Windows 10/11 SDK.
+- Microsoft Edge WebView2 Runtime, normally included with supported Windows releases.
 
 Install the locked dependencies from the repository root:
 
@@ -52,11 +58,11 @@ npm run preview:workers
 
 The vinext development server defaults to [http://localhost:3001](http://localhost:3001). `npm run preview:workers` runs the built Worker locally with Wrangler. `vite.config.ts` selects the Workers Cache API CDN adapter, no KV-backed data cache, and no image-optimization service. `wrangler.jsonc` enables Node.js compatibility so the same server-only environment boundary works in the Worker runtime.
 
-The repository also contains `npm run deploy:vinext` for a future authorized deployment. Do not run it until Cloudflare Access and encrypted runtime configuration have been completed and reviewed.
+The repository also contains `npm run deploy:vinext` for an explicitly authorized deployment. Never deploy if Cloudflare Access is absent, misconfigured, or permits anonymous execution.
 
 ## Runtime configuration and secrets
 
-Local Next.js and vinext development use the ignored `.env.local` file. Production must supply the private GitHub credential as a Cloudflare encrypted secret or secret binding; it must never be placed in `wrangler.jsonc`, source code, package metadata, documentation values, client components, or a `NEXT_PUBLIC_*` variable. The repository owner and repository name are non-secret runtime configuration and can be supplied as Worker variables or bindings.
+Local Next.js and vinext development use the ignored `.env.local` file. Production supplies the private GitHub credential and dedicated ingestion key as Cloudflare encrypted secrets. `wrangler.jsonc` declares their names as required deployment guards, but values must never be placed in configuration, source code, package metadata, documentation, client components, or a `NEXT_PUBLIC_*` variable. The repository owner and repository name are non-secret runtime configuration and can be supplied as Worker variables or bindings.
 
 The server-only wrapper in `src/lib/providers/github.ts` is the only environment-reading boundary. It passes configuration into the provider core at runtime. Authenticated GitHub requests are read-only REST `GET` requests, use `cache: "no-store"`, and never expose authorization headers through provider results or UI data.
 
@@ -66,6 +72,7 @@ The server-only wrapper in `src/lib/providers/github.ts` is the only environment
 .
 ├── .github/workflows/ci.yml       # Next.js and Worker verification; no deployment
 ├── app/                            # Shared App Router pages and dynamic dashboard layout
+├── desktop/overlay/                # Bundled Tauri v2 Codex Live Windows application
 ├── migrations/                     # Versioned D1 telemetry schema
 ├── scripts/telemetry-relay.ts      # Loopback-only OTLP relay for Codex
 ├── src/components/                 # Provider-agnostic dashboard presentation
@@ -94,10 +101,11 @@ Codex OTLP logs
   -> Cloudflare Access service-token authentication
   -> POST /api/telemetry/ingest
   -> dedicated ingestion-key verification
-  -> privacy normalization and bounded batch writes
-  -> CODEX_TELEMETRY_DB (D1)
+  -> privacy normalization and idempotent raw insert
+  -> grouped incremental hourly/model/reasoning/session rollups
+  -> bounded 24h / 7d / 30d materialized snapshots
   -> typed Codex provider
-  -> Overview, Codex Activity, Usage, and Data Sources
+  -> Codex page and Codex Live overlay
 ```
 
 The relay listens only on IPv4 loopback. It accepts OTLP/HTTP protobuf or JSON, preserves the payload content type, and adds `CF-Access-Client-Id`, `CF-Access-Client-Secret`, and `X-Codex-Telemetry-Key` only on the outbound request. Relay credentials are separate from GitHub credentials. The relay never prints configuration values or payloads.
@@ -142,9 +150,23 @@ Prompt logging is off by default and must remain off unless a separate privacy r
 
 ### D1 schema, retention, and bindings
 
-`migrations/0001_codex_telemetry.sql` creates the base event table. The additive `migrations/0002_codex_analytics_v2.sql` adds reviewed scalar fields for event kind, reasoning effort, cache-write/reasoning/tool tokens, TTFT, tool namespace and lifecycle, hashed call correlation, approval/sandbox policy, MCP origin, agent/provider/originator, and version/startup diagnostics. It also best-effort reclassifies legacy `unknown` rows only from values already retained by v1. Values discarded by v1 cannot be recovered. Schema-v1 and schema-v2 rows remain queryable together. Event fingerprints retain their unique constraint, and ingestion continues to use prepared statements and D1 batches capped at 50 writes.
+`migrations/0001_codex_telemetry.sql` creates the base event table. The additive `migrations/0002_codex_analytics_v2.sql` adds reviewed operational scalar fields. The additive `migrations/0003_codex_rollups.sql` adds hourly global, hourly model, hourly reasoning, session-summary, and dashboard-snapshot tables. Event fingerprints retain their unique constraint, and ingestion continues to use prepared statements and D1 batches capped at 50 writes.
 
-Raw events default to 30-day retention through `CODEX_TELEMETRY_RETENTION_DAYS`; cleanup runs after successful ingestion. The configured value is bounded to 1–365 days. Long-term rollups are intentionally not fabricated or precomputed yet; add them only when a real product requirement defines their fields and retention.
+Raw events default to 30-day retention through `CODEX_TELEMETRY_RETENTION_DAYS`; cleanup runs after successful ingestion. The configured value is bounded to 1–365 days and migration 0003 does not reduce or delete that history. Rollups retain 31 days. Normal dashboard and overlay reads use only the three small materialized snapshots; the 35-statement raw analytics path is restricted to the explicit Forensics action.
+
+Ingest first performs `INSERT OR IGNORE` against the fingerprinted raw table, examines each D1 write result, and rolls up only rows whose insert actually changed the database. Exporter retries therefore cannot double-count summaries. Newly inserted events are grouped in memory before bounded hourly/model/reasoning/session upserts. Snapshot generation reads rollup tables, never raw events: 24-hour snapshots have a one-minute TTL, while 7- and 30-day snapshots have 15-minute TTLs. Missing migration-0003 tables are tolerated during rollout: ingest continues storing raw events, normal Codex analytics report unavailable, and no expensive raw fallback occurs.
+
+The one-time backfill is explicit and never runs at startup or deployment:
+
+```bash
+# Local D1 is the default.
+npm run backfill:codex-rollups
+
+# Production requires both flags and separate operational authorization.
+npm run backfill:codex-rollups -- --remote --confirm-remote
+```
+
+The utility refuses non-empty rollup tables unless `--rebuild` is also supplied. A rebuild deletes and recreates rollup/snapshot rows only; it does not modify retained raw telemetry. Its four raw scans select only privacy-safe aggregate columns.
 
 Before an authorized deployment, apply pending checked-in migrations to the configured D1 database and confirm the encrypted Worker secret named `CODEX_TELEMETRY_INGEST_KEY` remains available. Do not put the secret value in Wrangler configuration. Local schema verification can use:
 
@@ -156,9 +178,87 @@ Applying remote migrations, creating encrypted production secrets, configuring A
 
 ### Dashboard semantics
 
-Codex Activity reports real stored events, 24-hour/7-day/30-day trends, event categories, models, reasoning effort, tool-related events, deduplicated completed tool executions, failures, approvals, sandbox policy, MCP dimensions, agent/provider/originator dimensions, startup/version diagnostics, timings, sessions, and recent warnings/errors. Tool lifecycle events with the same hashed call identifier count as one completed execution. When terminal execution semantics are absent, the UI reports tool-related events without pretending they are completed calls.
+The website has two top-level destinations: **Codex** and **GitHub**. Codex presents health, freshness, six key token/session measurements, one activity trend, model/reasoning distributions, performance, and the latest session. Usage, Sessions, Tools, Forensics, and Data health are expandable details. GitHub combines repository state, pull requests, issues, CI, branches, Actions, and recent activity. Legacy section URLs redirect into the appropriate page/detail. Settings is a drawer rather than a third destination.
+
+The default Codex page never hydrates raw events. Exact event chronology, warnings/errors, approval/MCP/sandbox details, and other deep dimensions are retained behind explicit Forensics loading. This is intentionally more expensive and should be opened only for investigation.
 
 Usage reports only token counts legitimately emitted by telemetry: input, output, cached/read, cache-write, reasoning, and tool tokens. It provides 24-hour, 7-day, and 30-day windows, token trends, model/session summaries, tool analytics, and TTFT/duration sample statistics. A reported zero means Codex emitted zero; `No samples` means the field exists in retained data but not in the selected window; `Unavailable` means the field has never been observed in retained data. Percentiles require minimum sample sizes, and no cache-hit percentage is inferred because the available counters do not establish a verified denominator. The dashboard never derives account billing totals, credit balances, plan limits, rate-limit allocations, reset timers, or monetary cost from these logs.
+
+## Website and native overlay
+
+The website remains the analysis surface. Codex Live is intentionally smaller: it prioritizes the current model and reasoning effort, emitted token classes, TTFT, tool executions/failures, telemetry freshness, local-relay reachability, and—in Expanded mode—compact distributions and delivery health. It does not attempt to reproduce the full dashboard.
+
+The retained `/overlay` route remains a browser-based preview/reference surface. The actual companion in `desktop/overlay/` packages its own Vite/React frontend inside a frameless Tauri window; it does not open that route in Edge and does not require Edge or a local development server during normal use.
+
+The desktop data path is:
+
+```text
+Codex OTel
+  -> local relay POST /v1/logs
+  -> authenticated Cloudflare ingestion
+  -> D1
+  -> private GET /api/overlay?range=24h|7d|30d
+  -> local relay GET /v1/overlay?range=24h|7d|30d
+  -> fixed loopback-only Rust request
+  -> bundled Codex Live interface
+```
+
+`GET /api/overlay?range=24h|7d|30d` returns a dedicated private/no-store view model. It is limited to health states, aggregate operational counters, bounded token trends and distributions, safe delivery status, and privacy-filtered latest-session measurements. It never includes prompts, commands, arguments, output, reasoning text, account identity, host information, or credentials.
+
+The relay read endpoint is deliberately not a proxy. It accepts only `GET /v1/overlay`, validates the range, rejects additional query parameters and paths, derives the fixed `/api/overlay` upstream from the configured collector origin, adds the existing Cloudflare Access service-token headers, enforces an 8-second upstream timeout and 256 KiB response limit, rejects redirects and non-JSON/unsafe responses, and never logs the response body. The ingestion key is not forwarded to the read endpoint. The relay caches one safe snapshot per range: its default upstream refresh interval is 30 seconds and its hard minimum is 15 seconds. Repeated local widget refreshes use that cache, and a safe stale value may be served during an upstream outage.
+
+**Follow ChatGPT** is enabled by default. The Windows-native watcher uses ToolHelp process enumeration to detect the executable actually observed on this system, `ChatGPT.exe`. When that process is absent—or when the overlay document is hidden—the bundled UI performs no relay request, so the overlay causes zero remote/D1 reads. A cheap local process check continues every five seconds. The watcher shows and refreshes the overlay when ChatGPT starts, and hides it to the tray and suspends remote polling when ChatGPT exits. It never starts, stops, or restarts ChatGPT or the relay.
+
+Relay availability and telemetry freshness are separate signals. “Relay online” means the native process reached `127.0.0.1:14318`; it does not claim that remote telemetry is currently flowing. Freshness is `Live` through 15 seconds, shows elapsed seconds/minutes through five minutes, and becomes `Stale` after five minutes. If the relay is absent, the app retains settings and quit controls and shows a compact offline state.
+
+### Codex Live layouts and controls
+
+- **Mini:** approximately 300 × 150 pixels for a corner monitor.
+- **Standard:** 360 × 250 pixels for current usage and health.
+- **Expanded:** 430 × 500 pixels with trends, token composition, model/reasoning distributions, latest session, GitHub, and CI.
+- **Strip:** 600 × 90 pixels for a monitor edge.
+
+The frameless window is resizable, draggable when unlocked, always-on-top by default, single-instance, and backed by a system tray. Position and size are restored by Tauri’s window-state plugin. Corner placement and optional edge snapping are available. Lock mode disables dragging and resizing. The tray provides Show, Hide, all four layouts, always-on-top, click-through, position lock, Settings, Open Command Center, Start with Windows, and Quit.
+
+Default global shortcuts are:
+
+- `Ctrl+Shift+Space`: show or hide the overlay.
+- `Ctrl+Shift+O`: toggle click-through.
+
+Click-through cannot be enabled unless both recovery shortcuts register successfully. Registration conflicts are surfaced in Settings instead of failing silently. The tray remains an additional recovery path. Double-clicking the header toggles Mini and Standard; Escape closes Settings or hides the focused overlay.
+
+Appearance settings include native backdrop selection, dark/light surfaces, 20–100% surface opacity, Auto/White/Black/Red/Amber/Cyan/custom text, a separate validated accent color, 80–150% font scaling, and Tight/Comfortable density. Auto uses light text on the dark surface and dark text on the light surface. Mica uses the native Windows 11 backdrop when supported. Acrylic uses the native Windows 10/11 effect but remains optional because Windows/Tauri document resize and drag performance caveats on some builds. Unsupported native effects fall back to the stable translucent surface; Solid is always available.
+
+Only non-sensitive UI preferences are stored in Tauri’s app-local store. The desktop frontend has no shell, filesystem, process, arbitrary HTTP, or global-shortcut capability. Its Rust fetch command is hardcoded to the loopback relay endpoint. Cloudflare Access credentials, the telemetry ingestion key, GitHub credentials, account identity, machine identifiers, and telemetry content never enter the executable’s configuration or frontend models.
+
+### Native development and Windows build
+
+Install the desktop lockfile separately:
+
+```powershell
+npm ci --prefix desktop/overlay
+```
+
+Build the bundled frontend and check the native code:
+
+```powershell
+npm run build:overlay
+cargo fmt --manifest-path desktop/overlay/src-tauri/Cargo.toml --check
+cargo check --manifest-path desktop/overlay/src-tauri/Cargo.toml
+```
+
+Run or build the Windows application after starting the relay:
+
+```powershell
+npm --prefix desktop/overlay run tauri dev
+npm --prefix desktop/overlay run tauri build
+```
+
+The build produces unsigned local artifacts only. Do not sign, publish, or deploy them without an explicitly authorized release process.
+
+For local website development, point the existing `TELEMETRY_COLLECTOR_URL` at the loopback Next.js ingestion endpoint. The relay derives `http://localhost:3000/api/overlay` from that explicitly local collector origin. In production it derives the same fixed path from the production Worker origin.
+
+If the current Cloudflare Access service-token policy is scoped only to `/api/telemetry/ingest`, a future administrator must extend the existing Access application—or create an equally protected path-specific application—so `/api/overlay` permits **Service Auth** for the same relay service token. Keep the authenticated-user policy for browser dashboard routes and continue denying anonymous access. No Access policy is changed by this repository code.
 
 ## GitHub snapshot and request design
 
@@ -183,6 +283,22 @@ This is deliberately the smallest appropriate design for the current single-user
 
 The generated Cloudflare CDN adapter does not authorize public caching of private HTML or RSC payloads. Dashboard routes remain dynamic, and provider fetches opt out of HTTP caching. These protections must be rechecked in Worker preview and before every production rollout.
 
+Codex snapshot caching is separate from GitHub caching. Ingest persists snapshots at bounded TTLs; the provider adds a 60-second in-isolate cache. A normal Codex render issues one D1 statement returning at most three rows. `/api/overlay` issues one D1 statement returning one row. The GitHub page does not read Codex D1. Run `npm run audit:d1` to recreate a 50,000-row isolated local dataset, inspect query plans, and enforce these source and row-return budgets without accessing production.
+
+## Safe production rollout order
+
+Production operations require separate authorization. The safest order is:
+
+1. Commit and push the feature branch, open the PR, and require all CI checks to pass.
+2. Begin a short authorized maintenance window and pause the existing `Codex Telemetry Relay` scheduled task so raw events cannot arrive between backfill and deployment. Do not open the old dashboard during this window.
+3. Apply migration 0003 before application deployment: `npx wrangler d1 migrations apply codex-command-center-telemetry --remote`.
+4. While ingestion is paused, run `npm run backfill:codex-rollups -- --remote --confirm-remote`. Use `--rebuild` only if the new rollup tables are intentionally being rebuilt; raw telemetry is never deleted.
+5. Merge and deploy the verified application immediately after the snapshots exist. If an unexpected deployment temporarily precedes the migration, ingest remains functional and analytics stay explicitly unavailable; there is no raw fallback.
+6. Validate `codex_dashboard_snapshot` has exactly three rows and verify `/api/overlay` returns one small snapshot without a raw-table query.
+7. Start the paused relay to complete its one rollout restart and load the final cache implementation: `Start-ScheduledTask -TaskName 'Codex Telemetry Relay'`. This is a one-time maintenance restart, not process coupling to ChatGPT.
+8. Verify the current Cloudflare Access service token can reach `/api/overlay` and anonymous access remains denied.
+9. Enable the native overlay and confirm Follow ChatGPT suspends relay requests while `ChatGPT.exe` is absent.
+
 ## Failure and rate-limit behavior
 
 The provider distinguishes missing configuration, authentication failures, permission failures, primary rate exhaustion, secondary rate limiting, network errors, API errors, and valid empty results. `Retry-After` and `X-RateLimit-Reset` are converted into safe typed retry metadata. Raw GitHub error bodies, credentials, and request headers are not returned to the browser.
@@ -195,16 +311,19 @@ Repository metadata can succeed while a narrower capability fails. In that case 
 npm run lint
 npm run typecheck
 npm test
+npm run check:migrations
+npm run audit:d1
 npm run build
 npm run check:vinext
 npm run build:vinext
+npm run build:overlay
 ```
 
-CI runs all six checks on pushes and pull requests. It does not deploy.
+CI runs the website, D1, Worker, bundled-overlay frontend, Rust formatting, and native Cargo checks on pushes and pull requests. It does not deploy or build a signed installer.
 
 ## Future integrations
 
-Planned provider seams include project telemetry, Liquidation Terminal telemetry, multiple GitHub repositories, optional long-lived Codex rollups, and additional read-only providers. Each integration must preserve typed results, server-only credentials, bounded concurrency, explicit freshness/failure semantics, and honest unavailable states.
+Planned provider seams include project telemetry, Liquidation Terminal telemetry, multiple GitHub repositories, and additional read-only providers. Each integration must preserve typed results, server-only credentials, bounded concurrency, explicit freshness/failure semantics, honest unavailable states, and the rule that normal views read compact summaries rather than raw analytical history.
 
 ## Git workflow
 

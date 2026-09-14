@@ -33,6 +33,13 @@ recordings/
 runtime/
 .vinext/
 .wrangler/
+target/
 dist/
 .dev.vars
 .dev.vars.*
+
+# Tauri's icon generator emits every platform; this Windows app needs only the source and ICO.
+desktop/overlay/src-tauri/icons/**
+!desktop/overlay/src-tauri/icons/app-icon.svg
+!desktop/overlay/src-tauri/icons/icon.ico
+desktop/overlay/src-tauri/gen/schemas/

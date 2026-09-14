@@ -24,6 +24,10 @@ These rules are permanent maintenance guidance for agents working in this reposi
 - Treat OTLP events as untrusted input. Preserve payload, record, attribute, string, and numeric bounds.
 - Keep D1 access behind prepared statements and batch related writes; evolve the schema through append-only checked-in migrations.
 - Preserve event fingerprint deduplication and the default 30-day raw-event retention cleanup path.
+- Never use `codex_telemetry_events` to drive normal dashboard or overlay reads. Normal Codex views must consume bounded materialized snapshots; raw reads belong only to explicit Forensics workflows.
+- Roll up only telemetry rows that were newly inserted according to D1 write metadata. Preserve grouping before upserts so exporter retries remain idempotent and write amplification stays bounded.
+- Keep the normal cost budgets explicit: `/api/overlay` returns one snapshot row (hard target at most 5), the Codex page returns at most three snapshot rows (hard target at most 50), and the GitHub page performs no Codex D1 read.
+- Never run the rollup backfill automatically. Remote backfill and migration commands are production mutations requiring explicit authorization.
 
 ## Data integrity and security
 
@@ -51,6 +55,8 @@ These rules are permanent maintenance guidance for agents working in this reposi
 - Run `npm run build` after meaningful changes.
 - Run `npm run check:vinext` and `npm run build:vinext` after changes that can affect the Cloudflare Workers runtime.
 - Run telemetry parser, privacy, ingestion-authentication, deduplication, D1/provider, relay, and migration tests after changing the telemetry path.
+- Run `npm run audit:d1` after changing normal Codex, overlay, rollup, or forensic query boundaries. The command must remain local-only.
+- After native overlay changes, run the bundled frontend build, `cargo fmt --check`, `cargo check`, and a debug Tauri build when the Windows toolchain is available.
 - Verify both normal Next.js and local Worker/vinext runtime paths when runtime behavior changes.
 - Start the application locally and verify the primary dashboard route renders when the change affects the UI.
 - Inspect the final `git status` and `git diff` before reporting completion.
