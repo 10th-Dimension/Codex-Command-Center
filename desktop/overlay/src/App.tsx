@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState, type CSSProperties, type MouseEvent } from "react";
-import { Activity, AlertTriangle, Check, ChevronDown, Circle, ExternalLink, EyeOff, Grip, Lock, Minus, Power, RefreshCw, Settings, Unlock, X } from "lucide-react";
+import { Activity, AlertTriangle, Check, ChevronDown, Circle, ExternalLink, EyeOff, Grip, LayoutGrid, Lock, Minus, Power, RefreshCw, Settings, Unlock, X } from "lucide-react";
 import type { OverlaySnapshot } from "../../../src/lib/overlay/contracts";
 import { telemetryFreshness } from "./lib/freshness";
-import { applyWindowSettings, configureHotkeys, fetchOverlay, getAutostart, getNativeState, hideOverlay, loadSettings, onNativeAction, openDashboard, quitOverlay, saveSettings, setAutostart, setCorner, setLayout, startDrag, type NativeState } from "./lib/native";
-import { defaultDesktopOverlaySettings, parseDesktopOverlaySettings, resolveLayout, shouldPollRemote, textColorValue, type DesktopOverlaySettings, type OverlayLayout } from "./lib/settings";
+import { applyWindowSettings, configureHotkeys, controlRelay, fetchOverlay, getAutostart, getNativeState, hideOverlay, loadSettings, onNativeAction, openDashboard, quitOverlay, recoverOverlay, saveSettings, setAutostart, setCorner, setLayout, startDrag, startResize, type NativeState } from "./lib/native";
+import { defaultDesktopOverlaySettings, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, resolveLayout, shouldPollRemote, textColorValue, type DesktopOverlaySettings, type OverlayLayout, type OverlayRange } from "./lib/settings";
 
 type RelayState = "checking" | "online" | "offline" | "upstream-error" | "paused";
+type HeaderMenu = "range" | "layout";
+const clickThroughNotice = "Click-through enabled · Ctrl+Shift+O to regain control";
 
 export function App() {
   const [settings, setSettings] = useState(defaultDesktopOverlaySettings);
@@ -14,6 +16,7 @@ export function App() {
   const [relay, setRelay] = useState<RelayState>("checking");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
+  const [headerMenu, setHeaderMenu] = useState<HeaderMenu>();
   const [nativeState, setNativeState] = useState<NativeState>();
   const [message, setMessage] = useState<string>();
   const [ready, setReady] = useState(false);
@@ -34,9 +37,13 @@ export function App() {
 
   const updateSettings = useCallback(async (partial: Partial<DesktopOverlaySettings>, resize = false) => {
     const next = parseDesktopOverlaySettings({ ...settings, ...partial });
+    const enablingClickThrough = partial.clickThrough === true && !settings.clickThrough;
     setSettings(next);
-    setMessage(undefined);
+    setMessage(enablingClickThrough ? clickThroughNotice : undefined);
     try {
+      if (enablingClickThrough) {
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      }
       if (partial.showHideHotkey !== undefined || partial.clickThroughHotkey !== undefined) {
         setNativeState(await configureHotkeys(next.showHideHotkey, next.clickThroughHotkey));
       }
@@ -59,6 +66,12 @@ export function App() {
       }
     }
   }, [refresh, settings]);
+
+  useEffect(() => {
+    if (message !== clickThroughNotice) return;
+    const timer = window.setTimeout(() => setMessage((current) => current === clickThroughNotice ? undefined : current), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
 
   useEffect(() => {
     void (async () => {
@@ -116,17 +129,18 @@ export function App() {
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (settingsOpen || contextOpen) { setSettingsOpen(false); setContextOpen(false); }
+      if (settingsOpen || contextOpen || headerMenu) { setSettingsOpen(false); setContextOpen(false); setHeaderMenu(undefined); }
       else void hideOverlay();
     };
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [contextOpen, settingsOpen]);
+  }, [contextOpen, headerMenu, settingsOpen]);
 
   useEffect(() => {
     let unlisten: undefined | (() => void);
     void onNativeAction((action) => {
       if (action.kind === "show-settings") setSettingsOpen(true);
+      else if (action.kind === "recover-overlay") void updateSettings({ clickThrough: false, lockPosition: false });
       else if (action.kind === "layout") void updateSettings({ layout: action.value }, true);
       else if (action.kind === "click-through") void updateSettings({ clickThrough: action.value });
       else if (action.kind === "lock-position") void updateSettings({ lockPosition: action.value });
@@ -135,12 +149,17 @@ export function App() {
         setNativeState((current) => current ? { ...current, chatgptRunning: action.value } : current);
         if (action.value) void refresh(settings.range);
         else setRelay("paused");
+      } else if (action.kind === "relay-status") {
+        setNativeState((current) => current ? { ...current, relayStatus: action.value, relayOwned: action.owned } : current);
+        if (action.value === "online" || action.value === "external") void refresh(settings.range);
+        else if (action.value === "offline" || action.value === "error") setRelay("offline");
       }
     }).then((dispose) => { unlisten = dispose; }).catch(() => undefined);
     return () => unlisten?.();
   }, [refresh, settings.range, updateSettings]);
 
-  const toggleDensityLayout = () => {
+  const toggleDensityLayout = (event: MouseEvent) => {
+    if ((event.target as HTMLElement).closest("button, input, select")) return;
     const layout = settings.layout === "mini" ? "standard" : "mini";
     void updateSettings({ layout }, true);
   };
@@ -150,20 +169,26 @@ export function App() {
     void startDrag(settings.edgeSnapping);
   };
 
-  const freshness = telemetryFreshness(snapshot?.lastTelemetryAt);
+  const dataPathHealthy = (relay === "online" || relay === "paused") && snapshot?.health.telemetry === "connected" && snapshot.health.d1 === "connected";
+  const freshness = telemetryFreshness(snapshot?.lastTelemetryAt, undefined, dataPathHealthy);
   const colors = { "--text": textColorValue(settings), "--accent": settings.accentColor, "--surface-opacity": settings.opacity / 100, "--font-scale": settings.fontScale / 100 } as CSSProperties;
 
-  return <main className={`app layout-${effectiveLayout} density-${settings.density} effect-${settings.effect} surface-${settings.surface}`} style={colors} onContextMenu={(event) => { event.preventDefault(); setContextOpen(true); }}>
+  return <main className={`app layout-${effectiveLayout} density-${settings.density} effect-${settings.effect} surface-${settings.surface} ${settings.clickThrough ? "click-through-enabled" : ""}`} style={colors} onContextMenu={(event) => { event.preventDefault(); setHeaderMenu(undefined); setContextOpen(true); }}>
     <section className="instrument">
-      <header className="drag-region" onMouseDown={drag} onDoubleClick={toggleDensityLayout}>
-        <div className="brand"><Activity size={13} /><b>CODEX LIVE</b><StatusDot state={relay === "online" ? freshness.state : relay === "checking" || relay === "paused" ? "unavailable" : "stale"} /></div>
-        <div className="header-meta"><span>{snapshot?.range?.toUpperCase() ?? settings.range.toUpperCase()}</span><button title={settings.lockPosition ? "Unlock position" : "Lock position"} onClick={() => void updateSettings({ lockPosition: !settings.lockPosition })}>{settings.lockPosition ? <Lock size={12} /> : <Grip size={12} />}</button><button title="Settings" onClick={() => setSettingsOpen(true)}><Settings size={12} /></button><button title="Hide overlay" onClick={() => void hideOverlay()}><Minus size={12} /></button></div>
+      {!settings.lockPosition && !settings.clickThrough ? <ResizeHandles /> : null}
+      <header className="drag-region" title="Drag to move Codex Live" onMouseDown={drag} onDoubleClick={toggleDensityLayout}>
+        <div className="brand"><Activity size={13} /><b>CODEX LIVE</b><StatusDot state={relay === "online" ? freshness.state : relay === "checking" || relay === "paused" ? "unavailable" : "stale"} />{settings.clickThrough ? <span className="click-through-indicator"><EyeOff size={9} />Pass</span> : null}</div>
+        <div className="header-meta">
+          <div className="header-control"><button className="range-trigger" aria-label="Select telemetry range" aria-expanded={headerMenu === "range"} onClick={() => setHeaderMenu((current) => current === "range" ? undefined : "range")}>{settings.range.toUpperCase()}</button>{headerMenu === "range" ? <div className="header-selector range-selector">{overlayRanges.map((range) => <button className={settings.range === range ? "active" : ""} key={range} onClick={() => { setHeaderMenu(undefined); void updateSettings({ range }); }}>{range.toUpperCase()}</button>)}</div> : null}</div>
+          <div className="header-control"><button aria-label="Select overlay layout" aria-expanded={headerMenu === "layout"} title={`Layout · ${titleCase(settings.layout)}`} onClick={() => setHeaderMenu((current) => current === "layout" ? undefined : "layout")}><LayoutGrid size={12} /></button>{headerMenu === "layout" ? <div className="header-selector layout-selector">{overlayLayouts.map((layout) => <button className={settings.layout === layout ? "active" : ""} key={layout} onClick={() => { setHeaderMenu(undefined); void updateSettings({ layout }, true); }}>{titleCase(layout)}</button>)}</div> : null}</div>
+          <button title={settings.lockPosition ? "Unlock position" : "Lock position"} onClick={() => void updateSettings({ lockPosition: !settings.lockPosition })}>{settings.lockPosition ? <Lock size={12} /> : <Grip size={12} />}</button><button title="Settings" onClick={() => setSettingsOpen(true)}><Settings size={12} /></button><button title="Hide overlay" onClick={() => void hideOverlay()}><Minus size={12} /></button>
+        </div>
       </header>
 
       {relay === "offline" ? <OfflineState openSettings={() => setSettingsOpen(true)} retry={() => void refresh(settings.range)} /> : relay === "paused" && !snapshot ? <PausedState /> : <OverlayContent snapshot={snapshot} relay={relay} layout={effectiveLayout} freshness={freshness} />}
 
       {message ? <div className="message"><AlertTriangle size={11} /><span>{message}</span><button aria-label="Dismiss" onClick={() => setMessage(undefined)}><X size={11} /></button></div> : null}
-      {settingsOpen ? <SettingsPanel settings={settings} nativeState={nativeState} close={() => setSettingsOpen(false)} update={updateSettings} refresh={() => void refresh(settings.range)} /> : null}
+      {settingsOpen ? <SettingsPanel settings={settings} nativeState={nativeState} close={() => setSettingsOpen(false)} update={updateSettings} refresh={() => void refresh(settings.range)} report={(error) => setMessage(safeNativeMessage(error))} /> : null}
       {contextOpen ? <ContextMenu settings={settings} close={() => setContextOpen(false)} update={updateSettings} /> : null}
     </section>
   </main>;
@@ -192,7 +217,12 @@ function Expanded({ snapshot }: Readonly<{ snapshot: OverlaySnapshot }>) {
   </div>;
 }
 
-function Identity({ session }: Readonly<{ session?: OverlaySnapshot["latestSession"] }>) { return <div className="identity"><span>{friendlyModel(session?.model)}</span><i>·</i><small>{session?.reasoningEffort ?? "effort unavailable"}</small></div>; }
+function Identity({ session }: Readonly<{ session?: OverlaySnapshot["latestSession"] }>) { return <div className="identity" title={session ? `Latest observed session · ${session.lastSeenAt}` : "No observed session"}><span>{friendlyModel(session?.model)}</span><i>·</i><small>{session?.reasoningEffort ?? "effort unavailable"}</small></div>; }
+
+function ResizeHandles() {
+  const directions = ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"] as const;
+  return <>{directions.map((direction) => <i aria-hidden="true" className={`resize-handle resize-${direction}`} key={direction} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); void startResize(direction); }} />)}</>;
+}
 function Metric({ label, short, value, duration, optionalMini }: Readonly<{ label?: string; short?: string; value?: number; duration?: boolean; optionalMini?: boolean }>) { return <div className={`metric ${optionalMini ? "optional-mini" : ""}`}><span>{short ?? label}</span><b>{duration ? durationLabel(value) : numberLabel(value)}</b></div>; }
 function StatusDot({ state }: Readonly<{ state: string }>) { return <Circle className={`status-dot ${state}`} fill="currentColor" size={6} />; }
 function HealthChip({ label, status }: Readonly<{ label: string; status: string }>) { return <span className="health-chip"><StatusDot state={status} />{label}</span>; }
@@ -221,16 +251,16 @@ function Distribution({ items }: Readonly<{ items: OverlaySnapshot["modelDistrib
 function OfflineState({ retry, openSettings }: Readonly<{ retry: () => void; openSettings: () => void }>) { return <div className="offline"><div><Power size={18} /><h1>Relay offline</h1><p>Start or restart the Codex telemetry relay to resume live analytics.</p></div><div><button onClick={retry}><RefreshCw size={12} />Retry</button><button onClick={openSettings}><Settings size={12} />Settings</button></div></div>; }
 function PausedState() { return <div className="offline"><div><Power size={18} /><h1>Following ChatGPT</h1><p>Remote snapshot polling is paused until ChatGPT is running and the overlay is visible.</p></div></div>; }
 
-function SettingsPanel({ settings, nativeState, close, update, refresh }: Readonly<{ settings: DesktopOverlaySettings; nativeState?: NativeState; close: () => void; update: (partial: Partial<DesktopOverlaySettings>, resize?: boolean) => Promise<void>; refresh: () => void }>) {
+function SettingsPanel({ settings, nativeState, close, update, refresh, report }: Readonly<{ settings: DesktopOverlaySettings; nativeState?: NativeState; close: () => void; update: (partial: Partial<DesktopOverlaySettings>, resize?: boolean) => Promise<void>; refresh: () => void; report: (error: unknown) => void }>) {
   return <aside className="settings-panel"><header><div><Settings size={13} /><b>Overlay settings</b></div><button onClick={close}><X size={14} /></button></header><div className="settings-scroll">
     <SettingsGroup title="Appearance"><Select label="Effect" value={settings.effect} values={["translucent", "mica", "acrylic", "solid"]} change={(value) => void update({ effect: value as DesktopOverlaySettings["effect"] })} /><Select label="Surface" value={settings.surface} values={["dark", "light"]} change={(value) => void update({ surface: value as DesktopOverlaySettings["surface"] })} /><Range label={`Opacity · ${settings.opacity}%`} value={settings.opacity} min={20} max={100} change={(value) => void update({ opacity: value })} /><Select label="Text" value={settings.textColor} values={["auto", "white", "black", "red", "amber", "cyan", "custom"]} change={(value) => void update({ textColor: value as DesktopOverlaySettings["textColor"] })} /><Color label="Accent" value={settings.accentColor} change={(value) => void update({ accentColor: value })} />{settings.textColor === "custom" ? <Color label="Custom text" value={settings.customTextColor} change={(value) => void update({ customTextColor: value })} /> : null}<Range label={`Font · ${settings.fontScale}%`} value={settings.fontScale} min={80} max={150} change={(value) => void update({ fontScale: value })} /><Select label="Density" value={settings.density} values={["tight", "comfortable"]} change={(value) => void update({ density: value as DesktopOverlaySettings["density"] })} /></SettingsGroup>
-    <SettingsGroup title="Window"><Select label="Layout" value={settings.layout} values={["mini", "standard", "expanded", "strip"]} change={(value) => void update({ layout: value as OverlayLayout }, true)} /><Select label="Position" value={settings.corner} values={["free", "top-left", "top-right", "bottom-left", "bottom-right"]} change={(value) => void update({ corner: value as DesktopOverlaySettings["corner"] })} /><Toggle label="Lock position" checked={settings.lockPosition} change={(value) => void update({ lockPosition: value })} /><Toggle label="Edge snapping" checked={settings.edgeSnapping} change={(value) => void update({ edgeSnapping: value })} /><Toggle label="Always on top" checked={settings.alwaysOnTop} change={(value) => void update({ alwaysOnTop: value })} /><Toggle label="Show in taskbar" checked={settings.showInTaskbar} change={(value) => void update({ showInTaskbar: value })} /><Toggle label="Click through" checked={settings.clickThrough} disabled={!nativeState?.shortcutsReady} change={(value) => void update({ clickThrough: value })} /></SettingsGroup>
-    <SettingsGroup title="Behavior"><Toggle label="Follow ChatGPT" checked={settings.followChatgpt} change={(value) => void update({ followChatgpt: value })} /><p>Detected host: <b>{nativeState?.chatgptRunning ? "ChatGPT running" : "ChatGPT closed"}</b></p><Select label="Local refresh" value={String(settings.refreshSeconds)} values={["5", "10", "15", "30", "60"]} labels={["5 seconds", "10 seconds", "15 seconds", "30 seconds", "60 seconds"]} change={(value) => void update({ refreshSeconds: Number(value) })} /><Select label="Range" value={settings.range} values={["24h", "7d", "30d"]} change={(value) => void update({ range: value as DesktopOverlaySettings["range"] })} /><Toggle label="Start with Windows" checked={settings.startWithWindows} change={(value) => void update({ startWithWindows: value })} /><Text label="Show / hide" value={settings.showHideHotkey} change={(value) => void update({ showHideHotkey: value })} /><Text label="Click through" value={settings.clickThroughHotkey} change={(value) => void update({ clickThroughHotkey: value })} />{nativeState?.shortcutError ? <p className="settings-error">{nativeState.shortcutError}</p> : null}</SettingsGroup>
-    <SettingsGroup title="Data"><div className="data-actions"><button onClick={refresh}><RefreshCw size={12} />Refresh now</button><button onClick={() => void openDashboard()}><ExternalLink size={12} />Open Command Center</button></div><p>Relay: <b>127.0.0.1:14318</b></p><p>The widget refreshes locally at the selected cadence. The relay limits remote snapshot reads to once every 30 seconds.</p><p>Snapshot values are operational and privacy-filtered. No cloud credential is stored in this app.</p></SettingsGroup>
+    <SettingsGroup title="Window"><Select label="Layout" value={settings.layout} values={[...overlayLayouts]} change={(value) => void update({ layout: value as OverlayLayout }, true)} /><Select label="Position" value={settings.corner} values={["free", "top-left", "top-right", "bottom-left", "bottom-right"]} change={(value) => void update({ corner: value as DesktopOverlaySettings["corner"] })} /><Toggle label="Lock position" checked={settings.lockPosition} change={(value) => void update({ lockPosition: value })} /><Toggle label="Edge snapping" checked={settings.edgeSnapping} change={(value) => void update({ edgeSnapping: value })} /><Toggle label="Always on top" checked={settings.alwaysOnTop} change={(value) => void update({ alwaysOnTop: value })} /><Toggle label="Show in taskbar" checked={settings.showInTaskbar} change={(value) => void update({ showInTaskbar: value })} /><Toggle label="Click through" checked={settings.clickThrough} disabled={!nativeState?.shortcutsReady} change={(value) => void update({ clickThrough: value })} /></SettingsGroup>
+    <SettingsGroup title="Behavior"><Toggle label="Follow ChatGPT" checked={settings.followChatgpt} change={(value) => void update({ followChatgpt: value })} /><p>Detected host: <b>{nativeState?.chatgptRunning ? "ChatGPT running" : "ChatGPT closed"}</b></p><Select label="Local refresh" value={String(settings.refreshSeconds)} values={["5", "10", "15", "30", "60"]} labels={["5 seconds", "10 seconds", "15 seconds", "30 seconds", "60 seconds"]} change={(value) => void update({ refreshSeconds: Number(value) })} /><Select label="Range" value={settings.range} values={[...overlayRanges]} change={(value) => void update({ range: value as OverlayRange })} /><Toggle label="Start with Windows" checked={settings.startWithWindows} change={(value) => void update({ startWithWindows: value })} /><Text label="Show / hide" value={settings.showHideHotkey} change={(value) => void update({ showHideHotkey: value })} /><Text label="Click through" value={settings.clickThroughHotkey} change={(value) => void update({ clickThroughHotkey: value })} />{nativeState?.shortcutError ? <p className="settings-error">{nativeState.shortcutError}</p> : null}</SettingsGroup>
+      <SettingsGroup title="Data"><div className="data-actions"><button onClick={refresh}><RefreshCw size={12} />Refresh now</button><button onClick={() => void openDashboard()}><ExternalLink size={12} />Open Command Center</button></div><div className="data-actions"><button onClick={() => void controlRelay("start").then(refresh).catch(report)}><Power size={12} />Start relay</button><button onClick={() => void controlRelay("restart").then(refresh).catch(report)}><RefreshCw size={12} />Restart relay</button><button onClick={() => void controlRelay("stop").catch(report)}><X size={12} />Stop relay</button></div><p>Relay: <b>{nativeState?.relayStatus ?? "checking"}</b> · 127.0.0.1:14318</p><p>The widget refreshes locally at the selected cadence. The relay limits remote snapshot reads to once every 30 seconds.</p><p>Snapshot values are operational and privacy-filtered. No cloud credential is stored in this app.</p></SettingsGroup>
   </div></aside>;
 }
 
-function ContextMenu({ settings, close, update }: Readonly<{ settings: DesktopOverlaySettings; close: () => void; update: (partial: Partial<DesktopOverlaySettings>, resize?: boolean) => Promise<void> }>) { return <div className="context-menu" onMouseLeave={close}>{(["mini", "standard", "expanded", "strip"] as OverlayLayout[]).map((layout) => <button key={layout} onClick={() => { close(); void update({ layout }, true); }}>{settings.layout === layout ? <Check size={11} /> : <span />}{layout}</button>)}<hr /><button onClick={() => { close(); void update({ alwaysOnTop: !settings.alwaysOnTop }); }}><span />Always on top</button><button onClick={() => { close(); void update({ lockPosition: !settings.lockPosition }); }}>{settings.lockPosition ? <Lock size={11} /> : <Unlock size={11} />}Lock position</button><button disabled={!settings.clickThroughHotkey} onClick={() => { close(); void update({ clickThrough: !settings.clickThrough }); }}><EyeOff size={11} />Click through</button><hr /><button onClick={() => void openDashboard()}><ExternalLink size={11} />Open Command Center</button><button onClick={() => void quitOverlay()}><Power size={11} />Quit</button></div>; }
+function ContextMenu({ settings, close, update }: Readonly<{ settings: DesktopOverlaySettings; close: () => void; update: (partial: Partial<DesktopOverlaySettings>, resize?: boolean) => Promise<void> }>) { return <div className="context-menu" onMouseLeave={close}>{overlayRanges.map((range) => <button key={range} onClick={() => { close(); void update({ range }); }}>{settings.range === range ? <Check size={11} /> : <span />}{range.toUpperCase()}</button>)}<hr />{overlayLayouts.map((layout) => <button key={layout} onClick={() => { close(); void update({ layout }, true); }}>{settings.layout === layout ? <Check size={11} /> : <span />}{layout}</button>)}<hr /><button onClick={() => { close(); void update({ alwaysOnTop: !settings.alwaysOnTop }); }}><span />Always on top</button><button onClick={() => { close(); void update({ lockPosition: !settings.lockPosition }); }}>{settings.lockPosition ? <Lock size={11} /> : <Unlock size={11} />}Lock position</button><button disabled={!settings.clickThroughHotkey} onClick={() => { close(); void update({ clickThrough: !settings.clickThrough }); }}><EyeOff size={11} />Click through</button><button onClick={() => { close(); void recoverOverlay(); }}><Unlock size={11} />Recover movement</button><hr /><button onClick={() => void openDashboard()}><ExternalLink size={11} />Open Command Center</button><button onClick={() => void quitOverlay()}><Power size={11} />Quit</button></div>; }
 
 function SettingsGroup({ title, children }: Readonly<{ title: string; children: React.ReactNode }>) { return <section className="settings-group"><h2>{title}</h2><div>{children}</div></section>; }
 function Select({ label, value, values, labels, change }: Readonly<{ label: string; value: string; values: string[]; labels?: string[]; change: (value: string) => void }>) { return <label><span>{label}</span><select value={value} onChange={(event) => change(event.target.value)}>{values.map((item, index) => <option key={item} value={item}>{labels?.[index] ?? titleCase(item)}</option>)}</select><ChevronDown size={10} /></label>; }
@@ -247,6 +277,10 @@ function titleCase(value: string) { return value.replace(/-/g, " ").replace(/\b\
 function safeNativeMessage(error: unknown) {
   const detail = String(error);
   if (/shortcut/i.test(detail)) return detail.replace(/^Error:\s*/i, "").slice(0, 160);
+  if (detail.includes("relay_not_owned")) return "That relay was not started by Codex Live, so it was left untouched.";
+  if (detail.includes("relay_runtime_unavailable")) return "Build dependencies for the local relay are unavailable.";
+  if (detail.includes("relay_start_failed")) return "The local relay could not start. Check the local configuration and port.";
+  if (detail.includes("relay_stop_failed")) return "The Codex Live-owned relay could not be stopped.";
   if (detail.includes("dashboard_open_failed")) return "The Command Center could not be opened.";
   if (detail.includes("window_") || detail.includes("click_through")) return "The requested native window change could not be applied.";
   return "Native host unavailable.";

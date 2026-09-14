@@ -186,7 +186,7 @@ Usage reports only token counts legitimately emitted by telemetry: input, output
 
 ## Website and native overlay
 
-The website remains the analysis surface. Codex Live is intentionally smaller: it prioritizes the current model and reasoning effort, emitted token classes, TTFT, tool executions/failures, telemetry freshness, local-relay reachability, and—in Expanded mode—compact distributions and delivery health. It does not attempt to reproduce the full dashboard.
+The website remains the analysis surface. Codex Live is intentionally smaller: it prioritizes the latest model and reasoning effort actually observed in telemetry, emitted token classes, TTFT, tool executions/failures, telemetry freshness, local-relay reachability, and—in Expanded mode—compact distributions and delivery health. It does not claim that a last-observed model is still active, and it does not attempt to reproduce the full dashboard.
 
 The retained `/overlay` route remains a browser-based preview/reference surface. The actual companion in `desktop/overlay/` packages its own Vite/React frontend inside a frameless Tauri window; it does not open that route in Edge and does not require Edge or a local development server during normal use.
 
@@ -207,9 +207,15 @@ Codex OTel
 
 The relay read endpoint is deliberately not a proxy. It accepts only `GET /v1/overlay`, validates the range, rejects additional query parameters and paths, derives the fixed `/api/overlay` upstream from the configured collector origin, adds the existing Cloudflare Access service-token headers, enforces an 8-second upstream timeout and 256 KiB response limit, rejects redirects and non-JSON/unsafe responses, and never logs the response body. The ingestion key is not forwarded to the read endpoint. The relay caches one safe snapshot per range: its default upstream refresh interval is 30 seconds and its hard minimum is 15 seconds. Repeated local widget refreshes use that cache, and a safe stale value may be served during an upstream outage.
 
-**Follow ChatGPT** is enabled by default. The Windows-native watcher uses ToolHelp process enumeration to detect the executable actually observed on this system, `ChatGPT.exe`. When that process is absent—or when the overlay document is hidden—the bundled UI performs no relay request, so the overlay causes zero remote/D1 reads. A cheap local process check continues every five seconds. The watcher shows and refreshes the overlay when ChatGPT starts, and hides it to the tray and suspends remote polling when ChatGPT exits. It never starts, stops, or restarts ChatGPT or the relay.
+**Follow ChatGPT** is enabled by default. The Windows-native watcher uses ToolHelp process enumeration to detect the executable actually observed on this system, `ChatGPT.exe`. A cheap local process check continues every five seconds. When ChatGPT starts, the native app ensures its loopback relay is healthy, shows the overlay, and resumes refreshes. When ChatGPT exits, it hides the overlay, suspends remote polling, and stops only the relay child it owns. It never starts, stops, or restarts ChatGPT and never terminates an arbitrary Node process. If another healthy Codex relay already owns the loopback endpoint, the overlay uses it but marks it external and refuses ownership-only restart or stop operations.
 
-Relay availability and telemetry freshness are separate signals. “Relay online” means the native process reached `127.0.0.1:14318`; it does not claim that remote telemetry is currently flowing. Freshness is `Live` through 15 seconds, shows elapsed seconds/minutes through five minutes, and becomes `Stale` after five minutes. If the relay is absent, the app retains settings and quit controls and shows a compact offline state.
+Relay availability and telemetry freshness are separate signals. “Relay online” means the native process reached `127.0.0.1:14318`; it does not claim that remote telemetry is currently flowing. Freshness is `Live` through 15 seconds, `Recent` until five minutes, and `Idle` after five minutes while the data path remains healthy. `Stale` is reserved for an actual relay, snapshot, telemetry-provider, or D1 failure. If the relay is absent, the app retains settings and quit controls and shows a compact offline state.
+
+### One-click Windows start
+
+After a native build, run `npm run install:codex-live-shortcut` once to create or repair the desktop shortcut. The installer uses Windows Script Host because it works with the default environment without weakening PowerShell execution policy. The resulting `Codex Live` shortcut points directly to the stable release executable (or the normal debug executable when no release exists), has no arguments, and contains no credentials.
+
+The native GUI is the launcher and supervisor. It starts the existing relay entry point with Node in the repository root, loads secrets only through the relay's existing `.env.local` path, suppresses child standard streams, and uses the Windows no-console process flag. A fixed loopback `/health` response identifies the expected service without a cloud request. Tauri's single-instance plugin recovers an existing overlay; relay health and an owned child handle prevent duplicate relays. `Start with Windows` launches this same GUI, so the saved Follow ChatGPT preference governs the complete overlay-and-relay lifecycle.
 
 ### Codex Live layouts and controls
 
@@ -218,7 +224,7 @@ Relay availability and telemetry freshness are separate signals. “Relay online
 - **Expanded:** 430 × 500 pixels with trends, token composition, model/reasoning distributions, latest session, GitHub, and CI.
 - **Strip:** 600 × 90 pixels for a monitor edge.
 
-The frameless window is resizable, draggable when unlocked, always-on-top by default, single-instance, and backed by a system tray. Position and size are restored by Tauri’s window-state plugin. Corner placement and optional edge snapping are available. Lock mode disables dragging and resizing. The tray provides Show, Hide, all four layouts, always-on-top, click-through, position lock, Settings, Open Command Center, Start with Windows, and Quit.
+The frameless window is resizable, draggable when unlocked, always-on-top by default, single-instance, and backed by a system tray. Position and size are restored by Tauri’s window-state plugin. Explicit edge and corner grab areas make resizing reliable without native decorations. Corner placement and optional edge snapping are available. Lock mode disables dragging and resizing. The tray provides Show, Hide, Recover Overlay, all four layouts, always-on-top, click-through, position lock, Settings, Open Command Center, Start Relay, Restart Relay, Stop Relay, Start with Windows, and Quit. The right-click menu also provides Recover movement.
 
 Default global shortcuts are:
 
@@ -247,7 +253,7 @@ cargo fmt --manifest-path desktop/overlay/src-tauri/Cargo.toml --check
 cargo check --manifest-path desktop/overlay/src-tauri/Cargo.toml
 ```
 
-Run or build the Windows application after starting the relay:
+Run or build the Windows application; it supervises the relay itself:
 
 ```powershell
 npm --prefix desktop/overlay run tauri dev

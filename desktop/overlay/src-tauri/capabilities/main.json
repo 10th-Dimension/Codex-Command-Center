@@ -6,6 +6,7 @@
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:window:allow-start-resize-dragging",
     "store:allow-load",
     "store:allow-get-store",
     "store:allow-get",
