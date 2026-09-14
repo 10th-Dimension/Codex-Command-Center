@@ -67,12 +67,10 @@ test("historical backfill writes zeroes for absent count dimensions without chan
     const backfill = await run(process.execPath, [backfillScript, `--persist-to=${persistence}`]);
     assert.match(backfill.stdout, /Backfill complete/);
 
-    const [hourlyRows, sessionRows, snapshots, rawAfter] = await Promise.all([
-      query("SELECT completed_tools,failed_tools,error_count,warning_count,approvals FROM codex_rollup_hourly"),
-      query("SELECT completed_tools,failed_tools,error_count,warning_count,approvals FROM codex_session_summary"),
-      query("SELECT range FROM codex_dashboard_snapshot ORDER BY range"),
-      query("SELECT * FROM codex_telemetry_events ORDER BY id"),
-    ]);
+    const hourlyRows = await query("SELECT completed_tools,failed_tools,error_count,warning_count,approvals FROM codex_rollup_hourly");
+    const sessionRows = await query("SELECT completed_tools,failed_tools,error_count,warning_count,approvals FROM codex_session_summary");
+    const snapshots = await query("SELECT range FROM codex_dashboard_snapshot ORDER BY range");
+    const rawAfter = await query("SELECT * FROM codex_telemetry_events ORDER BY id");
     const expectedCounters = {
       completed_tools: 0,
       failed_tools: 0,
