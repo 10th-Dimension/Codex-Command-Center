@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Codex Live Overlay",
+  "version": "0.1.0",
+  "identifier": "com.tenthdimension.codex-command-center.overlay",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; connect-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Codex Live",
+        "width": 360,
+        "height": 250,
+        "minWidth": 280,
+        "minHeight": 120,
+        "decorations": false,
+        "transparent": true,
+        "resizable": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false,
+        "center": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "icon": ["icons/icon.ico"],
+    "shortDescription": "Native private Codex telemetry overlay",
+    "longDescription": "A compact native Windows companion for privacy-filtered Codex Command Center telemetry."
+  }
+}

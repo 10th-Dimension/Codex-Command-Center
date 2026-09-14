@@ -13,6 +13,8 @@ export default defineConfig([
     "dist/**",
     ".vinext/**",
     ".wrangler/**",
+    "desktop/overlay/dist/**",
+    "desktop/overlay/src-tauri/target/**",
     "next-env.d.ts",
   ]),
 ]);

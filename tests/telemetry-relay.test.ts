@@ -3,7 +3,24 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { createTelemetryRelay, TELEMETRY_RELAY_HOST } from "../scripts/telemetry-relay";
+import { createTelemetryRelay, isSafeOverlayPayload, OVERLAY_UPSTREAM_PATH, TELEMETRY_RELAY_HOST } from "../scripts/telemetry-relay";
+
+const relayConfiguration = {
+  TELEMETRY_COLLECTOR_URL: "https://command-center.example/api/telemetry/ingest",
+  TELEMETRY_INGEST_KEY: "test-ingest-key",
+  CF_ACCESS_CLIENT_ID: "test-access-id",
+  CF_ACCESS_CLIENT_SECRET: "test-access-secret",
+};
+
+const overlaySnapshot = {
+  generatedAt: "2026-09-12T12:00:00.000Z",
+  range: "24h",
+  health: { telemetry: "connected", d1: "connected", github: "connected", ci: "connected" },
+  windowSummary: { inputTokens: 10, outputTokens: 0 },
+  tokenTrend: [],
+  modelDistribution: [],
+  reasoningDistribution: [],
+};
 
 function listen(server: ReturnType<typeof createServer>) {
   return new Promise<number>((resolve, reject) => {
@@ -76,4 +93,118 @@ test("relay rejects unsupported media types before forwarding", async () => {
 test("relay logging statements cannot reference secret configuration", async () => {
   const source = await readFile(new URL("../scripts/telemetry-relay.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /console\.(?:log|error)\([^\n]*(?:TELEMETRY_INGEST_KEY|CF_ACCESS_CLIENT|configuration)/);
+});
+
+test("overlay read endpoint uses only the fixed upstream path and Access headers", async () => {
+  let requestUrl = "";
+  let requestHeaders = new Headers();
+  const relay = createTelemetryRelay(relayConfiguration, { fetchImpl: async (input, init) => {
+    requestUrl = String(input);
+    requestHeaders = new Headers(init?.headers);
+    return Response.json(overlaySnapshot);
+  } });
+  const relayPort = await listen(relay);
+  try {
+    const response = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=7d`);
+    assert.equal(response.status, 200);
+    assert.equal(new URL(requestUrl).pathname, OVERLAY_UPSTREAM_PATH);
+    assert.equal(new URL(requestUrl).search, "?range=7d");
+    assert.equal(requestHeaders.get("cf-access-client-id"), "test-access-id");
+    assert.equal(requestHeaders.get("cf-access-client-secret"), "test-access-secret");
+    assert.equal(requestHeaders.has("x-codex-telemetry-key"), false);
+  } finally {
+    await close(relay);
+  }
+});
+
+test("overlay relay serves local cache and enforces the minimum upstream refresh interval", async () => {
+  let calls = 0;
+  let clock = 1_000;
+  const relay = createTelemetryRelay(relayConfiguration, {
+    now: () => clock,
+    overlayRefreshMs: 1,
+    fetchImpl: async () => { calls += 1; return Response.json({ ...overlaySnapshot, generatedAt: new Date(clock).toISOString() }); },
+  });
+  const relayPort = await listen(relay);
+  try {
+    const first = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
+    assert.equal(first.headers.get("x-codex-overlay-cache"), "upstream");
+    clock += 14_999;
+    const cached = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
+    assert.equal(cached.headers.get("x-codex-overlay-cache"), "fresh");
+    assert.equal(calls, 1);
+    clock += 1;
+    const refreshed = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
+    assert.equal(refreshed.headers.get("x-codex-overlay-cache"), "upstream");
+    assert.equal(calls, 2);
+  } finally {
+    await close(relay);
+  }
+});
+
+test("overlay relay serves the last safe snapshot when a stale refresh is offline", async () => {
+  let clock = 1_000;
+  let online = true;
+  const relay = createTelemetryRelay(relayConfiguration, {
+    now: () => clock,
+    overlayRefreshMs: 15_000,
+    fetchImpl: async () => {
+      if (!online) throw new Error("offline");
+      return Response.json(overlaySnapshot);
+    },
+  });
+  const relayPort = await listen(relay);
+  try {
+    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=7d`)).status, 200);
+    online = false;
+    clock += 15_001;
+    const stale = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=7d`);
+    assert.equal(stale.status, 200);
+    assert.equal(stale.headers.get("x-codex-overlay-cache"), "stale");
+    assert.deepEqual(await stale.json(), overlaySnapshot);
+  } finally {
+    await close(relay);
+  }
+});
+
+test("overlay endpoint validates range, method, and rejects arbitrary proxy paths", async () => {
+  let calls = 0;
+  const relay = createTelemetryRelay(relayConfiguration, { fetchImpl: async () => { calls += 1; return Response.json(overlaySnapshot); } });
+  const relayPort = await listen(relay);
+  try {
+    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=weekly`)).status, 400);
+    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h&url=https://example.com`)).status, 400);
+    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay`, { method: "POST" })).status, 405);
+    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay/admin?range=24h`)).status, 400);
+    assert.equal(calls, 0);
+  } finally {
+    await close(relay);
+  }
+});
+
+test("overlay endpoint handles unavailable, timed-out, and invalid upstream responses", async () => {
+  const cases: Array<Parameters<typeof createTelemetryRelay>[1]> = [
+    { fetchImpl: async () => { throw new Error("offline"); } },
+    { fetchImpl: async (_input, init) => new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("timeout")), { once: true })), overlayTimeoutMs: 5 },
+    { fetchImpl: async () => new Response("not-json", { status: 200, headers: { "content-type": "text/plain" } }) },
+    { fetchImpl: async () => Response.json({ ...overlaySnapshot, prompt: "must not pass" }) },
+  ];
+  for (const options of cases) {
+    const relay = createTelemetryRelay(relayConfiguration, options);
+    const relayPort = await listen(relay);
+    try {
+      const response = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
+      assert.equal(response.status, 502);
+      assert.deepEqual(await response.json(), { error: "overlay_upstream_unavailable" });
+    } finally {
+      await close(relay);
+    }
+  }
+});
+
+test("safe overlay validator rejects credential and private-content fields", () => {
+  assert.equal(isSafeOverlayPayload(overlaySnapshot), true);
+  for (const key of ["prompt", "command", "stdout", "authorization", "user.email", "hostname", "secret"]) {
+    assert.equal(isSafeOverlayPayload({ ...overlaySnapshot, nested: { [key]: "private" } }), false);
+  }
 });

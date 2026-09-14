@@ -8,6 +8,14 @@ export const TELEMETRY_RELAY_HOST = "127.0.0.1";
 export const TELEMETRY_RELAY_PORT = 14318;
 export const TELEMETRY_RELAY_PATH = "/v1/logs";
 export const TELEMETRY_RELAY_MAX_BYTES = 1_048_576;
+export const OVERLAY_RELAY_PATH = "/v1/overlay";
+export const OVERLAY_UPSTREAM_PATH = "/api/overlay";
+export const OVERLAY_MAX_BYTES = 262_144;
+export const OVERLAY_TIMEOUT_MS = 8_000;
+export const OVERLAY_REFRESH_DEFAULT_MS = 30_000;
+export const OVERLAY_REFRESH_MINIMUM_MS = 15_000;
+export const OVERLAY_RANGES = ["24h", "7d", "30d"] as const;
+export type OverlayRange = typeof OVERLAY_RANGES[number];
 
 const environmentNames = [
   "TELEMETRY_COLLECTOR_URL",
@@ -53,6 +61,44 @@ export function validateRelayConfiguration(configuration: RelayConfiguration) {
   return collector;
 }
 
+export function overlayUpstreamUrl(collector: URL, range: OverlayRange) {
+  const upstream = new URL(OVERLAY_UPSTREAM_PATH, collector.origin);
+  upstream.searchParams.set("range", range);
+  return upstream;
+}
+
+export function parseOverlayRequestUrl(value: string | undefined): OverlayRange | undefined {
+  if (!value) return undefined;
+  const url = new URL(value, `http://${TELEMETRY_RELAY_HOST}`);
+  if (url.pathname !== OVERLAY_RELAY_PATH) return undefined;
+  if ([...url.searchParams.keys()].some((key) => key !== "range")) return undefined;
+  const values = url.searchParams.getAll("range");
+  if (values.length > 1) return undefined;
+  const range = values[0] || "24h";
+  return OVERLAY_RANGES.includes(range as OverlayRange) ? range as OverlayRange : undefined;
+}
+
+const forbiddenOverlayKey = /(?:authorization|cookie|credential|secret|token_value|access_token|refresh_token|password|private_key|prompt|reasoning_text|reasoning_summary|command|arguments|stdout|stderr|tool_output|response_body|request_body|user\.email|user\.account_id|hostname|host\.name|username)/i;
+
+export function isSafeOverlayPayload(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const root = value as Record<string, unknown>;
+  if (typeof root.generatedAt !== "string" || !OVERLAY_RANGES.includes(root.range as OverlayRange)) return false;
+  if (!root.health || typeof root.health !== "object" || !root.windowSummary || typeof root.windowSummary !== "object") return false;
+  const pending: unknown[] = [root];
+  let visited = 0;
+  while (pending.length) {
+    const current = pending.pop();
+    if (!current || typeof current !== "object") continue;
+    if (++visited > 2_000) return false;
+    for (const [key, child] of Object.entries(current)) {
+      if (forbiddenOverlayKey.test(key)) return false;
+      if (child && typeof child === "object") pending.push(child);
+    }
+  }
+  return true;
+}
+
 function readRequestBody(request: IncomingMessage) {
   return new Promise<Buffer>((resolveBody, reject) => {
     const chunks: Buffer[] = [];
@@ -71,13 +117,91 @@ function readRequestBody(request: IncomingMessage) {
   });
 }
 
-export function createTelemetryRelay(configuration: RelayConfiguration, options: { fetchImpl?: typeof fetch } = {}) {
+export function createTelemetryRelay(configuration: RelayConfiguration, options: {
+  fetchImpl?: typeof fetch;
+  overlayTimeoutMs?: number;
+  overlayRefreshMs?: number;
+  now?: () => number;
+} = {}) {
   const collector = validateRelayConfiguration(configuration);
   const fetchImpl = options.fetchImpl ?? fetch;
+  const overlayTimeoutMs = options.overlayTimeoutMs ?? OVERLAY_TIMEOUT_MS;
+  const overlayRefreshMs = Math.max(OVERLAY_REFRESH_MINIMUM_MS, options.overlayRefreshMs ?? OVERLAY_REFRESH_DEFAULT_MS);
+  const now = options.now ?? Date.now;
+  const overlayCache = new Map<OverlayRange, { body: Uint8Array; fetchedAt: number }>();
+  const overlayInFlight = new Map<OverlayRange, Promise<Uint8Array>>();
+
+  async function fetchOverlay(range: OverlayRange) {
+    const existing = overlayInFlight.get(range);
+    if (existing) return existing;
+    const pending = (async () => {
+      const upstream = await fetchImpl(overlayUpstreamUrl(collector, range), {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          "cf-access-client-id": configuration.CF_ACCESS_CLIENT_ID,
+          "cf-access-client-secret": configuration.CF_ACCESS_CLIENT_SECRET,
+        },
+        redirect: "error",
+        signal: AbortSignal.timeout(overlayTimeoutMs),
+      });
+      const contentLength = Number(upstream.headers.get("content-length"));
+      const contentType = upstream.headers.get("content-type")?.split(";", 1)[0].toLowerCase();
+      if (!upstream.ok || contentType !== "application/json" || (Number.isFinite(contentLength) && contentLength > OVERLAY_MAX_BYTES)) throw new Error("invalid_overlay_upstream");
+      const body = new Uint8Array(await upstream.arrayBuffer());
+      if (body.byteLength > OVERLAY_MAX_BYTES) throw new Error("overlay_response_too_large");
+      const parsed = JSON.parse(new TextDecoder().decode(body)) as unknown;
+      if (!isSafeOverlayPayload(parsed)) throw new Error("unsafe_overlay_payload");
+      overlayCache.set(range, { body, fetchedAt: now() });
+      return body;
+    })();
+    overlayInFlight.set(range, pending);
+    try {
+      return await pending;
+    } finally {
+      overlayInFlight.delete(range);
+    }
+  }
 
   return createServer(async (request, response) => {
     response.setHeader("cache-control", "no-store");
     response.setHeader("x-content-type-options", "nosniff");
+
+    if (request.method === "GET" && request.url?.startsWith(OVERLAY_RELAY_PATH)) {
+      const range = parseOverlayRequestUrl(request.url);
+      if (!range) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "invalid_overlay_request" }));
+        return;
+      }
+      const cached = overlayCache.get(range);
+      if (cached && now() - cached.fetchedAt < overlayRefreshMs) {
+        response.writeHead(200, { "content-type": "application/json; charset=utf-8", "x-codex-overlay-cache": "fresh" });
+        response.end(cached.body);
+        return;
+      }
+      try {
+        const body = await fetchOverlay(range);
+        response.writeHead(200, { "content-type": "application/json; charset=utf-8", "x-codex-overlay-cache": "upstream" });
+        response.end(body);
+      } catch {
+        if (cached) {
+          response.writeHead(200, { "content-type": "application/json; charset=utf-8", "x-codex-overlay-cache": "stale" });
+          response.end(cached.body);
+          return;
+        }
+        response.writeHead(502, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "overlay_upstream_unavailable" }));
+      }
+      return;
+    }
+
+    if (request.url?.startsWith(OVERLAY_RELAY_PATH)) {
+      response.writeHead(405, { "content-type": "application/json", allow: "GET" });
+      response.end(JSON.stringify({ error: "method_not_allowed" }));
+      return;
+    }
+
     if (request.method !== "POST" || request.url !== TELEMETRY_RELAY_PATH) {
       response.writeHead(404, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "not_found" }));
@@ -125,7 +249,7 @@ async function main() {
   const configuration = await loadRelayEnvironment();
   const server = createTelemetryRelay(configuration);
   server.listen(TELEMETRY_RELAY_PORT, TELEMETRY_RELAY_HOST, () => {
-    console.log(`Codex telemetry relay listening on http://${TELEMETRY_RELAY_HOST}:${TELEMETRY_RELAY_PORT}${TELEMETRY_RELAY_PATH}`);
+    console.log(`Codex telemetry relay listening on loopback port ${TELEMETRY_RELAY_PORT}.`);
   });
 }
 

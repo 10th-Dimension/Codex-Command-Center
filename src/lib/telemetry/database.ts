@@ -5,7 +5,7 @@ import type {
 } from "@/lib/providers/types";
 import type { NormalizedTelemetryEvent } from "@/lib/telemetry/normalize";
 
-export interface D1ResultLike<T = Record<string, unknown>> { success: boolean; results?: T[]; meta?: { changes?: number }; error?: string }
+export interface D1ResultLike<T = Record<string, unknown>> { success: boolean; results?: T[]; meta?: { changes?: number; rows_read?: number; rows_written?: number }; error?: string }
 export interface D1PreparedStatementLike { bind(...values: unknown[]): D1PreparedStatementLike; run<T = Record<string, unknown>>(): Promise<D1ResultLike<T>>; all<T = Record<string, unknown>>(): Promise<D1ResultLike<T>> }
 export interface D1DatabaseLike { prepare(sql: string): D1PreparedStatementLike; batch<T = Record<string, unknown>>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> }
 
@@ -35,14 +35,21 @@ function eventValues(event: NormalizedTelemetryEvent) {
   ];
 }
 
-export async function insertTelemetryEvents(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]) {
-  let inserted = 0;
+export async function insertTelemetryEventsDetailed(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]) {
+  const insertedEvents: NormalizedTelemetryEvent[] = [];
   for (let offset = 0; offset < events.length; offset += 50) {
-    const results = await database.batch(events.slice(offset, offset + 50).map((event) => database.prepare(INSERT_SQL).bind(...eventValues(event))));
+    const chunk = events.slice(offset, offset + 50);
+    const results = await database.batch(chunk.map((event) => database.prepare(INSERT_SQL).bind(...eventValues(event))));
     if (results.some((result) => !result.success)) throw new Error("Telemetry storage batch failed.");
-    inserted += results.reduce((sum, result) => sum + (result.meta?.changes ?? 0), 0);
+    results.forEach((result, index) => {
+      if ((result.meta?.changes ?? 0) > 0) insertedEvents.push(chunk[index]);
+    });
   }
-  return inserted;
+  return { inserted: insertedEvents.length, insertedEvents };
+}
+
+export async function insertTelemetryEvents(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]) {
+  return (await insertTelemetryEventsDetailed(database, events)).inserted;
 }
 
 export async function deleteExpiredTelemetry(database: D1DatabaseLike, retentionDays: number, now: Date) {
@@ -100,7 +107,7 @@ const USAGE_FIELDS = "input_tokens IS NOT NULL OR output_tokens IS NOT NULL OR c
 const TREND_SELECT = `COUNT(*) AS events, SUM(CASE WHEN event_category = 'error' THEN 1 ELSE 0 END) AS errors, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS tool_executions, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cached_input_tokens) AS cached_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(COALESCE(reasoning_tokens, reasoning_output_tokens)) AS reasoning_tokens, SUM(tool_tokens) AS tool_tokens`;
 const TIMING_SQL = (value: "duration_ms" | "ttft_ms", label: string) => `WITH ranked AS (SELECT ${label} AS label, ${value} AS value, ROW_NUMBER() OVER (PARTITION BY ${label} ORDER BY ${value}) AS rn, COUNT(*) OVER (PARTITION BY ${label}) AS n FROM codex_telemetry_events WHERE occurred_at >= ? AND ${value} IS NOT NULL AND ${label} IS NOT NULL) SELECT label, MAX(n) AS sample_count, AVG(value) AS average_ms, AVG(CASE WHEN rn IN ((n + 1) / 2, (n + 2) / 2) THEN value END) AS p50_ms, CASE WHEN MAX(n) >= 20 THEN MIN(CASE WHEN rn >= ((n * 95 + 99) / 100) THEN value END) END AS p95_ms, CASE WHEN MAX(n) >= 100 THEN MIN(CASE WHEN rn >= ((n * 99 + 99) / 100) THEN value END) END AS p99_ms, MIN(value) AS minimum_ms, MAX(value) AS maximum_ms FROM ranked GROUP BY label ORDER BY sample_count DESC LIMIT 30`;
 
-export interface TelemetryDatabaseSnapshot {
+export interface TelemetryForensicsSnapshot {
   activity: CodexActivityRecord[]; twentyFourHourTrend: CodexTelemetryTrendPoint[]; sevenDayTrend: CodexTelemetryTrendPoint[]; thirtyDayTrend: CodexTelemetryTrendPoint[];
   usage: CodexUsageSnapshot[]; categories: CodexTelemetryBreakdown[]; models: CodexTelemetryBreakdown[]; modelAnalytics: CodexTelemetryModelSummary[];
   reasoningEfforts: CodexTelemetryBreakdown[]; reasoningAnalytics: CodexTelemetryReasoningSummary[]; tools: CodexTelemetryToolSummary[]; timings: CodexTelemetryTimingBreakdown[]; ttft: CodexTelemetryTimingBreakdown[];
@@ -113,7 +120,11 @@ export interface TelemetryDatabaseSnapshot {
   oldestEventAt?: string; newestEventAt?: string; todayEventCount: number; observedSessionCount24h: number; failedToolCount30d: number;
 }
 
-export async function readTelemetrySnapshot(database: D1DatabaseLike, now: Date): Promise<TelemetryDatabaseSnapshot> {
+/**
+ * Explicit forensic read path. This intentionally queries retained raw events
+ * and must never be called by normal dashboard or overlay rendering.
+ */
+export async function readTelemetryForensics(database: D1DatabaseLike, now: Date): Promise<TelemetryForensicsSnapshot> {
   const cutoff30 = new Date(now.getTime() - 30 * 86_400_000).toISOString(); const cutoff7 = new Date(now.getTime() - 7 * 86_400_000).toISOString(); const cutoff24 = new Date(now.getTime() - 86_400_000).toISOString(); const today = `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
   const usageSelect = `COUNT(*) AS event_count, SUM(input_tokens) AS input_tokens, COUNT(input_tokens) AS input_samples, SUM(output_tokens) AS output_tokens, COUNT(output_tokens) AS output_samples, SUM(cached_input_tokens) AS cached_tokens, COUNT(cached_input_tokens) AS cached_samples, SUM(cache_write_tokens) AS cache_write_tokens, COUNT(cache_write_tokens) AS cache_write_samples, SUM(COALESCE(reasoning_tokens, reasoning_output_tokens)) AS reasoning_tokens, COUNT(COALESCE(reasoning_tokens, reasoning_output_tokens)) AS reasoning_samples, SUM(tool_tokens) AS tool_tokens, COUNT(tool_tokens) AS tool_samples, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_events, COUNT(DISTINCT CASE WHEN ${USAGE_FIELDS} THEN COALESCE(session_id,thread_id) END) AS usage_sessions, COUNT(DISTINCT CASE WHEN ${USAGE_FIELDS} THEN model END) AS usage_models`;
   const breakdown = (column: string) => database.prepare(`SELECT ${column} AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND ${column} IS NOT NULL GROUP BY ${column} ORDER BY count DESC LIMIT 30`).bind(cutoff30);

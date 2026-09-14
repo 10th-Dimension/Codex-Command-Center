@@ -57,12 +57,17 @@ class FakeD1 implements D1DatabaseLike {
   deleted = 0;
   lastDeleteCutoff?: string;
   queryResults?: D1ResultLike[];
+  snapshotRows: Record<string, unknown>[] = [];
+  rollupInsertCount = 0;
+  rawDeleteCount = 0;
+  missingRollupSchema = false;
   prepare(sql: string) { return new FakeStatement(this, sql); }
   async batch<T>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> {
     if (this.queryResults && statements.every((statement) => !((statement as FakeStatement).sql.includes("INSERT")))) return this.queryResults as D1ResultLike<T>[];
     return statements.map((statement) => this.execute(statement as FakeStatement) as D1ResultLike<T>);
   }
   execute(statement: FakeStatement): D1ResultLike {
+    if (this.missingRollupSchema && /codex_(?:rollup|dashboard_snapshot|session_summary)/.test(statement.sql)) throw new Error("no such table: codex_rollup_hourly");
     if (statement.sql.includes("INSERT OR IGNORE")) {
       const fingerprint = String(statement.values[1]);
       if (this.fingerprints.has(fingerprint)) return { success: true, meta: { changes: 0 } };
@@ -70,7 +75,9 @@ class FakeD1 implements D1DatabaseLike {
       this.insertedValues.push(statement.values);
       return { success: true, meta: { changes: 1 } };
     }
-    if (statement.sql.startsWith("DELETE")) { this.deleted += 1; this.lastDeleteCutoff = String(statement.values[0]); return { success: true, meta: { changes: 0 } }; }
+    if (statement.sql.startsWith("INSERT INTO codex_rollup_")) this.rollupInsertCount += 1;
+    if (statement.sql.includes("FROM codex_dashboard_snapshot")) return { success: true, results: this.snapshotRows };
+    if (statement.sql.startsWith("DELETE")) { this.deleted += 1; if (statement.sql.includes("codex_telemetry_events")) this.rawDeleteCount += 1; this.lastDeleteCutoff = String(statement.values[0]); return { success: true, meta: { changes: 0 } }; }
     return { success: true, results: [] };
   }
 }
@@ -292,13 +299,16 @@ test("ingestion batches writes, deduplicates retries, and runs retention cleanup
   const database = new FakeD1();
   const options = { database, ingestKey, retentionDays: 30, now: () => new Date(now) };
   const first = await handleTelemetryIngest(requestFor(jsonPayload()), options);
+  const rollupsAfterFirst = database.rollupInsertCount;
   const second = await handleTelemetryIngest(requestFor(jsonPayload()), options);
   assert.equal(first.status, 200);
   assert.equal(first.headers.get("x-codex-telemetry-accepted"), "1");
   assert.equal(second.headers.get("x-codex-telemetry-accepted"), "0");
   assert.equal(second.headers.get("x-codex-telemetry-duplicates"), "1");
   assert.equal(database.insertedValues.length, 1);
-  assert.equal(database.deleted, 2);
+  assert.equal(database.rawDeleteCount, 2);
+  assert.ok(database.rollupInsertCount > 0);
+  assert.equal(database.rollupInsertCount, rollupsAfterFirst, "duplicate delivery must not increment rollups");
   assert.equal(database.lastDeleteCutoff, "2026-08-12T12:00:00.000Z");
   const stored = JSON.stringify(database.insertedValues);
   assert.doesNotMatch(stored, /must-never-appear|authorization|private prompt|private output/);
@@ -347,50 +357,44 @@ test("binary OTLP protobuf payloads decode without Node-only protobuf dependenci
   assert.equal(records[0].attributes.output_token_count, 9);
 });
 
-test("Codex provider returns typed D1-backed activity, usage, and health", async () => {
+test("Codex provider returns only typed materialized summaries for normal reads", async () => {
   const database = new FakeD1();
-  const eventRow = {
-    id: "event-1", event_name: "codex.api_request", event_category: "api-request", occurred_at: now, received_at: now,
-    environment: "test", severity_text: null, session_id: "session-1", thread_id: null, task_id: null, project_id: "project-1", project_name: "Command Center",
-    repository_id: null, workspace_id: null, model: "gpt-test", tool_name: null, tool_type: null, tool_status: null, decision: null,
-    approval_decision: null, mcp_server: null, mcp_tool: null, network_host: null, network_decision: null, success: 1, error_type: null,
-    status: "ok", duration_ms: 25, input_tokens: 12, output_tokens: 4,
-    cached_input_tokens: 2, reasoning_output_tokens: 1, safe_attribute_keys_json: "[\"model\"]", unknown_attribute_keys_json: "[]",
-    source: "openai-codex-otel", schema_version: 1,
-  };
-  database.queryResults = Array.from({ length: 35 }, () => ({ success: true, results: [] }));
-  database.queryResults[0] = { success: true, results: [eventRow] };
-  database.queryResults[1] = { success: true, results: [{ label: "2026-09-11", events: 1, errors: 0, tool_executions: 0, input_tokens: 12, output_tokens: 4 }] };
-  database.queryResults[2] = { success: true, results: [{ label: "2026-09-11T12:00:00.000Z", events: 1, errors: 0, tool_executions: 0 }] };
-  database.queryResults[3] = { success: true, results: [{ label: "api-request", count: 1 }] };
-  database.queryResults[4] = { success: true, results: [{ label: "gpt-test", count: 1 }] };
-  database.queryResults[7] = { success: true, results: [{ label: "api-request", sample_count: 1, average_ms: 25, p50_ms: 25, p95_ms: null, p99_ms: null, minimum_ms: 25, maximum_ms: 25 }] };
-  database.queryResults[9] = { success: true, results: [{ window: "24h", event_count: 1, input_tokens: 12, input_samples: 1, output_tokens: 4, output_samples: 1, cached_tokens: 2, cached_samples: 1, cache_write_tokens: null, cache_write_samples: 0, reasoning_tokens: 1, reasoning_samples: 1, tool_tokens: null, tool_samples: 0, usage_events: 1, usage_sessions: 1, usage_models: 1 }] };
-  database.queryResults[10] = { success: true, results: [{ input_samples: 1, output_samples: 1, cached_samples: 1, cache_write_samples: 0, reasoning_samples: 1, tool_samples: 0 }] };
-  database.queryResults[13] = { success: true, results: [{ session_id: "session-1", project_name: "Command Center", models: "gpt-test", reasoning_efforts: null, event_count: 1, usage_event_count: 1, error_count: 0, warning_count: 0, tool_related_events: 0, tool_executions: 0, approval_events: 0, input_tokens: 12, output_tokens: 4, cached_tokens: 2, cache_write_tokens: null, reasoning_tokens: 1, tool_tokens: null, average_ttft_ms: null, first_seen_at: now, last_seen_at: now }] };
-  database.queryResults[14] = { success: true, results: [{ project_id: "project-1", project_name: "Command Center", event_count: 1, session_count: 1, last_seen_at: now }] };
-  database.queryResults[34] = { success: true, results: [{ event_count: 1, last_received_at: now, oldest_event_at: now, newest_event_at: now, today_event_count: 1, observed_session_count_24h: 1, failed_tool_count_30d: 0 }] };
+  const payload = { schemaVersion: 1, range: "24h", generatedAt: now, sourceUpdatedAt: now,
+    summary: { events: 1, sessions: 1, inputTokens: { availability: "available", value: 12, sampleCount: 1 }, outputTokens: { availability: "available", value: 4, sampleCount: 1 }, cachedTokens: { availability: "available", value: 2, sampleCount: 1 }, cacheWriteTokens: { availability: "no-samples", sampleCount: 0 }, reasoningTokens: { availability: "available", value: 1, sampleCount: 1 }, toolTokens: { availability: "no-samples", sampleCount: 0 }, errors: 0, warnings: 0, completedTools: 0, failedTools: 0, approvals: 0 },
+    trend: [{ label: now, events: 1, errors: 0, toolExecutions: 0, inputTokens: 12, outputTokens: 4 }], models: [{ label: "gpt-test", count: 1 }], reasoningEfforts: [],
+    sessions: [{ sessionId: "session-1", projectName: "Command Center", models: ["gpt-test"], reasoningEfforts: [], eventCount: 1, errorCount: 0, warningCount: 0, toolExecutions: 0, failedTools: 0, toolRelatedEvents: 0, usageEvents: 1, approvalEvents: 0, inputTokens: 12, outputTokens: 4, cachedTokens: 2, firstSeenAt: now, lastSeenAt: now }] };
+  database.snapshotRows = [{ range: "24h", generated_at: now, payload_json: JSON.stringify(payload) }];
   const provider = createCodexTelemetryProvider({ getRuntime: () => ({ database, ingestKey, retentionDays: 30 }), now: () => new Date(now), cacheTtlMs: 0 });
   const snapshot = await provider.getSnapshot({ requestedAt: now });
   assert.equal(snapshot.health.status, "connected");
-  assert.equal(snapshot.activity.status === "connected" ? snapshot.activity.data[0].eventName : null, "codex.api_request");
+  assert.equal(snapshot.activity.status, "unavailable");
   assert.equal(snapshot.usage.status === "connected" ? snapshot.usage.data[0].inputTokens.value : null, 12);
-  assert.equal(snapshot.usage.status === "connected" ? snapshot.usage.data[0].cacheWriteTokens.availability : null, "unavailable");
+  assert.equal(snapshot.usage.status === "connected" ? snapshot.usage.data[0].cacheWriteTokens.availability : null, "no-samples");
   assert.equal(snapshot.sessions.status === "connected" ? snapshot.sessions.data[0].sessionId : null, "session-1");
-  assert.equal(snapshot.timings.status === "connected" ? snapshot.timings.data[0].averageMs : null, 25);
+  assert.equal(snapshot.timings.status, "unavailable");
   assert.equal(snapshot.trends.twentyFourHour.status === "connected" ? snapshot.trends.twentyFourHour.data[0].events : null, 1);
   assert.equal(snapshot.todayEventCount, 1);
   assert.equal(snapshot.lastReceivedAt, now);
 });
 
-test("Codex provider reports a connected empty D1 without inventing metrics", async () => {
+test("Codex provider reports missing snapshots without an expensive raw fallback", async () => {
   const database = new FakeD1();
   const provider = createCodexTelemetryProvider({ getRuntime: () => ({ database, ingestKey, retentionDays: 30 }), now: () => new Date(now), cacheTtlMs: 0 });
   const snapshot = await provider.getSnapshot({ requestedAt: now });
-  assert.equal(snapshot.health.status, "connected");
-  assert.deepEqual(snapshot.activity.status === "connected" ? snapshot.activity.data : null, []);
-  assert.equal(snapshot.eventCount, 0);
+  assert.equal(snapshot.health.status, "unavailable");
+  assert.match(snapshot.health.message, /migration 0003|backfill/i);
+  assert.equal(snapshot.activity.status, "unavailable");
   assert.equal(snapshot.lastReceivedAt, undefined);
+});
+
+test("missing migration 0003 does not break ingest or trigger a raw analytics fallback", async () => {
+  const database = new FakeD1();
+  database.missingRollupSchema = true;
+  const response = await handleTelemetryIngest(requestFor(jsonPayload()), { database, ingestKey, retentionDays: 30, now: () => new Date(now) });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-codex-telemetry-accepted"), "1");
+  assert.equal(response.headers.get("x-codex-telemetry-rollups"), "schema-unavailable");
+  assert.equal(database.rawDeleteCount, 1);
 });
 
 test("D1 migration preserves deduplication, query indexes, and bounded raw-event schema", async () => {

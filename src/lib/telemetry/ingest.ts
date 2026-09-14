@@ -1,7 +1,13 @@
 import type { D1DatabaseLike } from "@/lib/telemetry/database";
-import { deleteExpiredTelemetry, insertTelemetryEvents } from "@/lib/telemetry/database";
+import { deleteExpiredTelemetry, insertTelemetryEventsDetailed } from "@/lib/telemetry/database";
 import { normalizeOtlpRecords } from "@/lib/telemetry/normalize";
 import { decodeOtlpJson, decodeOtlpProtobuf } from "@/lib/telemetry/otlp";
+import {
+  applyTelemetryRollups,
+  deleteExpiredRollups,
+  isMissingRollupSchemaError,
+  refreshStaleMaterializedSnapshots,
+} from "@/lib/telemetry/rollups";
 
 export const MAX_TELEMETRY_PAYLOAD_BYTES = 1_048_576;
 const INGEST_HEADER = "x-codex-telemetry-key";
@@ -29,11 +35,12 @@ function safeJsonError(status: number, code: string) {
   });
 }
 
-function successResponse(contentType: string, accepted: number, duplicateCount: number) {
+function successResponse(contentType: string, accepted: number, duplicateCount: number, rollups: "updated" | "schema-unavailable") {
   const headers = {
     "cache-control": "no-store",
     "x-codex-telemetry-accepted": String(accepted),
     "x-codex-telemetry-duplicates": String(duplicateCount),
+    "x-codex-telemetry-rollups": rollups,
     "x-content-type-options": "nosniff",
   };
   if (contentType === "application/json") {
@@ -73,9 +80,18 @@ export async function handleTelemetryIngest(request: Request, options: Telemetry
       : decodeOtlpProtobuf(body);
     const now = options.now?.() ?? new Date();
     const normalized = await normalizeOtlpRecords(records, now.toISOString());
-    const inserted = await insertTelemetryEvents(options.database, normalized);
+    const insertion = await insertTelemetryEventsDetailed(options.database, normalized);
+    let rollupState: "updated" | "schema-unavailable" = "updated";
+    try {
+      await applyTelemetryRollups(options.database, insertion.insertedEvents);
+      await deleteExpiredRollups(options.database, now);
+      await refreshStaleMaterializedSnapshots(options.database, now);
+    } catch (error) {
+      if (!isMissingRollupSchemaError(error)) throw error;
+      rollupState = "schema-unavailable";
+    }
     await deleteExpiredTelemetry(options.database, options.retentionDays, now);
-    return successResponse(contentType, inserted, normalized.length - inserted);
+    return successResponse(contentType, insertion.inserted, normalized.length - insertion.inserted, rollupState);
   } catch (error) {
     if (error instanceof SyntaxError || error instanceof RangeError || error instanceof TypeError || error instanceof Error && /protobuf|OTLP|record limit/i.test(error.message)) {
       return safeJsonError(400, "invalid_otlp_payload");

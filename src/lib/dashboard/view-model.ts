@@ -105,7 +105,10 @@ function emptyProviderHealth(
 
 function sourceSummary(descriptor: Descriptor, health: ProviderHealth): DataSourceSummary {
   return {
-    ...descriptor,
+    id: descriptor.id,
+    name: descriptor.name,
+    description: descriptor.description,
+    capabilities: descriptor.capabilities,
     status: health.status,
     configuredResource: health.configuredResource,
     lastSuccessfulFetch: health.lastSuccessfulFetch,

@@ -1,0 +1,17 @@
+"use client";
+import type { CSSProperties } from "react";
+import { dashboardRanges, distributionShares, type DashboardRange } from "@/lib/dashboard/analytics";
+import type { CodexTelemetryBreakdown, CodexTelemetryTrendPoint, DataResult } from "@/lib/providers/types";
+export function RangeSelector({ value, onChange, label = "Time range" }: Readonly<{ value: DashboardRange; onChange: (value: DashboardRange) => void; label?: string }>) { return <div className="range-selector" role="group" aria-label={label}>{dashboardRanges.map((range) => <button aria-pressed={range === value} className={range === value ? "active" : ""} key={range} onClick={() => onChange(range)} type="button">{range.toUpperCase()}</button>)}</div>; }
+const series = [{ key: "inputTokens" as const, label: "Input", color: "#68d8e8" }, { key: "outputTokens" as const, label: "Output", color: "#a78bfa" }, { key: "cachedTokens" as const, label: "Cached", color: "#55d6a9" }, { key: "cacheWriteTokens" as const, label: "Cache write", color: "#7dd3fc" }, { key: "reasoningTokens" as const, label: "Reasoning", color: "#f4b860" }, { key: "toolTokens" as const, label: "Tool", color: "#f472b6" }];
+export function TokenTrend({ result, compact = false }: Readonly<{ result: DataResult<CodexTelemetryTrendPoint[]>; compact?: boolean }>) {
+  if (result.status === "unavailable") return <div className="chart-empty">Token trend unavailable</div>; if (!result.data.length) return <div className="chart-empty">No samples in this range</div>;
+  const width = 600, height = compact ? 94 : 150, top = 8, bottom = 18, chartHeight = height - top - bottom; const totals = result.data.map((point) => series.reduce((sum, item) => sum + (point[item.key] ?? 0), 0)); const maximum = Math.max(...totals, 1);
+  if (!totals.some(Boolean)) return <div className="chart-empty">No token samples in this range</div>;
+  const x = (index: number) => result.data.length === 1 ? width / 2 : index / (result.data.length - 1) * width; const y = (value: number) => top + chartHeight - value / maximum * chartHeight;
+  return <div className="token-chart"><svg aria-label="Token activity trend" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}>{[0, .5, 1].map((part) => <line className="chart-grid-line" key={part} x1="0" x2={width} y1={top + chartHeight * part} y2={top + chartHeight * part} />)}{series.map((item) => <polyline fill="none" key={item.key} points={result.data.map((point, index) => `${x(index)},${y(point[item.key] ?? 0)}`).join(" ")} stroke={item.color} strokeLinecap="round" strokeLinejoin="round" strokeWidth={compact ? 2 : 2.4} vectorEffect="non-scaling-stroke" />)}</svg>{!compact ? <div className="chart-legend">{series.map((item) => <span key={item.key}><i style={{ "--legend-color": item.color } as CSSProperties} />{item.label}</span>)}</div> : null}</div>;
+}
+export function Distribution({ result, empty = "No observations" }: Readonly<{ result: DataResult<CodexTelemetryBreakdown[]>; empty?: string }>) {
+  if (result.status === "unavailable") return <div className="distribution-empty">Unavailable</div>; if (!result.data.length) return <div className="distribution-empty">{empty}</div>;
+  return <div className="distribution-list">{distributionShares(result.data).slice(0, 5).map((item, index) => <div className="distribution-row" key={item.label}><div><span>{item.label}</span><b>{item.share}%</b></div><div className="distribution-track"><i style={{ width: `${item.share}%`, opacity: 1 - index * .11 }} /></div></div>)}</div>;
+}

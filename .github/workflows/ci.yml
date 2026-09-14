@@ -2,7 +2,7 @@ name: Verify
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -34,6 +34,12 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Validate D1 migrations on a fresh local database
+        run: npm run check:migrations
+
+      - name: Audit normal D1 read budgets locally
+        run: npm run audit:d1
+
       - name: Production build
         run: npm run build
 
@@ -42,3 +48,35 @@ jobs:
 
       - name: Build Cloudflare Worker
         run: npm run build:vinext
+
+  desktop-overlay:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/overlay/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install desktop dependencies
+        working-directory: desktop/overlay
+        run: npm ci
+
+      - name: Build desktop frontend
+        run: npm run build:overlay
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path desktop/overlay/src-tauri/Cargo.toml --check
+
+      - name: Check native overlay
+        run: cargo check --manifest-path desktop/overlay/src-tauri/Cargo.toml

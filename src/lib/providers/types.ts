@@ -40,6 +40,7 @@ export interface ProviderDescriptor {
 export interface ProviderContext {
   requestedAt: string;
   signal?: AbortSignal;
+  telemetryRange?: "24h" | "7d" | "30d";
 }
 
 export interface ProviderHealth {
@@ -327,6 +328,7 @@ export interface CodexTelemetrySessionSummary {
   eventCount: number;
   errorCount: number;
   toolExecutions: number;
+  failedTools?: number;
   toolRelatedEvents: number;
   usageEvents: number;
   approvalEvents: number;
@@ -437,6 +439,29 @@ export interface CodexTelemetrySnapshot {
   observedSessionCount24h?: number;
   failedToolCount30d?: number;
   retentionDays: number;
+  rollupSummaries?: Partial<Record<"24h" | "7d" | "30d", {
+    events: number;
+    sessions: number;
+    errors: number;
+    warnings: number;
+    completedTools: number;
+    failedTools: number;
+    approvals: number;
+    averageTtftMs?: number;
+    averageDurationMs?: number;
+    generatedAt: string;
+  }>>;
+}
+
+export interface CodexTelemetryForensics {
+  activity: CodexActivityRecord[];
+  recentErrors: CodexActivityRecord[];
+  categories: CodexTelemetryBreakdown[];
+  approvals: CodexTelemetryBreakdown[];
+  sandboxPolicies: CodexTelemetryBreakdown[];
+  mcpServers: CodexTelemetryBreakdown[];
+  networkDecisions: CodexTelemetryBreakdown[];
+  loadedAt: string;
 }
 
 export interface ProjectTelemetryRecord {
@@ -487,6 +512,7 @@ export interface CodexUsageProvider extends ProviderDescriptor {
 export interface CodexTelemetryProvider extends CodexActivityProvider, CodexUsageProvider {
   getSnapshot(context: ProviderContext): Promise<CodexTelemetrySnapshot>;
   getHealth(context: ProviderContext): Promise<ProviderHealth>;
+  getForensics(context: ProviderContext): Promise<DataResult<CodexTelemetryForensics>>;
 }
 
 export interface ProjectTelemetryProvider extends ProviderDescriptor {
