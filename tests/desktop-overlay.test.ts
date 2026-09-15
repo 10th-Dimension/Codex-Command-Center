@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { telemetryFreshness } from "../desktop/overlay/src/lib/freshness";
+import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../src/lib/overlay/account";
 import { defaultDesktopOverlaySettings, isSafeHexColor, isSafeHotkey, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, resolveLayout, shouldPollRemote } from "../desktop/overlay/src/lib/settings";
 
 test("desktop settings preserve supported choices and bound unsafe values", () => {
@@ -114,4 +115,21 @@ test("desktop frontend models and capabilities contain no credential fields or b
   assert.doesNotMatch(files[2], /shell:|fs:|http:|process:|global-shortcut:/);
   assert.match(files[2], /store:allow-get/);
   assert.match(files[2], /autostart:allow-is-enabled/);
+});
+
+test("quota presentation uses remaining percentages, local countdowns, and explicitly labeled estimates", async () => {
+  const now = Date.parse("2026-09-14T12:00:00.000Z");
+  const resetsAt = now / 1_000 + 3 * 3_600;
+  const quota = { slot: "primary" as const, kind: "5h" as const, label: "5-hour", durationMins: 300, usedPercent: 67, remainingPercent: 33, resetsAt };
+  assert.equal(resetCountdown(resetsAt, now), "3h 0m");
+  assert.ok(absoluteResetTime(resetsAt));
+  assert.ok(estimateUsagePace(quota, now));
+  assert.equal(quotaFreshness({ status: "connected", freshness: "live", rateLimitsObservedAt: new Date(now).toISOString(), limits: [] }, now).label, "Live");
+  const app = await readFile(new URL("../desktop/overlay/src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /remainingPercent/);
+  assert.match(app, /Quota unavailable/);
+  assert.match(app, /Linear pace/);
+  assert.match(app, /Projected/);
+  assert.match(app, /Banked resets/);
+  assert.match(app, /Account Activity/);
 });

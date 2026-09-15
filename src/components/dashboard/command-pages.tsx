@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Activity, AlertTriangle, Bot, Boxes, Clock3, GitCommitHorizontal, ShieldCheck, Workflow } from "lucide-react";
 
 import { Distribution, TokenTrend } from "@/components/dashboard/analytics-ui";
+import { LocalCodexAccount } from "@/components/dashboard/local-codex-account";
 import { RefreshButton } from "@/components/dashboard/refresh-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusPill } from "@/components/ui/status-pill";
@@ -32,6 +33,8 @@ export function CodexCommandPage({ data, section }: Readonly<{ data: CodexData; 
       <span>Snapshot: {summary?.generatedAt ? formatAge(summary.generatedAt) : "Unavailable"}</span>
       <span className="ml-auto"><ShieldCheck size={13} /> Privacy-filtered</span>
     </section>
+
+    <LocalCodexAccount />
 
     {usageResult.status === "unavailable" ? <EmptyState title="Rollup analytics unavailable" description={usageResult.reason} /> : <>
       <section className="command-stat-grid">

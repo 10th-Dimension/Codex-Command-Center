@@ -203,6 +203,24 @@ Codex OTel
   -> bundled Codex Live interface
 ```
 
+Codex Live also maintains one separate, read-only stdio connection to the authenticated local Codex app-server. This is the authority for current account quota and account-level activity; it complements rather than replaces OTel:
+
+```text
+local Codex app-server (account/read, account/rateLimits/read, account/usage/read)
+  -> persistent child owned by the existing local relay
+  -> sanitized in-memory account snapshot
+  -> loopback-only GET /v1/account
+  -> native Codex Live and, when browser policy permits, the hosted dashboard on this PC
+```
+
+The collector discovers Codex through the optional `CODEX_CLI_PATH`, the current `PATH`, or the versioned Codex Desktop runtime below `%LOCALAPPDATA%\OpenAI\Codex\bin`. Each candidate is validated with a bounded `--version` invocation. It never reads `.codex/auth.json`, copies OAuth material, calls private ChatGPT usage endpoints, starts a Codex thread, invokes a tool, mutates an account, or consumes a rate-limit reset credit. Codex itself remains responsible for authentication and token refresh. App-server failure makes only account quota unavailable; OTel forwarding and historical analytics continue normally.
+
+Quota windows are classified by their returned duration, not by their `primary` or `secondary` position: 300 minutes is shown as 5-hour, 10,080 minutes as weekly, and other known durations receive a generic duration-derived label. Missing windows, reset times, credit objects, and availability flags stay unavailable or unknown rather than being treated as zero. Paid/usage credits and earned banked resets are displayed as separate concepts. Additional limit IDs and their model association are retained only when the protocol supplies them.
+
+`account/rateLimits/updated` is treated as a sparse invalidation signal. The relay debounces it, performs a fresh full read, and keeps a 45-second full-read fallback. Account activity uses the backend summary and at most the latest 90 `dailyUsageBuckets`; their accounting and timezone semantics are backend-defined, so they are labeled **Account Activity** and are never merged into OTel/D1 daily totals.
+
+Quota information stays local in this implementation. Nothing from the account app-server is written to D1 or sent to Cloudflare. The hosted dashboard makes a credential-free browser request to `http://127.0.0.1:14318/v1/account`; the relay allows CORS only for the configured Command Center origin. Browser mixed-content or Private Network Access policy may block that request, in which case the web card remains honestly unavailable while native Codex Live continues to work. A dashboard opened on another device cannot access this PC's loopback relay.
+
 `GET /api/overlay?range=24h|7d|30d` returns a dedicated private/no-store view model. It is limited to health states, aggregate operational counters, bounded token trends and distributions, safe delivery status, and privacy-filtered latest-session measurements. It never includes prompts, commands, arguments, output, reasoning text, account identity, host information, or credentials.
 
 The relay read endpoint is deliberately not a proxy. It accepts only `GET /v1/overlay`, validates the range, rejects additional query parameters and paths, derives the fixed `/api/overlay` upstream from the configured collector origin, adds the existing Cloudflare Access service-token headers, enforces an 8-second upstream timeout and 256 KiB response limit, rejects redirects and non-JSON/unsafe responses, and never logs the response body. The ingestion key is not forwarded to the read endpoint. The relay caches one safe snapshot per range: its default upstream refresh interval is 30 seconds and its hard minimum is 15 seconds. Repeated local widget refreshes use that cache, and a safe stale value may be served during an upstream outage.

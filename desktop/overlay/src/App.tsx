@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState, type CSSProperties, type MouseEvent } from "react";
 import { Activity, AlertTriangle, Check, ChevronDown, Circle, ExternalLink, EyeOff, Grip, LayoutGrid, Lock, Minus, Power, RefreshCw, Settings, Unlock, X } from "lucide-react";
 import type { OverlaySnapshot } from "../../../src/lib/overlay/contracts";
+import type { CodexQuotaWindow } from "../../../src/lib/overlay/contracts";
+import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../../../src/lib/overlay/account";
 import { telemetryFreshness } from "./lib/freshness";
 import { applyWindowSettings, configureHotkeys, controlRelay, fetchOverlay, getAutostart, getNativeState, hideOverlay, loadSettings, onNativeAction, openDashboard, quitOverlay, recoverOverlay, saveSettings, setAutostart, setCorner, setLayout, startDrag, startResize, type NativeState } from "./lib/native";
 import { defaultDesktopOverlaySettings, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, resolveLayout, shouldPollRemote, textColorValue, type DesktopOverlaySettings, type OverlayLayout, type OverlayRange } from "./lib/settings";
@@ -21,6 +23,7 @@ export function App() {
   const [message, setMessage] = useState<string>();
   const [ready, setReady] = useState(false);
   const [overlayVisible, setOverlayVisible] = useState(true);
+  const [now, setNow] = useState(() => Date.now());
 
   const refresh = useCallback(async (range: DesktopOverlaySettings["range"]) => {
     try {
@@ -66,6 +69,11 @@ export function App() {
       }
     }
   }, [refresh, settings]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (message !== clickThroughNotice) return;
@@ -185,7 +193,7 @@ export function App() {
         </div>
       </header>
 
-      {relay === "offline" ? <OfflineState openSettings={() => setSettingsOpen(true)} retry={() => void refresh(settings.range)} /> : relay === "paused" && !snapshot ? <PausedState /> : <OverlayContent snapshot={snapshot} relay={relay} layout={effectiveLayout} freshness={freshness} />}
+      {relay === "offline" ? <OfflineState openSettings={() => setSettingsOpen(true)} retry={() => void refresh(settings.range)} /> : relay === "paused" && !snapshot ? <PausedState /> : <OverlayContent snapshot={snapshot} relay={relay} layout={effectiveLayout} freshness={freshness} now={now} />}
 
       {message ? <div className="message"><AlertTriangle size={11} /><span>{message}</span><button aria-label="Dismiss" onClick={() => setMessage(undefined)}><X size={11} /></button></div> : null}
       {settingsOpen ? <SettingsPanel settings={settings} nativeState={nativeState} close={() => setSettingsOpen(false)} update={updateSettings} refresh={() => void refresh(settings.range)} report={(error) => setMessage(safeNativeMessage(error))} /> : null}
@@ -194,27 +202,89 @@ export function App() {
   </main>;
 }
 
-function OverlayContent({ snapshot, relay, layout, freshness }: Readonly<{ snapshot?: OverlaySnapshot; relay: RelayState; layout: OverlayLayout; freshness: ReturnType<typeof telemetryFreshness> }>) {
+function OverlayContent({ snapshot, relay, layout, freshness, now }: Readonly<{ snapshot?: OverlaySnapshot; relay: RelayState; layout: OverlayLayout; freshness: ReturnType<typeof telemetryFreshness>; now: number }>) {
   if (!snapshot) return <div className="loading"><RefreshCw className="spin" size={15} />Retrieving private snapshot…</div>;
   const session = snapshot.latestSession;
   const summary = snapshot.windowSummary;
-  if (layout === "strip") return <div className="strip-content"><Identity session={session} /><Metric short="IN" value={summary.inputTokens} /><Metric short="RSN" value={summary.reasoningTokens} /><Metric short="TTFT" value={summary.averageTtftMs} duration /><Metric short="TOOLS" value={summary.completedTools} /><HealthLabel relay={relay} freshness={freshness} /></div>;
+  if (layout === "strip") return <div className="strip-content"><Identity session={session} /><StripQuota account={snapshot.codexAccount} /><Metric short="IN" value={summary.inputTokens} /><Metric short="TOOLS" value={summary.completedTools} /><HealthLabel relay={relay} freshness={freshness} /></div>;
+  if (layout === "mini") return <>
+    <div className="identity-row"><Identity session={session} /><QuotaFreshness account={snapshot.codexAccount} now={now} /></div>
+    <MiniQuota account={snapshot.codexAccount} now={now} summary={summary} />
+    <footer><HealthChip label="Relay" status={relay === "online" ? "connected" : "degraded"} /><HealthChip label="Telemetry" status={snapshot.health.telemetry} /><HealthChip label="D1" status={snapshot.health.d1} /></footer>
+  </>;
   return <>
-    <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>{freshness.label}</span></div>
+    <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>OTel {freshness.label}</span></div>
+    <QuotaPanel account={snapshot.codexAccount} now={now} />
     <div className="metric-grid primary"><Metric label="Input" value={summary.inputTokens} /><Metric label="Output" value={summary.outputTokens} /><Metric label="Cached" value={summary.cachedTokens} optionalMini /><Metric label="Reasoning" value={summary.reasoningTokens} /><Metric label="Tool tokens" value={summary.toolTokens} optionalMini /><Metric label="TTFT" value={summary.averageTtftMs} duration /><Metric label="Tools" value={summary.completedTools} /><Metric label="Errors" value={summary.failures} /></div>
-    {layout === "expanded" ? <Expanded snapshot={snapshot} /> : null}
+    {layout === "expanded" ? <Expanded snapshot={snapshot} now={now} /> : null}
     <footer><HealthChip label="Relay" status={relay === "online" ? "connected" : "degraded"} /><HealthChip label="Telemetry" status={snapshot.health.telemetry} /><HealthChip label="D1" status={snapshot.health.d1} /></footer>
   </>;
 }
 
-function Expanded({ snapshot }: Readonly<{ snapshot: OverlaySnapshot }>) {
+function Expanded({ snapshot, now }: Readonly<{ snapshot: OverlaySnapshot; now: number }>) {
   const session = snapshot.latestSession;
   return <div className="expanded-content">
+    <AccountDetails account={snapshot.codexAccount} now={now} />
     <section><SectionTitle title="Token trend" note={snapshot.range.toUpperCase()} /><Sparkline points={snapshot.tokenTrend.map((point) => (point.inputTokens ?? 0) + (point.outputTokens ?? 0) + (point.cachedTokens ?? 0) + (point.reasoningTokens ?? 0) + (point.toolTokens ?? 0))} /></section>
     <div className="split"><section><SectionTitle title="Token composition" /><Composition summary={snapshot.windowSummary} /></section><section><SectionTitle title="Model mix" /><Distribution items={snapshot.modelDistribution} /></section></div>
     <div className="split"><section><SectionTitle title="Reasoning mix" /><Distribution items={snapshot.reasoningDistribution} /></section><section><SectionTitle title="Latest session" note={session ? shortAge(session.lastSeenAt) : undefined} /><div className="session-line"><span>{session ? `${session.completedTools} tools` : "No session"}</span><span>{session ? `${session.toolFailures ?? 0} failed` : "—"}</span></div></section></div>
     <section><SectionTitle title="Delivery" note={snapshot.delivery?.repository} /><div className="delivery"><HealthChip label="GitHub" status={snapshot.health.github} /><HealthChip label={snapshot.delivery?.latestBuild?.name ?? "CI"} status={snapshot.health.ci} /><span>{snapshot.delivery?.latestBuild?.status ?? "Unavailable"}</span></div></section>
   </div>;
+}
+
+function primaryWindows(account: OverlaySnapshot["codexAccount"]) {
+  return account?.limits[0]?.windows ?? [];
+}
+
+function StripQuota({ account }: Readonly<{ account?: OverlaySnapshot["codexAccount"] }>) {
+  const windows = primaryWindows(account);
+  if (!windows.length) return <div className="strip-quota unavailable">Quota unavailable</div>;
+  return <div className="strip-quota">{windows.slice(0, 2).map((window) => <span key={window.slot}>{window.kind === "5h" ? "5H" : window.kind === "7d" ? "7D" : window.label} <b>{Math.round(window.remainingPercent)}%</b></span>)}</div>;
+}
+
+function QuotaFreshness({ account, now }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number }>) {
+  const freshness = quotaFreshness(account, now);
+  return <span className={`freshness ${freshness.state}`}>Quota {freshness.label}</span>;
+}
+
+function MiniQuota({ account, now, summary }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number; summary: OverlaySnapshot["windowSummary"] }>) {
+  const windows = primaryWindows(account);
+  return <div className="mini-quota">
+    <div>{windows.length ? windows.slice(0, 2).map((window) => <span key={window.slot}><small>{window.kind === "5h" ? "5H" : window.kind === "7d" ? "7D" : window.label}</small><b>{Math.round(window.remainingPercent)}%</b><i>{resetCountdown(window.resetsAt, now) ?? "—"}</i></span>) : <strong>Quota unavailable</strong>}</div>
+    <p>Input {numberLabel(summary.inputTokens)} · Tools {numberLabel(summary.completedTools)} · Errors {numberLabel(summary.failures)}</p>
+  </div>;
+}
+
+function QuotaPanel({ account, now }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number }>) {
+  const windows = primaryWindows(account);
+  if (!windows.length) return <div className="quota-panel unavailable"><span>Quota unavailable</span><small>{account?.status === "error" ? "App-server error" : "Local Codex account data unavailable"}</small></div>;
+  return <div className="quota-panel">{windows.slice(0, 2).map((window) => <QuotaRow key={window.slot} window={window} now={now} />)}</div>;
+}
+
+function QuotaRow({ window, now }: Readonly<{ window: CodexQuotaWindow; now: number }>) {
+  const countdown = resetCountdown(window.resetsAt, now);
+  const absolute = absoluteResetTime(window.resetsAt);
+  return <div className="quota-row" title={absolute ? `${window.label} resets ${absolute}` : `${window.label} reset unavailable`}><span>{window.label}</span><i><b style={{ width: `${window.remainingPercent}%` }} /></i><strong>{Math.round(window.remainingPercent)}% left</strong><small>{countdown ? `${countdown}` : "—"}</small></div>;
+}
+
+function AccountDetails({ account, now }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number }>) {
+  if (!account) return null;
+  const extraLimits = account.limits.slice(1);
+  const credits = account.limits.map((limit) => limit.credits).find(Boolean);
+  const activity = account.activity;
+  return <>
+    <section><SectionTitle title="Account quota" note={account.planType ? `${account.planType} plan` : undefined} /><div className="account-facts"><span>Included usage<b>{account.ordinaryUsageAllowed === false ? "Blocked" : account.ordinaryUsageAllowed === true ? "Available" : "Unknown"}</b></span><span>Usage credits<b>{credits?.unlimited ? "Unlimited" : credits?.balance ? `${credits.balance} credits` : "Unavailable"}</b></span><span>Banked resets<b>{account.resetCredits ? account.resetCredits.availableCount : "Unavailable"}</b></span></div></section>
+    {account.limits.flatMap((limit) => limit.windows.map((window) => ({ limit, window }))).map(({ limit, window }, index) => <section key={`${limit.limitId ?? "default"}-${window.slot}-${index}`}><SectionTitle title={limit.normalModelSlug ?? limit.limitName ?? window.label} note={window.label} /><QuotaDetail window={window} now={now} /></section>)}
+    {extraLimits.length ? <section><SectionTitle title="Additional limit pools" note={`${extraLimits.length}`} /><div className="extra-limits">{extraLimits.map((limit) => <span key={limit.limitId ?? limit.limitName}><b>{limit.limitName ?? limit.limitId ?? "Usage limit"}</b><small>{limit.normalModelSlug ?? "Model association unavailable"}</small></span>)}</div></section> : null}
+    {activity ? <section><SectionTitle title="Account Activity" note="OpenAI backend" /><div className="account-facts"><span>Lifetime tokens<b>{numberLabel(activity.lifetimeTokens)}</b></span><span>Current streak<b>{activity.currentStreakDays === undefined ? "Unavailable" : `${activity.currentStreakDays}d`}</b></span><span>Peak daily<b>{numberLabel(activity.peakDailyTokens)}</b></span></div><p className="account-note">Daily activity bucket timezone semantics are backend-defined and are not merged with OTel history.</p></section> : null}
+  </>;
+}
+
+function QuotaDetail({ window, now }: Readonly<{ window: CodexQuotaWindow; now: number }>) {
+  const pace = estimateUsagePace(window, now);
+  const countdown = resetCountdown(window.resetsAt, now);
+  const projected = pace?.projectedExhaustionAt ? new Date(pace.projectedExhaustionAt).toLocaleString() : undefined;
+  return <div className="quota-detail"><div><i><b style={{ width: `${window.remainingPercent}%` }} /></i><strong>{Math.round(window.remainingPercent)}% left</strong></div><span>{countdown ? `Resets in ${countdown}` : "Reset unavailable"}</span>{pace ? <span>Linear pace {pace.deltaPercent > 0 ? "+" : ""}{Math.round(pace.deltaPercent)}%</span> : null}{projected ? <span title={projected}>Projected {projected}</span> : null}</div>;
 }
 
 function Identity({ session }: Readonly<{ session?: OverlaySnapshot["latestSession"] }>) { return <div className="identity" title={session ? `Latest observed session · ${session.lastSeenAt}` : "No observed session"}><span>{friendlyModel(session?.model)}</span><i>·</i><small>{session?.reasoningEffort ?? "effort unavailable"}</small></div>; }

@@ -1,8 +1,11 @@
 import { createServer } from "node:http";
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { createCodexAccountService, discoverCodexExecutable, unavailableCodexAccount, type CodexAccountProvider } from "./codex-app-server-client";
+import type { CodexAccountSnapshot } from "../src/lib/overlay/contracts";
 
 export const TELEMETRY_RELAY_HOST = "127.0.0.1";
 export const TELEMETRY_RELAY_PORT = 14318;
@@ -15,6 +18,8 @@ export const OVERLAY_MAX_BYTES = 262_144;
 export const OVERLAY_TIMEOUT_MS = 8_000;
 export const OVERLAY_REFRESH_DEFAULT_MS = 30_000;
 export const OVERLAY_REFRESH_MINIMUM_MS = 15_000;
+export const ACCOUNT_RELAY_PATH = "/v1/account";
+export const ACCOUNT_MAX_BYTES = 65_536;
 export const OVERLAY_RANGES = ["24h", "7d", "30d"] as const;
 export type OverlayRange = typeof OVERLAY_RANGES[number];
 
@@ -24,16 +29,18 @@ const environmentNames = [
   "CF_ACCESS_CLIENT_ID",
   "CF_ACCESS_CLIENT_SECRET",
 ] as const;
+const optionalEnvironmentNames = ["CODEX_CLI_PATH"] as const;
 type RelayEnvironmentName = typeof environmentNames[number];
-export type RelayConfiguration = Record<RelayEnvironmentName, string>;
+type OptionalRelayEnvironmentName = typeof optionalEnvironmentNames[number];
+export type RelayConfiguration = Record<RelayEnvironmentName, string> & Partial<Record<OptionalRelayEnvironmentName, string>>;
 
 function parseDotEnv(source: string) {
   const values: Partial<RelayConfiguration> = {};
   for (const line of source.split(/\r?\n/)) {
     const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
     if (!match) continue;
-    const name = match[1] as RelayEnvironmentName;
-    if (!environmentNames.includes(name)) continue;
+    const name = match[1] as RelayEnvironmentName | OptionalRelayEnvironmentName;
+    if (![...environmentNames, ...optionalEnvironmentNames].includes(name)) continue;
     let value = match[2];
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
     values[name] = value;
@@ -48,7 +55,12 @@ export async function loadRelayEnvironment(path = resolve(".env.local")): Promis
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
   }
-  return Object.fromEntries(environmentNames.map((name) => [name, process.env[name] || local[name] || ""])) as RelayConfiguration;
+  const required = Object.fromEntries(environmentNames.map((name) => [name, process.env[name] || local[name] || ""]));
+  const optional = Object.fromEntries(optionalEnvironmentNames.flatMap((name) => {
+    const value = process.env[name] || local[name];
+    return value ? [[name, value]] : [];
+  }));
+  return { ...required, ...optional } as RelayConfiguration;
 }
 
 export function validateRelayConfiguration(configuration: RelayConfiguration) {
@@ -79,7 +91,7 @@ export function parseOverlayRequestUrl(value: string | undefined): OverlayRange 
   return OVERLAY_RANGES.includes(range as OverlayRange) ? range as OverlayRange : undefined;
 }
 
-const forbiddenOverlayKey = /(?:authorization|cookie|credential|secret|token_value|access_token|refresh_token|password|private_key|prompt|reasoning_text|reasoning_summary|command|arguments|stdout|stderr|tool_output|response_body|request_body|user\.email|user\.account_id|hostname|host\.name|username)/i;
+const forbiddenOverlayKey = /(?:authorization|cookie|credential|secret|token_value|access_token|refresh_token|password|private_key|prompt|reasoning_text|reasoning_summary|command|arguments|stdout|stderr|tool_output|response_body|request_body|email|account[_-]?id|user\.email|user\.account_id|hostname|host\.name|username)/i;
 
 export function isSafeOverlayPayload(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -92,6 +104,28 @@ export function isSafeOverlayPayload(value: unknown): value is Record<string, un
     const current = pending.pop();
     if (!current || typeof current !== "object") continue;
     if (++visited > 2_000) return false;
+    for (const [key, child] of Object.entries(current)) {
+      if (forbiddenOverlayKey.test(key)) return false;
+      if (child && typeof child === "object") pending.push(child);
+    }
+  }
+  return true;
+}
+
+export function isSafeCodexAccountPayload(value: unknown): value is CodexAccountSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const root = value as Record<string, unknown>;
+  if (!["connected", "stale", "unavailable", "error"].includes(String(root.status))) return false;
+  if (!["live", "recent", "stale", "unavailable"].includes(String(root.freshness))) return false;
+  if (!Array.isArray(root.limits) || root.limits.length > 16) return false;
+  const encoded = JSON.stringify(value);
+  if (Buffer.byteLength(encoded, "utf8") > ACCOUNT_MAX_BYTES) return false;
+  const pending: unknown[] = [root];
+  let visited = 0;
+  while (pending.length) {
+    const current = pending.pop();
+    if (!current || typeof current !== "object") continue;
+    if (++visited > 1_000) return false;
     for (const [key, child] of Object.entries(current)) {
       if (forbiddenOverlayKey.test(key)) return false;
       if (child && typeof child === "object") pending.push(child);
@@ -123,14 +157,17 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
   overlayTimeoutMs?: number;
   overlayRefreshMs?: number;
   now?: () => number;
+  accountProvider?: Pick<CodexAccountProvider, "getSnapshot">;
 } = {}) {
   const collector = validateRelayConfiguration(configuration);
   const fetchImpl = options.fetchImpl ?? fetch;
   const overlayTimeoutMs = options.overlayTimeoutMs ?? OVERLAY_TIMEOUT_MS;
   const overlayRefreshMs = Math.max(OVERLAY_REFRESH_MINIMUM_MS, options.overlayRefreshMs ?? OVERLAY_REFRESH_DEFAULT_MS);
   const now = options.now ?? Date.now;
-  const overlayCache = new Map<OverlayRange, { body: Uint8Array; fetchedAt: number }>();
-  const overlayInFlight = new Map<OverlayRange, Promise<Uint8Array>>();
+  const accountProvider = options.accountProvider ?? { getSnapshot: () => unavailableCodexAccount() };
+  const allowedBrowserOrigin = collector.origin;
+  const overlayCache = new Map<OverlayRange, { payload: Record<string, unknown>; fetchedAt: number }>();
+  const overlayInFlight = new Map<OverlayRange, Promise<Record<string, unknown>>>();
 
   async function fetchOverlay(range: OverlayRange) {
     const existing = overlayInFlight.get(range);
@@ -153,8 +190,8 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
       if (body.byteLength > OVERLAY_MAX_BYTES) throw new Error("overlay_response_too_large");
       const parsed = JSON.parse(new TextDecoder().decode(body)) as unknown;
       if (!isSafeOverlayPayload(parsed)) throw new Error("unsafe_overlay_payload");
-      overlayCache.set(range, { body, fetchedAt: now() });
-      return body;
+      overlayCache.set(range, { payload: parsed, fetchedAt: now() });
+      return parsed;
     })();
     overlayInFlight.set(range, pending);
     try {
@@ -162,6 +199,27 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
     } finally {
       overlayInFlight.delete(range);
     }
+  }
+
+  function accountSnapshot() {
+    const snapshot = accountProvider.getSnapshot();
+    return isSafeCodexAccountPayload(snapshot) ? snapshot : unavailableCodexAccount("error");
+  }
+
+  function overlayBody(payload: Record<string, unknown>) {
+    const finalPayload = { ...payload, codexAccount: accountSnapshot() };
+    if (!isSafeOverlayPayload(finalPayload)) throw new Error("unsafe_overlay_payload");
+    const body = new TextEncoder().encode(JSON.stringify(finalPayload));
+    if (body.byteLength > OVERLAY_MAX_BYTES) throw new Error("overlay_response_too_large");
+    return body;
+  }
+
+  function setAccountCors(request: IncomingMessage, response: ServerResponse) {
+    const origin = request.headers.origin;
+    if (origin !== allowedBrowserOrigin) return false;
+    response.setHeader("access-control-allow-origin", allowedBrowserOrigin);
+    response.setHeader("vary", "Origin");
+    return true;
   }
 
   return createServer(async (request, response) => {
@@ -180,6 +238,39 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
       return;
     }
 
+    if (request.url === ACCOUNT_RELAY_PATH && request.method === "OPTIONS") {
+      if (!setAccountCors(request, response) || request.headers["access-control-request-method"] !== "GET") {
+        response.writeHead(403, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "origin_not_allowed" }));
+        return;
+      }
+      response.writeHead(204, {
+        "access-control-allow-methods": "GET",
+        ...(request.headers["access-control-request-private-network"] === "true" ? { "access-control-allow-private-network": "true" } : {}),
+        "access-control-max-age": "600",
+      });
+      response.end();
+      return;
+    }
+
+    if (request.url === ACCOUNT_RELAY_PATH && request.method === "GET") {
+      const origin = request.headers.origin;
+      if (origin && !setAccountCors(request, response)) {
+        response.writeHead(403, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "origin_not_allowed" }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify(accountSnapshot()));
+      return;
+    }
+
+    if (request.url?.startsWith(ACCOUNT_RELAY_PATH)) {
+      response.writeHead(405, { "content-type": "application/json", allow: "GET, OPTIONS" });
+      response.end(JSON.stringify({ error: "method_not_allowed" }));
+      return;
+    }
+
     if (request.method === "GET" && request.url?.startsWith(OVERLAY_RELAY_PATH)) {
       const range = parseOverlayRequestUrl(request.url);
       if (!range) {
@@ -190,17 +281,17 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
       const cached = overlayCache.get(range);
       if (cached && now() - cached.fetchedAt < overlayRefreshMs) {
         response.writeHead(200, { "content-type": "application/json; charset=utf-8", "x-codex-overlay-cache": "fresh" });
-        response.end(cached.body);
+        response.end(overlayBody(cached.payload));
         return;
       }
       try {
-        const body = await fetchOverlay(range);
+        const body = overlayBody(await fetchOverlay(range));
         response.writeHead(200, { "content-type": "application/json; charset=utf-8", "x-codex-overlay-cache": "upstream" });
         response.end(body);
       } catch {
         if (cached) {
           response.writeHead(200, { "content-type": "application/json; charset=utf-8", "x-codex-overlay-cache": "stale" });
-          response.end(cached.body);
+          response.end(overlayBody(cached.payload));
           return;
         }
         response.writeHead(502, { "content-type": "application/json" });
@@ -258,7 +349,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
   });
 }
 
-function stopWithParent(server: ReturnType<typeof createServer>) {
+function stopWithParent(server: ReturnType<typeof createServer>, closeOwned: () => Promise<void>) {
   const parentPid = Number(process.env.CODEX_LIVE_PARENT_PID ?? "");
   if (!Number.isSafeInteger(parentPid) || parentPid <= 0 || parentPid === process.pid) return;
   const timer = setInterval(() => {
@@ -266,7 +357,7 @@ function stopWithParent(server: ReturnType<typeof createServer>) {
       process.kill(parentPid, 0);
     } catch {
       clearInterval(timer);
-      server.close(() => process.exit(0));
+      server.close(() => void closeOwned().finally(() => process.exit(0)));
     }
   }, 2_000);
   timer.unref();
@@ -274,8 +365,12 @@ function stopWithParent(server: ReturnType<typeof createServer>) {
 
 async function main() {
   const configuration = await loadRelayEnvironment();
-  const server = createTelemetryRelay(configuration);
-  stopWithParent(server);
+  const accountService = createCodexAccountService({
+    discoverExecutable: () => discoverCodexExecutable({ ...process.env, CODEX_CLI_PATH: configuration.CODEX_CLI_PATH }),
+  });
+  accountService.start();
+  const server = createTelemetryRelay(configuration, { accountProvider: accountService });
+  stopWithParent(server, () => accountService.close());
   server.listen(TELEMETRY_RELAY_PORT, TELEMETRY_RELAY_HOST, () => {
     console.log(`Codex telemetry relay listening on loopback port ${TELEMETRY_RELAY_PORT}.`);
   });

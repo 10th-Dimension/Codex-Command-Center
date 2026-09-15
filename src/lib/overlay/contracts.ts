@@ -1,6 +1,73 @@
 export type OverlayRange = "24h" | "7d" | "30d";
 export type OverlayProviderStatus = "connected" | "degraded" | "unavailable";
 
+export type CodexAccountStatus = "connected" | "stale" | "unavailable" | "error";
+export type CodexAccountFreshness = "live" | "recent" | "stale" | "unavailable";
+
+export interface CodexQuotaWindow {
+  slot: "primary" | "secondary";
+  kind: "5h" | "7d" | "other";
+  label: string;
+  durationMins?: number;
+  usedPercent: number;
+  remainingPercent: number;
+  resetsAt?: number;
+}
+
+export interface CodexQuotaCredits {
+  hasCredits: boolean;
+  unlimited: boolean;
+  balance?: string;
+}
+
+export interface CodexQuotaLimit {
+  limitId?: string;
+  limitName?: string;
+  normalModelSlug?: string;
+  windows: CodexQuotaWindow[];
+  credits?: CodexQuotaCredits;
+  individualLimit?: boolean;
+  spendControlReached?: boolean;
+  rateLimitReachedType?: string;
+}
+
+export interface CodexResetCreditDetail {
+  status: string;
+  grantedAt?: number;
+  expiresAt?: number;
+  title?: string;
+}
+
+export interface CodexAccountActivity {
+  lifetimeTokens?: number;
+  currentStreakDays?: number;
+  longestStreakDays?: number;
+  peakDailyTokens?: number;
+  longestRunningTurnSec?: number;
+  dailyUsageBuckets?: Array<{
+    startDate: string;
+    tokens: number;
+  }>;
+}
+
+export interface CodexAccountSnapshot {
+  status: CodexAccountStatus;
+  freshness: CodexAccountFreshness;
+  observedAt?: string;
+  rateLimitsObservedAt?: string;
+  activityObservedAt?: string;
+  accountType?: string;
+  planType?: string;
+  ordinaryUsageAllowed?: boolean;
+  limits: CodexQuotaLimit[];
+  resetCredits?: {
+    availableCount: number;
+    expirations?: number[];
+    details?: CodexResetCreditDetail[];
+  };
+  activity?: CodexAccountActivity;
+}
+
 export interface OverlayTrendPoint {
   label: string;
   inputTokens?: number;
@@ -63,4 +130,5 @@ export interface OverlaySnapshot {
       completedAt?: string;
     };
   };
+  codexAccount?: CodexAccountSnapshot;
 }
