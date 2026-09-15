@@ -1,6 +1,6 @@
 # Codex Command Center
 
-Codex Command Center is a private, extensible engineering dashboard for trusted repository, delivery, project, and agent signals. Its live adapters read a configured private GitHub repository and privacy-filtered Codex OpenTelemetry logs stored in Cloudflare D1. Unavailable or empty data stays explicit; the application never manufactures dashboard metrics.
+Codex Command Center is an open-source observability and developer-operations dashboard for Codex, GitHub, usage telemetry, account quota, delivery health, and development activity. It combines privacy-filtered OpenTelemetry history with real-time local Codex account data and a native Windows overlay.
 
 The project has two related product surfaces and one shared server/provider architecture:
 
