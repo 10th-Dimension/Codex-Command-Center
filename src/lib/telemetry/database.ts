@@ -8,6 +8,7 @@ import type { NormalizedTelemetryEvent } from "@/lib/telemetry/normalize";
 export interface D1ResultLike<T = Record<string, unknown>> { success: boolean; results?: T[]; meta?: { changes?: number; rows_read?: number; rows_written?: number }; error?: string }
 export interface D1PreparedStatementLike { bind(...values: unknown[]): D1PreparedStatementLike; run<T = Record<string, unknown>>(): Promise<D1ResultLike<T>>; all<T = Record<string, unknown>>(): Promise<D1ResultLike<T>> }
 export interface D1DatabaseLike { prepare(sql: string): D1PreparedStatementLike; batch<T = Record<string, unknown>>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> }
+export interface D1MutationResult { changes: number; rowsWritten?: number }
 
 const INSERT_COLUMNS = [
   "id", "event_fingerprint", "occurred_at", "received_at", "event_name", "event_category", "environment", "severity_text", "severity_number",
@@ -37,26 +38,35 @@ function eventValues(event: NormalizedTelemetryEvent) {
 
 export async function insertTelemetryEventsDetailed(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]) {
   const insertedEvents: NormalizedTelemetryEvent[] = [];
+  let rowsWritten = 0;
+  let rowsWrittenObserved = false;
   for (let offset = 0; offset < events.length; offset += 50) {
     const chunk = events.slice(offset, offset + 50);
     const results = await database.batch(chunk.map((event) => database.prepare(INSERT_SQL).bind(...eventValues(event))));
     if (results.some((result) => !result.success)) throw new Error("Telemetry storage batch failed.");
     results.forEach((result, index) => {
       if ((result.meta?.changes ?? 0) > 0) insertedEvents.push(chunk[index]);
+      if (typeof result.meta?.rows_written === "number") {
+        rowsWrittenObserved = true;
+        rowsWritten += result.meta.rows_written;
+      }
     });
   }
-  return { inserted: insertedEvents.length, insertedEvents };
+  return { inserted: insertedEvents.length, insertedEvents, ...(rowsWrittenObserved ? { rowsWritten } : {}) };
 }
 
 export async function insertTelemetryEvents(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]) {
   return (await insertTelemetryEventsDetailed(database, events)).inserted;
 }
 
-export async function deleteExpiredTelemetry(database: D1DatabaseLike, retentionDays: number, now: Date) {
+export async function deleteExpiredTelemetry(database: D1DatabaseLike, retentionDays: number, now: Date): Promise<D1MutationResult> {
   const cutoff = new Date(now.getTime() - retentionDays * 86_400_000).toISOString();
   const result = await database.prepare("DELETE FROM codex_telemetry_events WHERE occurred_at < ?").bind(cutoff).run();
   if (!result.success) throw new Error("Telemetry retention cleanup failed.");
-  return result.meta?.changes ?? 0;
+  return {
+    changes: result.meta?.changes ?? 0,
+    ...(typeof result.meta?.rows_written === "number" ? { rowsWritten: result.meta.rows_written } : {}),
+  };
 }
 
 type EventRow = Record<string, string | number | null> & { id: string; event_name: string; event_category: CodexActivityRecord["category"]; occurred_at: string; received_at: string; safe_attribute_keys_json: string; unknown_attribute_keys_json: string; source: "openai-codex-otel"; schema_version: 1 | 2 };

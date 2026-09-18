@@ -4,7 +4,7 @@ import type {
   CodexTelemetrySessionSummary,
   CodexTelemetryTrendPoint,
 } from "@/lib/providers/types";
-import type { D1DatabaseLike, D1PreparedStatementLike, D1ResultLike } from "@/lib/telemetry/database";
+import type { D1DatabaseLike, D1MutationResult, D1PreparedStatementLike, D1ResultLike } from "@/lib/telemetry/database";
 import type { NormalizedTelemetryEvent } from "@/lib/telemetry/normalize";
 
 export type TelemetryRange = "24h" | "7d" | "30d";
@@ -94,6 +94,7 @@ export interface RollupWriteResult {
   modelGroups: number;
   reasoningGroups: number;
   sessionGroups: number;
+  rowsWritten?: number;
 }
 
 const zeroScalar = (): ScalarAggregate => ({
@@ -287,6 +288,8 @@ export async function applyTelemetryRollups(database: D1DatabaseLike, events: No
   if (!events.length) return { hourlyGroups: 0, modelGroups: 0, reasoningGroups: 0, sessionGroups: 0 };
   const grouped = groupTelemetryRollups(events);
   const statements: D1PreparedStatementLike[] = [];
+  let rowsWritten = 0;
+  let rowsWrittenObserved = false;
   for (const [hour, value] of grouped.hourly) {
     statements.push(database.prepare(hourlyUpsert).bind(hour, value.eventCount, value.inputTokens, value.inputSamples,
       value.outputTokens, value.outputSamples, value.cachedTokens, value.cachedSamples, value.cacheWriteTokens,
@@ -306,12 +309,17 @@ export async function applyTelemetryRollups(database: D1DatabaseLike, events: No
   for (let offset = 0; offset < statements.length; offset += 50) {
     const results = await database.batch(statements.slice(offset, offset + 50));
     if (results.some((result) => !result.success)) throw new Error("Telemetry rollup batch failed.");
+    if (results.some((result) => typeof result.meta?.rows_written === "number")) {
+      rowsWrittenObserved = true;
+      rowsWritten += results.reduce((total, result) => total + (result.meta?.rows_written ?? 0), 0);
+    }
   }
   return {
     hourlyGroups: grouped.hourly.size,
     modelGroups: grouped.models.size,
     reasoningGroups: grouped.reasoning.size,
     sessionGroups: grouped.sessions.size,
+    ...(rowsWrittenObserved ? { rowsWritten } : {}),
   };
 }
 
@@ -445,7 +453,7 @@ export async function buildMaterializedSnapshot(database: D1DatabaseLike, range:
   return snapshot;
 }
 
-export async function writeMaterializedSnapshot(database: D1DatabaseLike, snapshot: CodexMaterializedSnapshot) {
+export async function writeMaterializedSnapshot(database: D1DatabaseLike, snapshot: CodexMaterializedSnapshot): Promise<D1MutationResult> {
   const payload = JSON.stringify(snapshot);
   if (payload.length > 262_144) throw new Error("Telemetry snapshot exceeded its privacy-safe size bound.");
   const result = await database.prepare(`INSERT INTO codex_dashboard_snapshot (range,generated_at,source_updated_at,payload_json)
@@ -453,20 +461,30 @@ export async function writeMaterializedSnapshot(database: D1DatabaseLike, snapsh
     source_updated_at=excluded.source_updated_at,payload_json=excluded.payload_json`)
     .bind(snapshot.range, snapshot.generatedAt, snapshot.sourceUpdatedAt ?? null, payload).run();
   if (!result.success) throw new Error("Telemetry snapshot write failed.");
+  return {
+    changes: result.meta?.changes ?? 0,
+    ...(typeof result.meta?.rows_written === "number" ? { rowsWritten: result.meta.rows_written } : {}),
+  };
 }
 
 export async function refreshStaleMaterializedSnapshots(database: D1DatabaseLike, now: Date) {
   const state = await database.prepare("SELECT range,generated_at,payload_json FROM codex_dashboard_snapshot WHERE range IN ('24h','7d','30d')").all<SnapshotRow>();
   const existing = new Map(resultRows(state).map((row) => [row.range, row]));
   const refreshed: TelemetryRange[] = [];
+  let rowsWritten = 0;
+  let rowsWrittenObserved = false;
   for (const range of TELEMETRY_RANGES) {
     const row = existing.get(range);
     const generated = row ? Date.parse(row.generated_at) : Number.NaN;
     if (Number.isFinite(generated) && now.getTime() - generated < SNAPSHOT_TTL_MS[range]) continue;
-    await writeMaterializedSnapshot(database, await buildMaterializedSnapshot(database, range, now));
+    const written = await writeMaterializedSnapshot(database, await buildMaterializedSnapshot(database, range, now));
+    if (written.rowsWritten !== undefined) {
+      rowsWrittenObserved = true;
+      rowsWritten += written.rowsWritten;
+    }
     refreshed.push(range);
   }
-  return refreshed;
+  return { refreshed, ...(rowsWrittenObserved ? { rowsWritten } : {}) };
 }
 
 export async function readMaterializedSnapshots(database: D1DatabaseLike) {
@@ -480,7 +498,7 @@ export async function readMaterializedSnapshot(database: D1DatabaseLike, range: 
   return row ? parseSnapshot(row) : undefined;
 }
 
-export async function deleteExpiredRollups(database: D1DatabaseLike, now: Date) {
+export async function deleteExpiredRollups(database: D1DatabaseLike, now: Date): Promise<D1MutationResult> {
   const cutoff = new Date(now.getTime() - 31 * 86_400_000).toISOString();
   const results = await database.batch([
     database.prepare("DELETE FROM codex_rollup_hourly WHERE hour_start<?").bind(cutoff),
@@ -489,6 +507,13 @@ export async function deleteExpiredRollups(database: D1DatabaseLike, now: Date) 
     database.prepare("DELETE FROM codex_session_summary WHERE last_seen_at<?").bind(cutoff),
   ]);
   if (results.some((result) => !result.success)) throw new Error("Telemetry rollup retention cleanup failed.");
+  const rowsWritten = results.some((result) => typeof result.meta?.rows_written === "number")
+    ? results.reduce((total, result) => total + (result.meta?.rows_written ?? 0), 0)
+    : undefined;
+  return {
+    changes: results.reduce((total, result) => total + (result.meta?.changes ?? 0), 0),
+    ...(rowsWritten === undefined ? {} : { rowsWritten }),
+  };
 }
 
 export function isMissingRollupSchemaError(error: unknown) {

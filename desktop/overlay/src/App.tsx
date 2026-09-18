@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties, type MouseEvent } from "react";
 import { Activity, AlertTriangle, Check, ChevronDown, Circle, ExternalLink, EyeOff, Grip, LayoutGrid, Lock, Minus, Power, RefreshCw, Settings, Unlock, X } from "lucide-react";
-import type { OverlaySnapshot } from "../../../src/lib/overlay/contracts";
-import type { CodexQuotaWindow } from "../../../src/lib/overlay/contracts";
+import type { CodexQuotaWindow, OverlaySnapshot, TelemetryBufferHealth } from "../../../src/lib/overlay/contracts";
 import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../../../src/lib/overlay/account";
 import { telemetryFreshness } from "./lib/freshness";
 import { applyWindowSettings, configureHotkeys, controlRelay, fetchOverlay, getAutostart, getNativeState, hideOverlay, loadSettings, onNativeAction, openDashboard, quitOverlay, recoverOverlay, saveSettings, setAutostart, setCorner, setLayout, startDrag, startResize, type NativeState } from "./lib/native";
@@ -210,14 +209,14 @@ function OverlayContent({ snapshot, relay, layout, freshness, now }: Readonly<{ 
   if (layout === "mini") return <>
     <div className="identity-row"><Identity session={session} /><QuotaFreshness account={snapshot.codexAccount} now={now} /></div>
     <MiniQuota account={snapshot.codexAccount} now={now} summary={summary} />
-    <footer><HealthChip label="Relay" status={relay === "online" ? "connected" : "degraded"} /><HealthChip label="Telemetry" status={snapshot.health.telemetry} /><HealthChip label="D1" status={snapshot.health.d1} /></footer>
+    <footer><HealthChip label="Relay" status={relay === "online" ? "connected" : "degraded"} /><HealthChip label="Telemetry" status={snapshot.health.telemetry} /><HealthChip label="D1" status={snapshot.health.d1} /><BufferStatus buffer={snapshot.telemetryBuffer} /></footer>
   </>;
   return <>
     <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>OTel {freshness.label}</span></div>
     <QuotaPanel account={snapshot.codexAccount} now={now} />
     <div className="metric-grid primary"><Metric label="Input" value={summary.inputTokens} /><Metric label="Output" value={summary.outputTokens} /><Metric label="Cached" value={summary.cachedTokens} optionalMini /><Metric label="Reasoning" value={summary.reasoningTokens} /><Metric label="Tool tokens" value={summary.toolTokens} optionalMini /><Metric label="TTFT" value={summary.averageTtftMs} duration /><Metric label="Tools" value={summary.completedTools} /><Metric label="Errors" value={summary.failures} /></div>
     {layout === "expanded" ? <Expanded snapshot={snapshot} now={now} /> : null}
-    <footer><HealthChip label="Relay" status={relay === "online" ? "connected" : "degraded"} /><HealthChip label="Telemetry" status={snapshot.health.telemetry} /><HealthChip label="D1" status={snapshot.health.d1} /></footer>
+    <footer><HealthChip label="Relay" status={relay === "online" ? "connected" : "degraded"} /><HealthChip label="Telemetry" status={snapshot.health.telemetry} /><HealthChip label="D1" status={snapshot.health.d1} /><BufferStatus buffer={snapshot.telemetryBuffer} /></footer>
   </>;
 }
 
@@ -296,6 +295,13 @@ function ResizeHandles() {
 function Metric({ label, short, value, duration, optionalMini }: Readonly<{ label?: string; short?: string; value?: number; duration?: boolean; optionalMini?: boolean }>) { return <div className={`metric ${optionalMini ? "optional-mini" : ""}`}><span>{short ?? label}</span><b>{duration ? durationLabel(value) : numberLabel(value)}</b></div>; }
 function StatusDot({ state }: Readonly<{ state: string }>) { return <Circle className={`status-dot ${state}`} fill="currentColor" size={6} />; }
 function HealthChip({ label, status }: Readonly<{ label: string; status: string }>) { return <span className="health-chip"><StatusDot state={status} />{label}</span>; }
+function BufferStatus({ buffer }: Readonly<{ buffer?: TelemetryBufferHealth }>) {
+  if (!buffer) return null;
+  const state = buffer.replayState === "replaying" ? "replaying" : buffer.replayState === "degraded" ? "degraded" : buffer.queuedBatches ? "buffering" : "connected";
+  const label = buffer.replayState === "replaying" ? `OTel replaying${buffer.queuedBatches ? ` · ${buffer.queuedBatches}` : ""}` : buffer.queuedBatches ? `OTel buffered · ${buffer.queuedBatches}` : buffer.droppedBatches ? `OTel degraded · ${buffer.droppedBatches} dropped` : "OTel live";
+  const title = `${buffer.queuedBatches} queued batch${buffer.queuedBatches === 1 ? "" : "es"}${buffer.oldestQueuedAgeSeconds === undefined ? "" : ` · oldest ${buffer.oldestQueuedAgeSeconds}s`}${buffer.droppedBatches ? ` · ${buffer.droppedBatches} dropped` : ""}`;
+  return <span className="buffer-status" title={title}><StatusDot state={state} />{label}</span>;
+}
 function HealthLabel({ relay, freshness }: Readonly<{ relay: RelayState; freshness: ReturnType<typeof telemetryFreshness> }>) { const healthy = relay === "online" && freshness.state !== "stale"; return <div className={`strip-health ${healthy ? "connected" : "degraded"}`}><StatusDot state={healthy ? "connected" : "degraded"} />{healthy ? freshness.label : "Attention"}</div>; }
 function SectionTitle({ title, note }: Readonly<{ title: string; note?: string }>) { return <div className="section-title"><b>{title}</b>{note ? <span title={note}>{note}</span> : null}</div>; }
 

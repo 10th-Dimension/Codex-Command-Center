@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createCodexAccountService, discoverCodexExecutable, unavailableCodexAccount, type CodexAccountProvider } from "./codex-app-server-client";
+import { defaultTelemetrySpoolDirectory, TelemetrySpool, type TelemetryBufferHealth, type TelemetrySpoolContentType, type TelemetrySpoolReplayResult } from "./telemetry-spool";
+import { sanitizeTelemetryPayload } from "./telemetry-spool-payload";
 import type { CodexAccountSnapshot } from "../src/lib/overlay/contracts";
 
 export const TELEMETRY_RELAY_HOST = "127.0.0.1";
@@ -20,6 +22,7 @@ export const OVERLAY_REFRESH_DEFAULT_MS = 30_000;
 export const OVERLAY_REFRESH_MINIMUM_MS = 15_000;
 export const ACCOUNT_RELAY_PATH = "/v1/account";
 export const ACCOUNT_MAX_BYTES = 65_536;
+export const TELEMETRY_REPLAY_BACKOFF_DEFAULT_MS = 5_000;
 export const OVERLAY_RANGES = ["24h", "7d", "30d"] as const;
 export type OverlayRange = typeof OVERLAY_RANGES[number];
 
@@ -98,6 +101,7 @@ export function isSafeOverlayPayload(value: unknown): value is Record<string, un
   const root = value as Record<string, unknown>;
   if (typeof root.generatedAt !== "string" || !OVERLAY_RANGES.includes(root.range as OverlayRange)) return false;
   if (!root.health || typeof root.health !== "object" || !root.windowSummary || typeof root.windowSummary !== "object") return false;
+  if (root.telemetryBuffer !== undefined && !isSafeTelemetryBufferPayload(root.telemetryBuffer)) return false;
   const pending: unknown[] = [root];
   let visited = 0;
   while (pending.length) {
@@ -108,6 +112,20 @@ export function isSafeOverlayPayload(value: unknown): value is Record<string, un
       if (forbiddenOverlayKey.test(key)) return false;
       if (child && typeof child === "object") pending.push(child);
     }
+  }
+  return true;
+}
+
+export function isSafeTelemetryBufferPayload(value: unknown): value is TelemetryBufferHealth {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const buffer = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(buffer.queuedBatches) || Number(buffer.queuedBatches) < 0) return false;
+  if (!Number.isSafeInteger(buffer.queuedBytes) || Number(buffer.queuedBytes) < 0) return false;
+  if (!Number.isSafeInteger(buffer.droppedBatches) || Number(buffer.droppedBatches) < 0) return false;
+  if (!["idle", "buffering", "replaying", "degraded"].includes(String(buffer.replayState))) return false;
+  if (buffer.oldestQueuedAgeSeconds !== undefined && (!Number.isSafeInteger(buffer.oldestQueuedAgeSeconds) || Number(buffer.oldestQueuedAgeSeconds) < 0)) return false;
+  for (const key of ["lastSuccessfulReplayAt", "lastUpstreamFailureAt"]) {
+    if (buffer[key] !== undefined && typeof buffer[key] !== "string") return false;
   }
   return true;
 }
@@ -158,6 +176,9 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
   overlayRefreshMs?: number;
   now?: () => number;
   accountProvider?: Pick<CodexAccountProvider, "getSnapshot">;
+  spool?: TelemetrySpool;
+  spoolDirectory?: string;
+  spoolReplayBackoffMs?: number;
 } = {}) {
   const collector = validateRelayConfiguration(configuration);
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -165,9 +186,141 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
   const overlayRefreshMs = Math.max(OVERLAY_REFRESH_MINIMUM_MS, options.overlayRefreshMs ?? OVERLAY_REFRESH_DEFAULT_MS);
   const now = options.now ?? Date.now;
   const accountProvider = options.accountProvider ?? { getSnapshot: () => unavailableCodexAccount() };
+  const spool = options.spool ?? new TelemetrySpool({
+    directory: options.spoolDirectory ?? defaultTelemetrySpoolDirectory(),
+    now,
+    retryMinimumMs: options.spoolReplayBackoffMs ?? TELEMETRY_REPLAY_BACKOFF_DEFAULT_MS,
+  });
   const allowedBrowserOrigin = collector.origin;
   const overlayCache = new Map<OverlayRange, { payload: Record<string, unknown>; fetchedAt: number }>();
   const overlayInFlight = new Map<OverlayRange, Promise<Record<string, unknown>>>();
+  const relayCounters = {
+    ingestRequests: 0,
+    forwardedRequests: 0,
+    bufferedRequests: 0,
+    rawEventsAccepted: 0,
+    duplicateEventsIgnored: 0,
+    rollupUpserts: 0,
+    sessionSummaryUpserts: 0,
+    snapshotRebuilds: 0,
+    cleanupDeletes: 0,
+    d1RowsWritten: 0,
+    d1RowsWrittenObserved: false,
+  };
+  let directForwardInFlight = false;
+  let replayInFlight: Promise<void> | undefined;
+  let replayTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function numberHeader(headers: Headers, name: string) {
+    const value = Number(headers.get(name));
+    return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+  }
+
+  function observeIngestHeaders(headers: Headers) {
+    const accepted = numberHeader(headers, "x-codex-telemetry-accepted");
+    const duplicates = numberHeader(headers, "x-codex-telemetry-duplicates");
+    const rollups = numberHeader(headers, "x-codex-telemetry-rollup-upserts");
+    const sessions = numberHeader(headers, "x-codex-telemetry-session-upserts");
+    const snapshots = numberHeader(headers, "x-codex-telemetry-snapshot-rebuilds");
+    const cleanup = numberHeader(headers, "x-codex-telemetry-cleanup-deletes");
+    const rows = numberHeader(headers, "x-codex-telemetry-d1-rows-written");
+    if (accepted !== undefined) relayCounters.rawEventsAccepted += accepted;
+    if (duplicates !== undefined) relayCounters.duplicateEventsIgnored += duplicates;
+    if (rollups !== undefined) relayCounters.rollupUpserts += rollups;
+    if (sessions !== undefined) relayCounters.sessionSummaryUpserts += sessions;
+    if (snapshots !== undefined) relayCounters.snapshotRebuilds += snapshots;
+    if (cleanup !== undefined) relayCounters.cleanupDeletes += cleanup;
+    if (rows !== undefined) {
+      relayCounters.d1RowsWrittenObserved = true;
+      relayCounters.d1RowsWritten += rows;
+    }
+  }
+
+  async function sendToCollector(contentType: TelemetrySpoolContentType, body: Uint8Array, replay = false) {
+    const upstream = await fetchImpl(collector, {
+      method: "POST",
+      headers: {
+        "content-type": contentType,
+        "cf-access-client-id": configuration.CF_ACCESS_CLIENT_ID,
+        "cf-access-client-secret": configuration.CF_ACCESS_CLIENT_SECRET,
+        "x-codex-telemetry-key": configuration.TELEMETRY_INGEST_KEY,
+        ...(replay ? { "x-codex-telemetry-replay": "1" } : {}),
+      },
+      body: Uint8Array.from(body),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const upstreamBody = new Uint8Array(await upstream.arrayBuffer());
+    return { upstream, upstreamBody };
+  }
+
+  function retryableStatus(status: number) {
+    return status === 408 || status === 425 || status === 429 || status >= 500;
+  }
+
+  async function sendQueued(item: { contentType: TelemetrySpoolContentType; body: Uint8Array }): Promise<TelemetrySpoolReplayResult> {
+    try {
+      const { upstream } = await sendToCollector(item.contentType, item.body, true);
+      if (upstream.ok) {
+        relayCounters.forwardedRequests += 1;
+        observeIngestHeaders(upstream.headers);
+        return "delivered";
+      }
+      return retryableStatus(upstream.status) ? "retry" : "drop";
+    } catch {
+      return "retry";
+    }
+  }
+
+  function scheduleReplay(delayMs = 0) {
+    if (replayTimer) return;
+    replayTimer = setTimeout(() => {
+      replayTimer = undefined;
+      void replayBuffered().catch(() => undefined);
+    }, Math.max(0, delayMs));
+    replayTimer.unref?.();
+  }
+
+  async function replayBuffered(force = false) {
+    if (replayInFlight) return replayInFlight;
+    replayInFlight = (async () => {
+      try {
+        await spool.replay(sendQueued, force);
+        const health = await spool.health();
+        if (health.queuedBatches > 0) scheduleReplay(Math.max(0, spool.nextRetryAt() - now()));
+      } catch {
+        // A local spool filesystem failure must not terminate the relay process.
+      }
+    })().finally(() => {
+      replayInFlight = undefined;
+    });
+    return replayInFlight;
+  }
+
+  async function bufferBody(contentType: TelemetrySpoolContentType, body: Uint8Array) {
+    try {
+      const sanitized = await sanitizeTelemetryPayload(contentType, body, new Date(now()).toISOString());
+      if (!sanitized) return spool.drop();
+      await spool.recordUpstreamFailure();
+      const health = await spool.enqueue(sanitized.contentType, sanitized.body);
+      relayCounters.bufferedRequests += 1;
+      scheduleReplay(Math.max(0, spool.nextRetryAt() - now()));
+      return health;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function bufferedResponse(response: ServerResponse, contentType: TelemetrySpoolContentType, health: TelemetryBufferHealth) {
+    const headers: Record<string, string> = {
+      "cache-control": "no-store",
+      "content-type": contentType === "application/json" ? "application/json" : "application/x-protobuf",
+      "x-codex-telemetry-buffered": health.queuedBatches > 0 ? "true" : "false",
+      "x-codex-telemetry-queued": String(health.queuedBatches),
+      "x-codex-telemetry-dropped": String(health.droppedBatches),
+    };
+    response.writeHead(202, headers);
+    response.end(contentType === "application/json" ? JSON.stringify({ partialSuccess: {} }) : new Uint8Array());
+  }
 
   async function fetchOverlay(range: OverlayRange) {
     const existing = overlayInFlight.get(range);
@@ -206,8 +359,8 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
     return isSafeCodexAccountPayload(snapshot) ? snapshot : unavailableCodexAccount("error");
   }
 
-  function overlayBody(payload: Record<string, unknown>) {
-    const finalPayload = { ...payload, codexAccount: accountSnapshot() };
+  async function overlayBody(payload: Record<string, unknown>) {
+    const finalPayload = { ...payload, codexAccount: accountSnapshot(), telemetryBuffer: await spool.health() };
     if (!isSafeOverlayPayload(finalPayload)) throw new Error("unsafe_overlay_payload");
     const body = new TextEncoder().encode(JSON.stringify(finalPayload));
     if (body.byteLength > OVERLAY_MAX_BYTES) throw new Error("overlay_response_too_large");
@@ -222,13 +375,30 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
     return true;
   }
 
-  return createServer(async (request, response) => {
+  const server = createServer(async (request, response) => {
     response.setHeader("cache-control", "no-store");
     response.setHeader("x-content-type-options", "nosniff");
 
     if (request.method === "GET" && request.url === TELEMETRY_RELAY_HEALTH_PATH) {
+      const buffer = await spool.health();
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      response.end(JSON.stringify({ status: "ok", service: "codex-telemetry-relay" }));
+      response.end(JSON.stringify({
+        status: "ok",
+        service: "codex-telemetry-relay",
+        telemetryBuffer: buffer,
+        diagnostics: {
+          ingestRequests: relayCounters.ingestRequests,
+          forwardedRequests: relayCounters.forwardedRequests,
+          bufferedRequests: relayCounters.bufferedRequests,
+          rawEventsAccepted: relayCounters.rawEventsAccepted,
+          duplicateEventsIgnored: relayCounters.duplicateEventsIgnored,
+          rollupUpserts: relayCounters.rollupUpserts,
+          sessionSummaryUpserts: relayCounters.sessionSummaryUpserts,
+          snapshotRebuilds: relayCounters.snapshotRebuilds,
+          cleanupDeletes: relayCounters.cleanupDeletes,
+          ...(relayCounters.d1RowsWrittenObserved ? { d1RowsWritten: relayCounters.d1RowsWritten } : {}),
+        },
+      }));
       return;
     }
 
@@ -281,17 +451,17 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
       const cached = overlayCache.get(range);
       if (cached && now() - cached.fetchedAt < overlayRefreshMs) {
         response.writeHead(200, { "content-type": "application/json; charset=utf-8", "x-codex-overlay-cache": "fresh" });
-        response.end(overlayBody(cached.payload));
+        response.end(await overlayBody(cached.payload));
         return;
       }
       try {
-        const body = overlayBody(await fetchOverlay(range));
+        const body = await overlayBody(await fetchOverlay(range));
         response.writeHead(200, { "content-type": "application/json; charset=utf-8", "x-codex-overlay-cache": "upstream" });
         response.end(body);
       } catch {
         if (cached) {
           response.writeHead(200, { "content-type": "application/json; charset=utf-8", "x-codex-overlay-cache": "stale" });
-          response.end(overlayBody(cached.payload));
+          response.end(await overlayBody(cached.payload));
           return;
         }
         response.writeHead(502, { "content-type": "application/json" });
@@ -326,27 +496,60 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
     }
 
     try {
+      relayCounters.ingestRequests += 1;
       const body = await readRequestBody(request);
-      const upstream = await fetchImpl(collector, {
-        method: "POST",
-        headers: {
-          "content-type": contentType,
-          "cf-access-client-id": configuration.CF_ACCESS_CLIENT_ID,
-          "cf-access-client-secret": configuration.CF_ACCESS_CLIENT_SECRET,
-          "x-codex-telemetry-key": configuration.TELEMETRY_INGEST_KEY,
-        },
-        body: Uint8Array.from(body),
-        signal: AbortSignal.timeout(15_000),
-      });
-      const upstreamBody = new Uint8Array(await upstream.arrayBuffer());
-      response.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/x-protobuf" });
-      response.end(upstreamBody);
+      const spoolPending = await spool.hasPending().catch(() => false);
+      if (spoolPending || directForwardInFlight) {
+        const health = await bufferBody(contentType as TelemetrySpoolContentType, body);
+        if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
+        else {
+          response.writeHead(502, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: "collector_unavailable" }));
+        }
+        return;
+      }
+
+      directForwardInFlight = true;
+      try {
+        const { upstream, upstreamBody } = await sendToCollector(contentType as TelemetrySpoolContentType, body);
+        if (retryableStatus(upstream.status)) {
+          const health = await bufferBody(contentType as TelemetrySpoolContentType, body);
+          if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
+          else {
+            response.writeHead(502, { "content-type": "application/json" });
+            response.end(JSON.stringify({ error: "collector_unavailable" }));
+          }
+          return;
+        }
+        relayCounters.forwardedRequests += 1;
+        observeIngestHeaders(upstream.headers);
+        response.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/x-protobuf" });
+        response.end(upstreamBody);
+      } catch {
+        const health = await bufferBody(contentType as TelemetrySpoolContentType, body);
+        if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
+        else {
+          response.writeHead(502, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: "collector_unavailable" }));
+        }
+      } finally {
+        directForwardInFlight = false;
+        if (await spool.hasPending().catch(() => false)) scheduleReplay();
+      }
     } catch (error) {
       const status = error instanceof Error && "statusCode" in error && error.statusCode === 413 ? 413 : 502;
       response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: status === 413 ? "payload_too_large" : "collector_unavailable" }));
     }
   });
+  server.on("close", () => {
+    if (replayTimer) clearTimeout(replayTimer);
+    replayTimer = undefined;
+  });
+  void spool.ready().then(async () => {
+    if (await spool.hasPending()) scheduleReplay(Math.max(0, spool.nextRetryAt() - now()));
+  }).catch(() => undefined);
+  return server;
 }
 
 function stopWithParent(server: ReturnType<typeof createServer>, closeOwned: () => Promise<void>) {
@@ -369,7 +572,10 @@ async function main() {
     discoverExecutable: () => discoverCodexExecutable({ ...process.env, CODEX_CLI_PATH: configuration.CODEX_CLI_PATH }),
   });
   accountService.start();
-  const server = createTelemetryRelay(configuration, { accountProvider: accountService });
+  const server = createTelemetryRelay(configuration, {
+    accountProvider: accountService,
+    spool: new TelemetrySpool({ directory: defaultTelemetrySpoolDirectory() }),
+  });
   stopWithParent(server, () => accountService.close());
   server.listen(TELEMETRY_RELAY_PORT, TELEMETRY_RELAY_HOST, () => {
     console.log(`Codex telemetry relay listening on loopback port ${TELEMETRY_RELAY_PORT}.`);

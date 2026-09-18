@@ -10,13 +10,29 @@ import {
 } from "@/lib/telemetry/rollups";
 
 export const MAX_TELEMETRY_PAYLOAD_BYTES = 1_048_576;
+export const TELEMETRY_MAINTENANCE_INTERVAL_MS = 60_000;
 const INGEST_HEADER = "x-codex-telemetry-key";
+
+interface MaintenanceResult {
+  schemaUnavailable: boolean;
+  snapshotRebuilds: number;
+  cleanupDeletes: number;
+  rowsWritten?: number;
+}
+
+interface MaintenanceState {
+  lastCompletedAt?: number;
+  inFlight?: Promise<MaintenanceResult>;
+}
+
+const maintenanceStates = new WeakMap<object, MaintenanceState>();
 
 export interface TelemetryIngestOptions {
   database?: D1DatabaseLike;
   ingestKey?: string;
   retentionDays: number;
   now?: () => Date;
+  maintenanceIntervalMs?: number;
 }
 
 function secureEqual(left: string, right: string) {
@@ -35,18 +51,79 @@ function safeJsonError(status: number, code: string) {
   });
 }
 
-function successResponse(contentType: string, accepted: number, duplicateCount: number, rollups: "updated" | "schema-unavailable") {
-  const headers = {
+function successResponse(contentType: string, diagnostics: {
+  accepted: number;
+  duplicateCount: number;
+  rollups: "updated" | "schema-unavailable";
+  rollupUpserts: number;
+  sessionSummaryUpserts: number;
+  snapshotRebuilds: number;
+  cleanupDeletes: number;
+  d1RowsWritten?: number;
+}) {
+  const headers: Record<string, string> = {
     "cache-control": "no-store",
-    "x-codex-telemetry-accepted": String(accepted),
-    "x-codex-telemetry-duplicates": String(duplicateCount),
-    "x-codex-telemetry-rollups": rollups,
+    "x-codex-telemetry-accepted": String(diagnostics.accepted),
+    "x-codex-telemetry-duplicates": String(diagnostics.duplicateCount),
+    "x-codex-telemetry-rollups": diagnostics.rollups,
+    "x-codex-telemetry-rollup-upserts": String(diagnostics.rollupUpserts),
+    "x-codex-telemetry-session-upserts": String(diagnostics.sessionSummaryUpserts),
+    "x-codex-telemetry-snapshot-rebuilds": String(diagnostics.snapshotRebuilds),
+    "x-codex-telemetry-cleanup-deletes": String(diagnostics.cleanupDeletes),
+    "x-codex-telemetry-ingest-requests": "1",
     "x-content-type-options": "nosniff",
   };
+  if (diagnostics.d1RowsWritten !== undefined) headers["x-codex-telemetry-d1-rows-written"] = String(diagnostics.d1RowsWritten);
   if (contentType === "application/json") {
     return Response.json({ partialSuccess: {} }, { status: 200, headers });
   }
   return new Response(new Uint8Array(), { status: 200, headers: { ...headers, "content-type": "application/x-protobuf" } });
+}
+
+function emptyMaintenance(): MaintenanceResult {
+  return { schemaUnavailable: false, snapshotRebuilds: 0, cleanupDeletes: 0 };
+}
+
+function addRowsWritten(total: number | undefined, next: number | undefined) {
+  return total === undefined && next === undefined ? undefined : (total ?? 0) + (next ?? 0);
+}
+
+async function runMaintenance(database: D1DatabaseLike, retentionDays: number, now: Date, intervalMs: number): Promise<MaintenanceResult> {
+  const existing = maintenanceStates.get(database);
+  const state = existing ?? {};
+  maintenanceStates.set(database, state);
+  if (state.inFlight) return state.inFlight;
+  if (state.lastCompletedAt !== undefined && now.getTime() - state.lastCompletedAt < intervalMs) return emptyMaintenance();
+
+  const pending = (async () => {
+    let schemaUnavailable = false;
+    let cleanupDeletes = 0;
+    let snapshotRebuilds = 0;
+    let rowsWritten: number | undefined;
+    try {
+      const rollupCleanup = await deleteExpiredRollups(database, now);
+      cleanupDeletes += rollupCleanup.changes;
+      rowsWritten = addRowsWritten(rowsWritten, rollupCleanup.rowsWritten);
+      const snapshots = await refreshStaleMaterializedSnapshots(database, now);
+      snapshotRebuilds = snapshots.refreshed.length;
+      rowsWritten = addRowsWritten(rowsWritten, snapshots.rowsWritten);
+    } catch (error) {
+      if (!isMissingRollupSchemaError(error)) throw error;
+      schemaUnavailable = true;
+    }
+    const rawCleanup = await deleteExpiredTelemetry(database, retentionDays, now);
+    cleanupDeletes += rawCleanup.changes;
+    rowsWritten = addRowsWritten(rowsWritten, rawCleanup.rowsWritten);
+    const result: MaintenanceResult = { schemaUnavailable, snapshotRebuilds, cleanupDeletes, ...(rowsWritten === undefined ? {} : { rowsWritten }) };
+    state.lastCompletedAt = now.getTime();
+    return result;
+  })();
+  state.inFlight = pending;
+  try {
+    return await pending;
+  } finally {
+    state.inFlight = undefined;
+  }
 }
 
 export async function handleTelemetryIngest(request: Request, options: TelemetryIngestOptions) {
@@ -79,19 +156,38 @@ export async function handleTelemetryIngest(request: Request, options: Telemetry
       ? decodeOtlpJson(JSON.parse(new TextDecoder().decode(body)))
       : decodeOtlpProtobuf(body);
     const now = options.now?.() ?? new Date();
-    const normalized = await normalizeOtlpRecords(records, now.toISOString());
+    const normalized = await normalizeOtlpRecords(records, now.toISOString(), { replay: request.headers.get("x-codex-telemetry-replay") === "1" });
     const insertion = await insertTelemetryEventsDetailed(options.database, normalized);
+    let d1RowsWritten = insertion.rowsWritten;
     let rollupState: "updated" | "schema-unavailable" = "updated";
+    let rollupUpserts = 0;
+    let sessionSummaryUpserts = 0;
+    let snapshotRebuilds = 0;
+    let cleanupDeletes = 0;
     try {
-      await applyTelemetryRollups(options.database, insertion.insertedEvents);
-      await deleteExpiredRollups(options.database, now);
-      await refreshStaleMaterializedSnapshots(options.database, now);
+      const rollups = await applyTelemetryRollups(options.database, insertion.insertedEvents);
+      rollupUpserts = rollups.hourlyGroups + rollups.modelGroups + rollups.reasoningGroups;
+      sessionSummaryUpserts = rollups.sessionGroups;
+      d1RowsWritten = addRowsWritten(d1RowsWritten, rollups.rowsWritten);
     } catch (error) {
       if (!isMissingRollupSchemaError(error)) throw error;
       rollupState = "schema-unavailable";
     }
-    await deleteExpiredTelemetry(options.database, options.retentionDays, now);
-    return successResponse(contentType, insertion.inserted, normalized.length - insertion.inserted, rollupState);
+    const maintenance = await runMaintenance(options.database, options.retentionDays, now, Math.max(0, Math.floor(options.maintenanceIntervalMs ?? TELEMETRY_MAINTENANCE_INTERVAL_MS)));
+    if (maintenance.schemaUnavailable) rollupState = "schema-unavailable";
+    snapshotRebuilds = maintenance.snapshotRebuilds;
+    cleanupDeletes = maintenance.cleanupDeletes;
+    d1RowsWritten = addRowsWritten(d1RowsWritten, maintenance.rowsWritten);
+    return successResponse(contentType, {
+      accepted: insertion.inserted,
+      duplicateCount: normalized.length - insertion.inserted,
+      rollups: rollupState,
+      rollupUpserts,
+      sessionSummaryUpserts,
+      snapshotRebuilds,
+      cleanupDeletes,
+      ...(d1RowsWritten === undefined ? {} : { d1RowsWritten }),
+    });
   } catch (error) {
     if (error instanceof SyntaxError || error instanceof RangeError || error instanceof TypeError || error instanceof Error && /protobuf|OTLP|record limit/i.test(error.message)) {
       return safeJsonError(400, "invalid_otlp_payload");

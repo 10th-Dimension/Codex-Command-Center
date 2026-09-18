@@ -127,7 +127,7 @@ test("snapshot freshness refreshes only stale ranges", async () => {
     { range: "7d", generated_at: "2026-09-13T11:50:00.000Z", payload_json: "{}" },
     { range: "30d", generated_at: "2026-09-13T11:30:00.000Z", payload_json: "{}" },
   ];
-  assert.deepEqual(await refreshStaleMaterializedSnapshots(database, now), ["30d"]);
+  assert.deepEqual(await refreshStaleMaterializedSnapshots(database, now), { refreshed: ["30d"] });
 });
 
 test("24h, 7d, and 30d snapshot builders stay range-keyed", async () => {

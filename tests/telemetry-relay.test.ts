@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { ACCOUNT_MAX_BYTES, ACCOUNT_RELAY_PATH, createTelemetryRelay, isSafeCodexAccountPayload, isSafeOverlayPayload, OVERLAY_UPSTREAM_PATH, TELEMETRY_RELAY_HEALTH_PATH, TELEMETRY_RELAY_HOST } from "../scripts/telemetry-relay";
+import { TelemetrySpool } from "../scripts/telemetry-spool";
 
 const relayConfiguration = {
   TELEMETRY_COLLECTOR_URL: "https://command-center.example/api/telemetry/ingest",
@@ -56,7 +59,11 @@ test("relay health check is local, bounded, and does not contact the upstream", 
   try {
     const response = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}${TELEMETRY_RELAY_HEALTH_PATH}`);
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { status: "ok", service: "codex-telemetry-relay" });
+    const health = await response.json() as { status: string; service: string; telemetryBuffer: { queuedBatches: number; replayState: string }; diagnostics: { ingestRequests: number } };
+    assert.equal(health.status, "ok");
+    assert.equal(health.service, "codex-telemetry-relay");
+    assert.deepEqual(health.telemetryBuffer, { queuedBatches: 0, queuedBytes: 0, droppedBatches: 0, replayState: "idle" });
+    assert.equal(health.diagnostics.ingestRequests, 0);
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.equal(calls, 0);
     assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/health/extra`)).status, 404);
@@ -189,7 +196,7 @@ test("overlay relay serves the last safe snapshot when a stale refresh is offlin
     const stale = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=7d`);
     assert.equal(stale.status, 200);
     assert.equal(stale.headers.get("x-codex-overlay-cache"), "stale");
-    assert.deepEqual(await stale.json(), { ...overlaySnapshot, codexAccount: { status: "unavailable", freshness: "unavailable", limits: [] } });
+    assert.deepEqual(await stale.json(), { ...overlaySnapshot, codexAccount: { status: "unavailable", freshness: "unavailable", limits: [] }, telemetryBuffer: { queuedBatches: 0, queuedBytes: 0, droppedBatches: 0, replayState: "idle" } });
   } finally {
     await close(relay);
   }
@@ -234,6 +241,58 @@ test("safe overlay validator rejects credential and private-content fields", () 
   assert.equal(isSafeOverlayPayload(overlaySnapshot), true);
   for (const key of ["prompt", "command", "stdout", "authorization", "user.email", "hostname", "secret"]) {
     assert.equal(isSafeOverlayPayload({ ...overlaySnapshot, nested: { [key]: "private" } }), false);
+  }
+});
+
+test("relay buffers a retryable collector failure durably and exposes only safe aggregate health", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-relay-buffer-test-"));
+  let online = false;
+  let attempts = 0;
+  try {
+    const spool = new TelemetrySpool({ directory, retryMinimumMs: 60_000, retryMaximumMs: 60_000 });
+    const relay = createTelemetryRelay({
+      ...relayConfiguration,
+      TELEMETRY_COLLECTOR_URL: "https://command-center.example/api/telemetry/ingest",
+    }, {
+      spool,
+      fetchImpl: async (_input, init) => {
+        attempts += 1;
+        if (!online) throw new Error("offline");
+        assert.equal(String(init?.headers && new Headers(init.headers).get("x-codex-telemetry-key")), "test-ingest-key");
+        return new Response(JSON.stringify({ partialSuccess: {} }), { status: 200, headers: { "content-type": "application/json", "x-codex-telemetry-accepted": "1" } });
+      },
+    });
+    const relayPort = await listen(relay);
+    try {
+      const payload = JSON.stringify({ resourceLogs: [] });
+      const buffered = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/logs`, { method: "POST", headers: { "content-type": "application/json" }, body: payload });
+      assert.equal(buffered.status, 202);
+      assert.equal(buffered.headers.get("x-codex-telemetry-buffered"), "true");
+      const health = await (await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}${TELEMETRY_RELAY_HEALTH_PATH}`)).json() as { telemetryBuffer: { queuedBatches: number; replayState: string }; diagnostics: { bufferedRequests: number } };
+      assert.equal(health.telemetryBuffer.queuedBatches, 1);
+      assert.equal(health.telemetryBuffer.replayState, "buffering");
+      assert.equal(health.diagnostics.bufferedRequests, 1);
+      assert.equal(attempts, 1);
+      const spoolFiles = await readdir(directory);
+      const entry = spoolFiles.find((file) => file.startsWith("entry-"));
+      assert.ok(entry);
+      const serialized = await readFile(join(directory, entry), "utf8");
+      assert.doesNotMatch(serialized, /test-access-secret|test-ingest-key/);
+
+      online = true;
+      const restarted = new TelemetrySpool({ directory, retryMinimumMs: 0, retryMaximumMs: 0 });
+      const replayedBodies: string[] = [];
+      assert.equal(await restarted.replay(async (item) => {
+        replayedBodies.push(new TextDecoder().decode(item.body));
+        return "delivered";
+      }, true), 1);
+      assert.deepEqual(replayedBodies, [payload]);
+      assert.equal((await restarted.health()).queuedBatches, 0);
+    } finally {
+      await close(relay);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

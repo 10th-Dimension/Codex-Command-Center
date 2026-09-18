@@ -207,12 +207,12 @@ test("temporary refresh failure serves stale cached data with retry metadata", a
     async (input) => limited
       ? jsonResponse({ message: "rate limit" }, 429, { "retry-after": "30" })
       : successFor(String(input)),
-    { now: () => currentTime, cacheTtlMs: 60_000 },
+    { now: () => currentTime },
   );
 
   const first = await provider.getSnapshot({ requestedAt });
   assert.equal(first.health.status, "connected");
-  currentTime = new Date(currentTime.getTime() + 61_000);
+  currentTime = new Date(currentTime.getTime() + 5 * 60_000 + 1);
   limited = true;
   const stale = await provider.getSnapshot({ requestedAt: currentTime.toISOString() });
   assert.equal(stale.health.status, "degraded");
