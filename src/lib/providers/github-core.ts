@@ -21,7 +21,7 @@ const GITHUB_API_URL = "https://api.github.com";
 const GITHUB_API_VERSION = "2022-11-28";
 const PAGE_SIZE = 100;
 const MAX_PAGES = 10;
-const DEFAULT_CACHE_TTL_MS = 60_000;
+const DEFAULT_CACHE_TTL_MS = 5 * 60_000;
 export const GITHUB_MAX_CONCURRENCY = 5;
 
 export interface GitHubTarget {

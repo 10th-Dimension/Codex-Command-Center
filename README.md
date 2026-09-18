@@ -1,6 +1,6 @@
 # Codex Command Center
 
-Codex Command Center is an open-source observability and developer-operations dashboard for Codex, GitHub, usage telemetry, account quota, delivery health, and development activity. It combines privacy-filtered OpenTelemetry history with real-time local Codex account data and a native Windows overlay.
+Codex Command Center is an open-source observability and developer-operations dashboard for Codex, GitHub, usage telemetry, account quota, delivery health, and development activity. It combines privacy-filtered OpenTelemetry history, resilient local buffering, real-time local Codex account data, and a native Windows overlay.
 
 The project has two related product surfaces and one shared server/provider architecture:
 
@@ -75,6 +75,8 @@ The server-only wrapper in `src/lib/providers/github.ts` is the only environment
 ├── desktop/overlay/                # Bundled Tauri v2 Codex Live Windows application
 ├── migrations/                     # Versioned D1 telemetry schema
 ├── scripts/telemetry-relay.ts      # Loopback-only OTLP relay for Codex
+├── scripts/telemetry-spool.ts      # Bounded durable OTLP outage buffer
+├── scripts/telemetry-spool-payload.ts # Privacy-safe replay payload boundary
 ├── src/components/                 # Provider-agnostic dashboard presentation
 ├── src/lib/dashboard/              # Server query and pure view-model composition
 ├── src/lib/providers/              # Contracts, registry, GitHub/Codex adapters
@@ -109,6 +111,10 @@ Codex OTLP logs
 ```
 
 The relay listens only on IPv4 loopback. It accepts OTLP/HTTP protobuf or JSON, preserves the payload content type, and adds `CF-Access-Client-Id`, `CF-Access-Client-Secret`, and `X-Codex-Telemetry-Key` only on the outbound request. Relay credentials are separate from GitHub credentials. The relay never prints configuration values or payloads.
+
+When the upstream collector is temporarily unavailable or returns a retryable failure, the relay places the individual OTLP request in a bounded disk-backed spool and acknowledges it locally so Codex is not held open by a cloud outage. Entries survive relay restarts and replay oldest-first when the collector recovers. The spool is limited to 64 MiB and 512 entries; if either bound is reached, the oldest entries are dropped deterministically and the safe dropped-batch count is exposed in relay health and Codex Live. Corrupt entries are discarded without stopping the relay. Runtime spool files live in the operating-system application-data area and are never committed.
+
+Before an entry reaches disk, the relay rebuilds it from the existing privacy-safe normalized event fields. The spool stores only the request content type and that bounded OTLP body; it never stores raw prompt/body fields, credentials, authorization headers, GitHub credentials, Codex app-server authentication, or any other relay configuration. Replay carries the original server-side fingerprint and preserves the content type so retries remain idempotent. It is not a logging or UI surface. Protobuf requests are intentionally kept as individual entries rather than concatenated without a correct protobuf decode/re-encode path.
 
 Cloudflare Access is the external identity gate. Configure a service-token Access policy for the ingest path and an authorized-user policy for dashboard routes. The application-level ingestion key is an additional server-side check, not a replacement for Access. Never make the ingest path publicly reachable merely because it also checks the dedicated key.
 
@@ -152,9 +158,11 @@ Prompt logging is off by default and must remain off unless a separate privacy r
 
 `migrations/0001_codex_telemetry.sql` creates the base event table. The additive `migrations/0002_codex_analytics_v2.sql` adds reviewed operational scalar fields. The additive `migrations/0003_codex_rollups.sql` adds hourly global, hourly model, hourly reasoning, session-summary, and dashboard-snapshot tables. Event fingerprints retain their unique constraint, and ingestion continues to use prepared statements and D1 batches capped at 50 writes.
 
-Raw events default to 30-day retention through `CODEX_TELEMETRY_RETENTION_DAYS`; cleanup runs after successful ingestion. The configured value is bounded to 1–365 days and migration 0003 does not reduce or delete that history. Rollups retain 31 days. Normal dashboard and overlay reads use only the three small materialized snapshots; the 35-statement raw analytics path is restricted to the explicit Forensics action.
+Raw events default to 30-day retention through `CODEX_TELEMETRY_RETENTION_DAYS`; cleanup runs after successful ingestion and is time-gated so repeated small requests do not repeat the same maintenance work. The configured value is bounded to 1–365 days and migration 0003 does not reduce or delete that history. Rollups retain 31 days. Normal dashboard and overlay reads use only the three small materialized snapshots; the 35-statement raw analytics path is restricted to the explicit Forensics action.
 
-Ingest first performs `INSERT OR IGNORE` against the fingerprinted raw table, examines each D1 write result, and rolls up only rows whose insert actually changed the database. Exporter retries therefore cannot double-count summaries. Newly inserted events are grouped in memory before bounded hourly/model/reasoning/session upserts. Snapshot generation reads rollup tables, never raw events: 24-hour snapshots have a one-minute TTL, while 7- and 30-day snapshots have 15-minute TTLs. Missing migration-0003 tables are tolerated during rollout: ingest continues storing raw events, normal Codex analytics report unavailable, and no expensive raw fallback occurs.
+Ingest first performs `INSERT OR IGNORE` against the fingerprinted raw table, examines each D1 write result, and rolls up only rows whose insert actually changed the database. Exporter retries therefore cannot double-count summaries. Newly inserted events are grouped in memory before bounded hourly/model/reasoning/session upserts. Retention cleanup and snapshot-staleness checks are time-gated to once per minute per Worker isolate; rollup correctness remains immediate, while repeated tiny requests no longer repeat the same maintenance work. Each ingest response exposes safe aggregate diagnostics such as accepted/duplicate events, grouped upserts, snapshot rebuilds, cleanup deletes, and D1 `rows_written` metadata when the runtime supplies it. These are operational measurements, not the official Cloudflare billing meter.
+
+Snapshot generation reads rollup tables, never raw events: 24-hour snapshots have a one-minute TTL, while 7- and 30-day snapshots have 15-minute TTLs. Missing migration-0003 tables are tolerated during rollout: ingest continues storing raw events, normal Codex analytics report unavailable, and no expensive raw fallback occurs.
 
 The one-time backfill is explicit and never runs at startup or deployment:
 
@@ -203,7 +211,7 @@ Codex OTel
   -> bundled Codex Live interface
 ```
 
-Codex Live also maintains one separate, read-only stdio connection to the authenticated local Codex app-server. This is the authority for current account quota and account-level activity; it complements rather than replaces OTel:
+Codex Live also maintains one separate, read-only stdio connection to the authenticated local Codex app-server. This is the authority for current account quota and account-level activity; it complements rather than replaces OTel. The local relay's delivery state remains separate from quota state:
 
 ```text
 local Codex app-server (account/read, account/rateLimits/read, account/usage/read)
@@ -220,6 +228,8 @@ Quota windows are classified by their returned duration, not by their `primary` 
 `account/rateLimits/updated` is treated as a sparse invalidation signal. The relay debounces it, performs a fresh full read, and keeps a 45-second full-read fallback. Account activity uses the backend summary and at most the latest 90 `dailyUsageBuckets`; their accounting and timezone semantics are backend-defined, so they are labeled **Account Activity** and are never merged into OTel/D1 daily totals.
 
 Quota information stays local in this implementation. Nothing from the account app-server is written to D1 or sent to Cloudflare. The hosted dashboard makes a credential-free browser request to `http://127.0.0.1:14318/v1/account`; the relay allows CORS only for the configured Command Center origin. Browser mixed-content or Private Network Access policy may block that request, in which case the web card remains honestly unavailable while native Codex Live continues to work. A dashboard opened on another device cannot access this PC's loopback relay.
+
+Codex Live may show a compact `OTel live`, `OTel buffered`, or `OTel replaying` state. This describes local delivery only; it does not change account quota, D1 history, or the meaning of the historical telemetry. A nonzero dropped-batch count is surfaced as degraded rather than presented as complete history.
 
 `GET /api/overlay?range=24h|7d|30d` returns a dedicated private/no-store view model. It is limited to health states, aggregate operational counters, bounded token trends and distributions, safe delivery status, and privacy-filtered latest-session measurements. It never includes prompts, commands, arguments, output, reasoning text, account identity, host information, or credentials.
 
@@ -301,13 +311,13 @@ Typed bounds metadata records the cap and whether GitHub indicated truncation. T
 
 ## Cache design
 
-GitHub project snapshots use a 60-second module-memory cache keyed by an encoded, sorted repository scope. The cache stores actual upstream fetch timestamps; rendering does not replace them. Authenticated upstream fetches and dynamically rendered dashboard responses remain private/no-store.
+GitHub project snapshots use a five-minute module-memory cache (`5 * 60_000`) keyed by an encoded, sorted repository scope. The cache stores actual upstream fetch timestamps; rendering does not replace them. Authenticated upstream fetches and dynamically rendered dashboard responses remain private/no-store. GitHub is intentionally lower-frequency than Codex analytics because repository statistics do not need second-by-second refreshes.
 
-This is deliberately the smallest appropriate design for the current single-user deployment. In Workers it is isolate-local and best-effort: entries are not shared across isolates, regions, or cold starts, and therefore do not guarantee one global fetch per minute. In-flight calls within one isolate are deduplicated. If a refresh is temporarily rate-limited or fails because of a network/API error, an existing safe stale snapshot can be served with explicit degraded health and retry metadata. A shared KV, Durable Object, or database should only be introduced if measured traffic demonstrates a need for cross-isolate coordination.
+This is deliberately the smallest appropriate design for the current single-user deployment. In Workers it is isolate-local and best-effort: entries are not shared across isolates, regions, or cold starts, and therefore do not guarantee one global fetch per five minutes. In-flight calls within one isolate are deduplicated. If a refresh is temporarily rate-limited or fails because of a network/API error, an existing safe stale snapshot can be served with explicit degraded health and retry metadata. A shared KV, Durable Object, or database should only be introduced if measured traffic demonstrates a need for cross-isolate coordination.
 
 The generated Cloudflare CDN adapter does not authorize public caching of private HTML or RSC payloads. Dashboard routes remain dynamic, and provider fetches opt out of HTTP caching. These protections must be rechecked in Worker preview and before every production rollout.
 
-Codex snapshot caching is separate from GitHub caching. Ingest persists snapshots at bounded TTLs; the provider adds a 60-second in-isolate cache. A normal Codex render issues one D1 statement returning at most three rows. `/api/overlay` issues one D1 statement returning one row. The GitHub page does not read Codex D1. Run `npm run audit:d1` to recreate a 50,000-row isolated local dataset, inspect query plans, and enforce these source and row-return budgets without accessing production.
+Codex snapshot caching is separate from GitHub caching. Ingest persists snapshots at bounded TTLs; the provider cache and GitHub cache have independent lifetimes. A normal Codex render issues one D1 statement returning at most three rows. `/api/overlay` issues one D1 statement returning one row. The GitHub page does not read Codex D1. Run `npm run audit:d1` to recreate a 50,000-row isolated local dataset, inspect query plans, and enforce these source and row-return budgets without accessing production.
 
 ## Safe production rollout order
 

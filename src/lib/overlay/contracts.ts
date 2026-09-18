@@ -1,5 +1,16 @@
 export type OverlayRange = "24h" | "7d" | "30d";
 export type OverlayProviderStatus = "connected" | "degraded" | "unavailable";
+export type TelemetryBufferReplayState = "idle" | "buffering" | "replaying" | "degraded";
+
+export interface TelemetryBufferHealth {
+  queuedBatches: number;
+  queuedBytes: number;
+  oldestQueuedAgeSeconds?: number;
+  lastSuccessfulReplayAt?: string;
+  lastUpstreamFailureAt?: string;
+  droppedBatches: number;
+  replayState: TelemetryBufferReplayState;
+}
 
 export type CodexAccountStatus = "connected" | "stale" | "unavailable" | "error";
 export type CodexAccountFreshness = "live" | "recent" | "stale" | "unavailable";
@@ -131,4 +142,5 @@ export interface OverlaySnapshot {
     };
   };
   codexAccount?: CodexAccountSnapshot;
+  telemetryBuffer?: TelemetryBufferHealth;
 }

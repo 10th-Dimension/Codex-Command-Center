@@ -89,12 +89,27 @@ async function hash(value: string) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function normalizeOtlpRecords(records: OtlpLogRecord[], receivedAt: string) {
+export interface NormalizeOtlpOptions {
+  replay?: boolean;
+}
+
+function replayHex(value: unknown) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value) ? value : undefined;
+}
+
+function replayCategory(value: unknown): CodexTelemetryCategory | undefined {
+  return typeof value === "string" && ["api-request", "tool", "model", "usage", "error", "warning", "approval", "mcp", "network", "startup", "session", "unknown"].includes(value)
+    ? value as CodexTelemetryCategory
+    : undefined;
+}
+
+export async function normalizeOtlpRecords(records: OtlpLogRecord[], receivedAt: string, options: NormalizeOtlpOptions = {}) {
   const output: NormalizedTelemetryEvent[] = [];
   for (const record of records) {
     const a = { ...record.resourceAttributes, ...record.attributes };
     const safeKeys: string[] = []; const unknownKeys: string[] = []; let redacted = 0;
     for (const rawKey of Object.keys(a).slice(0, MAX_KEYS * 2)) {
+      if (options.replay && rawKey.startsWith("codex.replay.")) continue;
       if (PRIVATE_KEY.test(rawKey) || AUTH_KEY.test(rawKey) || SECRET_KEY.test(rawKey) || CONTENT_KEY.test(rawKey)) { redacted += 1; continue; }
       const key = rawKey.replace(/[^a-zA-Z0-9_.:/-]+/g, "_").slice(0, 80); if (!key) continue;
       safeKeys.push(key); if (!KNOWN_KEYS.has(rawKey)) unknownKeys.push(key); if (safeKeys.length >= MAX_KEYS) break;
@@ -121,10 +136,12 @@ export async function normalizeOtlpRecords(records: OtlpLogRecord[], receivedAt:
     const cacheWriteTokens = numberValue(a.cache_write_token_count); const reasoningTokens = numberValue(first(a, ["reasoning_output_token_count", "reasoning_output_tokens", "reasoning_token_count"])); const toolTokens = numberValue(a.tool_token_count);
     const startupPhase = dimension(a["startup.phase"], 80); const startupStatus = dimension(a["startup.status"], 80);
     const identity = `${eventName} ${eventKind ?? ""}`;
-    const category = classify({ identity, severity: record.severityText, severityNumber: record.severityNumber, error: errorType, startup: startupPhase ?? startupStatus, approval: approvalDecision ?? approvalPolicy, mcp: mcpServer ?? mcpTool, tool: toolName ?? toolStatus, hasUsage: [inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, toolTokens].some((v) => v !== undefined), model });
-    const rawCallId = identifier(a.call_id, 256); const callIdHash = rawCallId ? await hash(`codex-call:${rawCallId}`) : undefined;
+    const inferredCategory = classify({ identity, severity: record.severityText, severityNumber: record.severityNumber, error: errorType, startup: startupPhase ?? startupStatus, approval: approvalDecision ?? approvalPolicy, mcp: mcpServer ?? mcpTool, tool: toolName ?? toolStatus, hasUsage: [inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, toolTokens].some((v) => v !== undefined), model });
+    const category = options.replay ? replayCategory(a["codex.replay.category"]) ?? inferredCategory : inferredCategory;
+    const rawCallId = identifier(a.call_id, 256); const callIdHash = rawCallId ? await hash(`codex-call:${rawCallId}`) : options.replay ? replayHex(a["codex.replay.call_id_hash"]) : undefined;
     const at = occurredAt(record.timeUnixNano ?? record.observedTimeUnixNano, receivedAt);
-    const fingerprint = await hash(JSON.stringify([at, eventName, eventKind, sessionId, threadId, model, toolName, rawCallId, status, approvalDecision, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, toolTokens, record.scopeName]));
+    const fingerprintInput = JSON.stringify([at, eventName, eventKind, sessionId, threadId, model, toolName, rawCallId, status, approvalDecision, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, toolTokens, record.scopeName]);
+    const fingerprint = options.replay ? replayHex(a["codex.replay.fingerprint"]) ?? await hash(fingerprintInput) : await hash(fingerprintInput);
     output.push({
       id: fingerprint, fingerprint, occurredAt: at, receivedAt, eventName, eventKind, category, severityText: identifier(record.severityText, 40), severityNumber: record.severityNumber,
       sessionId, threadId, taskId: identifier(first(a, ["task.id", "task_id"])), projectId: identifier(first(a, ["project.id", "project_id"])), projectName: identifier(first(a, ["project.name", "project_name"])), repositoryId: identifier(first(a, ["repository.id", "repository_id"])), workspaceId: identifier(first(a, ["workspace.id", "workspace_id"])), environment: identifier(first(a, ["deployment.environment.name", "environment", "env"]), 80),

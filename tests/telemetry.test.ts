@@ -82,6 +82,13 @@ class FakeD1 implements D1DatabaseLike {
   }
 }
 
+class MetadataD1 extends FakeD1 {
+  execute(statement: FakeStatement): D1ResultLike {
+    const result = super.execute(statement);
+    return { ...result, meta: { ...result.meta, rows_written: result.meta?.rows_written ?? 1 } };
+  }
+}
+
 function requestFor(payload: unknown, key = ingestKey) {
   return new Request("https://example.test/api/telemetry/ingest", {
     method: "POST",
@@ -306,10 +313,13 @@ test("ingestion batches writes, deduplicates retries, and runs retention cleanup
   assert.equal(second.headers.get("x-codex-telemetry-accepted"), "0");
   assert.equal(second.headers.get("x-codex-telemetry-duplicates"), "1");
   assert.equal(database.insertedValues.length, 1);
-  assert.equal(database.rawDeleteCount, 2);
+  assert.equal(database.rawDeleteCount, 1, "retention cleanup is time-gated across duplicate requests");
   assert.ok(database.rollupInsertCount > 0);
   assert.equal(database.rollupInsertCount, rollupsAfterFirst, "duplicate delivery must not increment rollups");
   assert.equal(database.lastDeleteCutoff, "2026-08-12T12:00:00.000Z");
+  assert.equal(first.headers.get("x-codex-telemetry-ingest-requests"), "1");
+  assert.equal(first.headers.get("x-codex-telemetry-snapshot-rebuilds"), "3");
+  assert.equal(second.headers.get("x-codex-telemetry-snapshot-rebuilds"), "0");
   const stored = JSON.stringify(database.insertedValues);
   assert.doesNotMatch(stored, /must-never-appear|authorization|private prompt|private output/);
 });
@@ -385,6 +395,17 @@ test("Codex provider reports missing snapshots without an expensive raw fallback
   assert.match(snapshot.health.message, /migration 0003|backfill/i);
   assert.equal(snapshot.activity.status, "unavailable");
   assert.equal(snapshot.lastReceivedAt, undefined);
+});
+
+test("ingestion exposes bounded write-amplification diagnostics without creating diagnostic rows", async () => {
+  const database = new MetadataD1();
+  const response = await handleTelemetryIngest(requestFor(jsonPayload()), { database, ingestKey, retentionDays: 30, now: () => new Date(now) });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-codex-telemetry-accepted"), "1");
+  assert.equal(response.headers.get("x-codex-telemetry-d1-rows-written"), "12", "controlled metadata fixture measures one raw insert, three grouped rollups, four cleanup statements, three snapshots, and one raw cleanup");
+  assert.ok(Number(response.headers.get("x-codex-telemetry-rollup-upserts")) > 0);
+  assert.equal(response.headers.get("x-codex-telemetry-ingest-requests"), "1");
+  assert.equal(database.insertedValues.length, 1);
 });
 
 test("missing migration 0003 does not break ingest or trigger a raw analytics fallback", async () => {
