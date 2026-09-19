@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Mous
 import { Activity, AlertTriangle, Check, ChevronDown, Circle, ExternalLink, EyeOff, Grip, LayoutGrid, Lock, Minus, Power, RefreshCw, Settings, Unlock, X } from "lucide-react";
 import type { CodexQuotaWindow, OverlaySnapshot, TelemetryBufferHealth } from "../../../src/lib/overlay/contracts";
 import { stackTokenSeries } from "../../../src/lib/telemetry/stacked-token-series";
-import { tokenVisualSeries } from "../../../src/lib/telemetry/token-visuals";
+import { tokenCompositionSegments, tokenVisualSeries } from "../../../src/lib/telemetry/token-visuals";
 import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../../../src/lib/overlay/account";
 import { telemetryFreshness } from "./lib/freshness";
 import { applyWindowSettings, configureHotkeys, controlRelay, fetchOverlay, getAutostart, getNativeState, hideOverlay, loadSettings, onNativeAction, openDashboard, quitOverlay, recoverOverlay, saveSettings, setAutostart, setCorner, setLayout, startDrag, startResize, type NativeState } from "./lib/native";
@@ -379,7 +379,7 @@ function TokenTrendChart({ points }: Readonly<{ points: OverlaySnapshot["tokenTr
 
   return <div className="trend-chart">
     <svg aria-label="Color-coded measured token activity by time bucket" className="spark" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`} onMouseLeave={() => setActiveIndex(undefined)}>
-      {stacked.map(({ definition, base, topValues }) => <path className="spark-series-area" d={stackedAreaPath(topValues, base, x, y)} fill={definition.color} key={definition.id} />)}
+      {stacked.map(({ definition, base, topValues }) => <path className="spark-series-area" d={stackedAreaPath(topValues, base, x, y)} fill={definition.color} fillOpacity={0.3} key={definition.id} stroke={definition.color} strokeOpacity={0.84} strokeWidth="0.8" vectorEffect="non-scaling-stroke" />)}
       <path aria-label="Total measured tokens" className="spark-total-line" d={linePath(totals, x, y)} />
       {activeIndex !== undefined ? <line className="spark-hover-line" x1={x(activeIndex)} x2={x(activeIndex)} y1={top} y2={bottom} /> : null}
       {values.map((point, index) => <rect aria-label={tokenTrendTooltip(point)} className="spark-hit" height={height} key={`${point.label}-${index}`} tabIndex={0} width={hitWidth} x={x(index) - hitWidth / 2} y={0} onBlur={() => setActiveIndex(undefined)} onFocus={() => setActiveIndex(index)} onMouseEnter={() => setActiveIndex(index)} />)}
@@ -414,12 +414,12 @@ function tokenTrendTooltip(point: OverlaySnapshot["tokenTrend"][number]) {
 }
 
 function Composition({ summary }: Readonly<{ summary: OverlaySnapshot["windowSummary"] }>) {
-  const items = overlayTokenSeries.map((series) => ({ ...series, value: overlayTokenValue(summary, series.key) })).filter((item) => item.value > 0);
-  const total = items.reduce((sum, item) => sum + item.value, 0);
+  const values = overlayTokenSeries.map((series) => ({ ...series, value: overlayTokenValue(summary, series.key) })).filter((item) => item.value > 0);
+  const { items, total } = tokenCompositionSegments(values);
   if (!total) return <div className="chart-empty">No samples</div>;
   return <div className="composition-wrap">
-    <div className="composition" aria-label="Input, output, cached, reasoning, and tool token composition" role="img" title="Input, output, cached, reasoning, and tool token composition">{items.map((item) => <i key={item.id} style={{ background: item.color, flex: item.value }} title={`${item.label}: ${numberLabel(item.value)}`} />)}</div>
-    <div className="composition-legend">{items.map((item) => <span key={item.id}><i style={{ background: item.color }} />{item.label}</span>)}</div>
+    <div className="composition" aria-label={`Input, output, cached, reasoning, and tool measured fields, ${numberLabel(total)} displayed tokens`} role="img" title={`Displayed measured fields total: ${numberLabel(total)} tokens`}>{items.map((item) => <i aria-label={`${item.label}: ${numberLabel(item.value)} tokens`} key={item.id} style={{ background: item.color, flex: `0 0 ${item.fraction * 100}%` }} title={`${item.label}: ${numberLabel(item.value)} tokens`} />)}</div>
+    <div className="composition-legend">{items.map((item) => <span key={item.id} title={`${item.label}: ${numberLabel(item.value)} tokens`}><i style={{ background: item.color }} />{item.label}</span>)}</div>
   </div>;
 }
 

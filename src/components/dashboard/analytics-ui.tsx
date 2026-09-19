@@ -3,7 +3,7 @@ import { useState, type CSSProperties } from "react";
 import { compactNumber, dashboardRanges, distributionShares, measuredValue, type DashboardRange } from "@/lib/dashboard/analytics";
 import type { CodexTelemetryBreakdown, CodexTelemetryTrendPoint, CodexUsageSnapshot, DataResult } from "@/lib/providers/types";
 import { stackTokenSeries } from "@/lib/telemetry/stacked-token-series";
-import { tokenVisualSeries } from "@/lib/telemetry/token-visuals";
+import { tokenCompositionSegments, tokenVisualSeries } from "@/lib/telemetry/token-visuals";
 export function RangeSelector({ value, onChange, label = "Time range" }: Readonly<{ value: DashboardRange; onChange: (value: DashboardRange) => void; label?: string }>) { return <div className="range-selector" role="group" aria-label={label}>{dashboardRanges.map((range) => <button aria-pressed={range === value} className={range === value ? "active" : ""} key={range} onClick={() => onChange(range)} type="button">{range.toUpperCase()}</button>)}</div>; }
 const tokenFields = ["inputTokens", "outputTokens", "cachedTokens", "cacheWriteTokens", "reasoningTokens", "toolTokens"] as const;
 const trendSeries = [
@@ -42,7 +42,7 @@ export function TokenTrend({ result, compact = false }: Readonly<{ result: DataR
     <div className="token-chart-frame">
       <svg aria-label="Measured token activity by time bucket" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}>
         {[0, .5, 1].map((part) => <g key={part}><line className="chart-grid-line" x1={padding.left} x2={width - padding.right} y1={padding.top + plotHeight * part} y2={padding.top + plotHeight * part} />{!compact ? <text className="chart-axis-label" dominantBaseline="middle" textAnchor="end" x={padding.left - 8} y={padding.top + plotHeight * part}>{compactNumber(maximum * (1 - part))}</text> : null}</g>)}
-        {stacked.map(({ definition, base, topValues }) => <path className="token-series-area" d={stackedAreaPath(topValues, base, x, y)} fill={definition.color} key={definition.id} />)}
+        {stacked.map(({ definition, base, topValues }) => <path className="token-series-area" d={stackedAreaPath(topValues, base, x, y)} fill={definition.color} fillOpacity={0.3} key={definition.id} stroke={definition.color} strokeOpacity={0.84} strokeWidth="0.9" vectorEffect="non-scaling-stroke" />)}
         <polyline aria-label="Total measured tokens" className="token-total-line" fill="none" points={totals.map((value, index) => `${x(index)},${y(value)}`).join(" ")} />
         {activeIndex !== undefined ? <line className="chart-hover-line" x1={x(activeIndex)} x2={x(activeIndex)} y1={padding.top} y2={padding.top + plotHeight} /> : null}
         {points.map((point, index) => <circle aria-label={activityTooltip(point, totals[index])} className={`chart-point ${activeIndex === index ? "active" : ""}`} cx={x(index)} cy={y(totals[index])} fill="#10161c" key={`${point.label}-${index}`} onBlur={() => setActiveIndex(undefined)} onFocus={() => setActiveIndex(index)} onMouseEnter={() => setActiveIndex(index)} onMouseLeave={() => setActiveIndex(undefined)} r={compact ? 3 : 4.5} stroke="#effcff" strokeWidth="1.5" tabIndex={0}><title>{activityTooltip(point, totals[index])}</title></circle>)}
@@ -112,12 +112,12 @@ const compositionSeries = [
 
 export function TokenComposition({ result }: Readonly<{ result: DataResult<CodexUsageSnapshot> }>) {
   if (result.status === "unavailable") return <div className="composition-empty">Token composition unavailable</div>;
-  const items = compositionSeries.map((item) => ({ ...item, value: measuredValue(result.data[item.key]) })).filter((item): item is typeof item & { value: number } => item.value !== undefined);
-  const total = items.reduce((sum, item) => sum + item.value, 0);
+  const measuredItems = compositionSeries.map((item) => ({ ...item, value: measuredValue(result.data[item.key]) })).filter((item): item is typeof item & { value: number } => item.value !== undefined);
+  const { items, total } = tokenCompositionSegments(measuredItems);
   if (!items.length || total <= 0) return <div className="composition-empty">No token samples in this range</div>;
   return <div className="token-composition">
-    <div className="composition-bar" aria-label="Measured token composition" role="img">{items.map((item) => <i key={item.key} style={{ background: item.color, width: `${item.value / total * 100}%` }} title={`${item.label}: ${item.value.toLocaleString()}`} />)}</div>
-    <div className="composition-list">{items.map((item) => <div className="composition-row" key={item.key}><span><i style={{ background: item.color }} />{item.label}</span><b>{item.value.toLocaleString()}</b><small>{Math.round(item.value / total * 100)}%</small></div>)}</div>
+    <div className="composition-bar" aria-label={`Measured token fields, ${total.toLocaleString()} displayed tokens`} role="img" title={`Displayed measured fields total: ${total.toLocaleString()} tokens`}>{items.map((item) => <i aria-label={`${item.label}: ${item.value.toLocaleString()} tokens`} key={item.key} style={{ background: item.color, flex: `0 0 ${item.fraction * 100}%` }} title={`${item.label}: ${item.value.toLocaleString()} tokens`} />)}</div>
+    <div className="composition-list">{items.map((item) => <div className="composition-row" key={item.key}><span><i style={{ background: item.color }} />{item.label}</span><b>{item.value.toLocaleString()}</b><small>{Math.round(item.fraction * 100)}%</small></div>)}</div>
   </div>;
 }
 
