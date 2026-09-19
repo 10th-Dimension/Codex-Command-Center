@@ -1,14 +1,24 @@
-import { useCallback, useEffect, useState, type CSSProperties, type MouseEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { Activity, AlertTriangle, Check, ChevronDown, Circle, ExternalLink, EyeOff, Grip, LayoutGrid, Lock, Minus, Power, RefreshCw, Settings, Unlock, X } from "lucide-react";
 import type { CodexQuotaWindow, OverlaySnapshot, TelemetryBufferHealth } from "../../../src/lib/overlay/contracts";
+import { stackTokenSeries } from "../../../src/lib/telemetry/stacked-token-series";
+import { tokenVisualSeries } from "../../../src/lib/telemetry/token-visuals";
 import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../../../src/lib/overlay/account";
 import { telemetryFreshness } from "./lib/freshness";
 import { applyWindowSettings, configureHotkeys, controlRelay, fetchOverlay, getAutostart, getNativeState, hideOverlay, loadSettings, onNativeAction, openDashboard, quitOverlay, recoverOverlay, saveSettings, setAutostart, setCorner, setLayout, startDrag, startResize, type NativeState } from "./lib/native";
 import { defaultDesktopOverlaySettings, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, resolveLayout, shouldPollRemote, textColorValue, type DesktopOverlaySettings, type OverlayLayout, type OverlayRange } from "./lib/settings";
+import { isUsableOverlaySnapshot, shouldReplaceOverlaySnapshot } from "./lib/snapshot";
 
 type RelayState = "checking" | "online" | "offline" | "upstream-error" | "paused";
 type HeaderMenu = "range" | "layout";
 const clickThroughNotice = "Click-through enabled · Ctrl+Shift+O to regain control";
+const overlayTokenSeries = [
+  { key: "inputTokens", ...tokenVisualSeries[0] },
+  { key: "outputTokens", ...tokenVisualSeries[1] },
+  { key: "cachedTokens", ...tokenVisualSeries[2] },
+  { key: "reasoningTokens", ...tokenVisualSeries[4] },
+  { key: "toolTokens", ...tokenVisualSeries[5] },
+] as const;
 
 export function App() {
   const [settings, setSettings] = useState(defaultDesktopOverlaySettings);
@@ -23,17 +33,27 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [overlayVisible, setOverlayVisible] = useState(true);
   const [now, setNow] = useState(() => Date.now());
+  const snapshotRef = useRef<OverlaySnapshot | undefined>(undefined);
 
   const refresh = useCallback(async (range: DesktopOverlaySettings["range"]) => {
     try {
       const next = await fetchOverlay(range);
+      if (!shouldReplaceOverlaySnapshot(snapshotRef.current, next)) {
+        setRelay("upstream-error");
+        setMessage("Snapshot degraded · showing last good data");
+        return;
+      }
+      snapshotRef.current = next;
       setSnapshot(next);
       setRelay("online");
       setMessage(undefined);
     } catch (error) {
       const detail = String(error);
+      const hasLastGoodSnapshot = snapshotRef.current ? isUsableOverlaySnapshot(snapshotRef.current) : false;
       setRelay(detail.includes("snapshot_unavailable") ? "upstream-error" : "offline");
-      setMessage(detail.includes("snapshot_unavailable") ? "Command Center snapshot unavailable" : "Relay offline");
+      setMessage(detail.includes("snapshot_unavailable")
+        ? hasLastGoodSnapshot ? "Snapshot unavailable · showing last good data" : "Command Center snapshot unavailable"
+        : hasLastGoodSnapshot ? "Relay offline · showing last good data" : "Relay offline");
     }
   }, []);
 
@@ -202,16 +222,16 @@ export function App() {
 }
 
 function OverlayContent({ snapshot, relay, layout, freshness, now }: Readonly<{ snapshot?: OverlaySnapshot; relay: RelayState; layout: OverlayLayout; freshness: ReturnType<typeof telemetryFreshness>; now: number }>) {
-  if (!snapshot) return <div className="loading"><RefreshCw className="spin" size={15} />Retrieving private snapshot…</div>;
+  if (!snapshot) return <div className="overlay-content"><div className="loading"><RefreshCw className="spin" size={15} />Retrieving private snapshot…</div></div>;
   const session = snapshot.latestSession;
   const summary = snapshot.windowSummary;
-  if (layout === "strip") return <div className="strip-content"><Identity session={session} /><StripQuota account={snapshot.codexAccount} /><Metric short="IN" value={summary.inputTokens} /><Metric short="TOOLS" value={summary.completedTools} /><HealthLabel relay={relay} freshness={freshness} /></div>;
-  if (layout === "mini") return <>
+  if (layout === "strip") return <div className="overlay-content overlay-content-strip"><div className="strip-content"><Identity session={session} /><StripQuota account={snapshot.codexAccount} /><Metric short="IN" value={summary.inputTokens} /><Metric short="TOOLS" value={summary.completedTools} /><HealthLabel relay={relay} freshness={freshness} /></div></div>;
+  if (layout === "mini") return <div className="overlay-content overlay-content-mini">
     <div className="identity-row"><Identity session={session} /><QuotaFreshness account={snapshot.codexAccount} now={now} /></div>
     <MiniQuota account={snapshot.codexAccount} now={now} summary={summary} />
     <footer><HealthChip label="Relay" status={relay === "online" ? "connected" : "degraded"} /><HealthChip label="Telemetry" status={snapshot.health.telemetry} /><HealthChip label="D1" status={snapshot.health.d1} /><BufferStatus buffer={snapshot.telemetryBuffer} /></footer>
-  </>;
-  return <>
+  </div>;
+  return <div className={`overlay-content overlay-content-${layout}`}>
     <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>OTel {freshness.label}</span></div>
     {layout === "standard" ? <ObservationRail session={session} summary={summary} lastTelemetryAt={snapshot.lastTelemetryAt} /> : null}
     <QuotaPanel account={snapshot.codexAccount} now={now} />
@@ -219,7 +239,7 @@ function OverlayContent({ snapshot, relay, layout, freshness, now }: Readonly<{ 
     <div className="metric-grid primary"><Metric label="Input" value={summary.inputTokens} /><Metric label="Output" value={summary.outputTokens} /><Metric label="Cached" value={summary.cachedTokens} optionalMini /><Metric label="Reasoning" value={summary.reasoningTokens} /><Metric label="Tool tokens" value={summary.toolTokens} optionalMini /><Metric label="TTFT" value={summary.averageTtftMs} duration /><Metric label="Tools" value={summary.completedTools} /><Metric label="Errors" value={summary.failures} /></div>
     {layout === "expanded" ? <Expanded snapshot={snapshot} now={now} /> : null}
     <footer><HealthChip label="Relay" status={relay === "online" ? "connected" : "degraded"} /><HealthChip label="Telemetry" status={snapshot.health.telemetry} /><HealthChip label="D1" status={snapshot.health.d1} /><BufferStatus buffer={snapshot.telemetryBuffer} /></footer>
-  </>;
+  </div>;
 }
 
 function Expanded({ snapshot, now }: Readonly<{ snapshot: OverlaySnapshot; now: number }>) {
@@ -227,7 +247,7 @@ function Expanded({ snapshot, now }: Readonly<{ snapshot: OverlaySnapshot; now: 
   return <div className="expanded-content">
     <ObservedOperations session={session} summary={snapshot.windowSummary} lastTelemetryAt={snapshot.lastTelemetryAt} />
     <AccountDetails account={snapshot.codexAccount} now={now} />
-    <section><SectionTitle title="Token trend" note={snapshot.range.toUpperCase()} /><Sparkline points={snapshot.tokenTrend.map((point) => (point.inputTokens ?? 0) + (point.outputTokens ?? 0) + (point.cachedTokens ?? 0) + (point.reasoningTokens ?? 0) + (point.toolTokens ?? 0))} /></section>
+    <section><SectionTitle title="Token trend" note={snapshot.range.toUpperCase()} /><TokenTrendChart points={snapshot.tokenTrend} /></section>
     <div className="split"><section><SectionTitle title="Token composition" /><Composition summary={snapshot.windowSummary} /></section><section><SectionTitle title="Model mix" /><Distribution items={snapshot.modelDistribution} /></section></div>
     <div className="split"><section><SectionTitle title="Reasoning mix" /><Distribution items={snapshot.reasoningDistribution} /></section><section><SectionTitle title="Latest session" note={session ? shortAge(session.lastSeenAt) : undefined} /><div className="session-line"><span>{session ? `${session.completedTools} tools` : "No session"}</span><span>{session ? `${session.toolFailures ?? 0} failed` : "—"}</span></div></section></div>
     <section><SectionTitle title="Delivery" note={snapshot.delivery?.repository} /><div className="delivery"><HealthChip label="GitHub" status={snapshot.health.github} /><HealthChip label={snapshot.delivery?.latestBuild?.name ?? "CI"} status={snapshot.health.ci} /><span>{snapshot.delivery?.latestBuild?.status ?? "Unavailable"}</span></div></section>
@@ -340,18 +360,67 @@ function BufferStatus({ buffer }: Readonly<{ buffer?: TelemetryBufferHealth }>) 
 function HealthLabel({ relay, freshness }: Readonly<{ relay: RelayState; freshness: ReturnType<typeof telemetryFreshness> }>) { const healthy = relay === "online" && freshness.state !== "stale"; return <div className={`strip-health ${healthy ? "connected" : "degraded"}`}><StatusDot state={healthy ? "connected" : "degraded"} />{healthy ? freshness.label : "Attention"}</div>; }
 function SectionTitle({ title, note }: Readonly<{ title: string; note?: string }>) { return <div className="section-title"><b>{title}</b>{note ? <span title={note}>{note}</span> : null}</div>; }
 
-function Sparkline({ points }: Readonly<{ points: number[] }>) {
-  if (!points.some((point) => point > 0)) return <div className="chart-empty">No samples</div>;
-  const values = points.slice(-30), max = Math.max(...values, 1), width = 320, height = 48;
-  const path = values.map((value, index) => `${index ? "L" : "M"}${values.length === 1 ? width / 2 : index / (values.length - 1) * width},${height - value / max * (height - 6) - 3}`).join(" ");
-  return <svg aria-label="Token activity sparkline" className="spark" preserveAspectRatio="none" viewBox={`0 0 ${width} ${height}`}><path className="spark-fill" d={`${path} L${width},${height} L0,${height} Z`} /><path className="spark-line" d={path} /></svg>;
+function TokenTrendChart({ points }: Readonly<{ points: OverlaySnapshot["tokenTrend"] }>) {
+  const [activeIndex, setActiveIndex] = useState<number>();
+  const values = points.slice(-30);
+  const totals = values.map(tokenPointTotal);
+  if (!totals.some((point) => point > 0)) return <div className="chart-empty">No samples</div>;
+
+  const width = 320;
+  const height = 48;
+  const top = 3;
+  const bottom = height - 4;
+  const maximum = Math.max(...totals, 1);
+  const x = (index: number) => values.length === 1 ? width / 2 : index / (values.length - 1) * width;
+  const y = (value: number) => bottom - value / maximum * (bottom - top);
+  const stacked = stackTokenSeries(values, overlayTokenSeries, overlayTokenValue);
+  const activePoint = activeIndex === undefined ? undefined : values[activeIndex];
+  const hitWidth = values.length === 1 ? width : Math.max(8, width / (values.length - 1));
+
+  return <div className="trend-chart">
+    <svg aria-label="Color-coded measured token activity by time bucket" className="spark" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`} onMouseLeave={() => setActiveIndex(undefined)}>
+      {stacked.map(({ definition, base, topValues }) => <path className="spark-series-area" d={stackedAreaPath(topValues, base, x, y)} fill={definition.color} key={definition.id} />)}
+      <path aria-label="Total measured tokens" className="spark-total-line" d={linePath(totals, x, y)} />
+      {activeIndex !== undefined ? <line className="spark-hover-line" x1={x(activeIndex)} x2={x(activeIndex)} y1={top} y2={bottom} /> : null}
+      {values.map((point, index) => <rect aria-label={tokenTrendTooltip(point)} className="spark-hit" height={height} key={`${point.label}-${index}`} tabIndex={0} width={hitWidth} x={x(index) - hitWidth / 2} y={0} onBlur={() => setActiveIndex(undefined)} onFocus={() => setActiveIndex(index)} onMouseEnter={() => setActiveIndex(index)} />)}
+    </svg>
+    <div aria-live="polite" className={`trend-tooltip ${activePoint ? "visible" : ""}`}>{activePoint ? tokenTrendTooltip(activePoint) : "Stacked fields · band thickness = actual tokens"}</div>
+    <div className="trend-legend">{overlayTokenSeries.map((series) => <span key={series.id}><i style={{ background: series.color }} />{series.label}</span>)}</div>
+  </div>;
+}
+
+function linePath(values: number[], x: (index: number) => number, y: (value: number) => number) {
+  return values.map((value, index) => `${index ? "L" : "M"}${x(index)},${y(value)}`).join(" ");
+}
+
+function stackedAreaPath(topValues: number[], baseValues: number[], x: (index: number) => number, y: (value: number) => number) {
+  const topPath = linePath(topValues, x, y);
+  const basePath = baseValues.map((value, index) => `${x(index)},${y(value)}`).reverse().join(" L");
+  return `${topPath} L${basePath} Z`;
+}
+
+function overlayTokenValue(point: OverlaySnapshot["tokenTrend"][number] | OverlaySnapshot["windowSummary"], key: typeof overlayTokenSeries[number]["key"]) {
+  return point[key] ?? 0;
+}
+
+function tokenPointTotal(point: OverlaySnapshot["tokenTrend"][number]) {
+  return overlayTokenSeries.reduce((sum, series) => sum + overlayTokenValue(point, series.key), 0);
+}
+
+function tokenTrendTooltip(point: OverlaySnapshot["tokenTrend"][number]) {
+  const total = tokenPointTotal(point);
+  const fields = overlayTokenSeries.filter((series) => overlayTokenValue(point, series.key) > 0).map((series) => `${series.label} ${numberLabel(overlayTokenValue(point, series.key))}`);
+  return [point.label, `${numberLabel(total)} tokens`, ...fields].join(" · ");
 }
 
 function Composition({ summary }: Readonly<{ summary: OverlaySnapshot["windowSummary"] }>) {
-  const values = [summary.inputTokens, summary.outputTokens, summary.cachedTokens, summary.reasoningTokens, summary.toolTokens].map((value) => value ?? 0);
-  const total = values.reduce((sum, value) => sum + value, 0);
+  const items = overlayTokenSeries.map((series) => ({ ...series, value: overlayTokenValue(summary, series.key) })).filter((item) => item.value > 0);
+  const total = items.reduce((sum, item) => sum + item.value, 0);
   if (!total) return <div className="chart-empty">No samples</div>;
-  return <div className="composition" title="Input, output, cached, reasoning, and tool token composition">{values.map((value, index) => value ? <i key={index} style={{ flex: value }} /> : null)}</div>;
+  return <div className="composition-wrap">
+    <div className="composition" aria-label="Input, output, cached, reasoning, and tool token composition" role="img" title="Input, output, cached, reasoning, and tool token composition">{items.map((item) => <i key={item.id} style={{ background: item.color, flex: item.value }} title={`${item.label}: ${numberLabel(item.value)}`} />)}</div>
+    <div className="composition-legend">{items.map((item) => <span key={item.id}><i style={{ background: item.color }} />{item.label}</span>)}</div>
+  </div>;
 }
 
 function Distribution({ items }: Readonly<{ items: OverlaySnapshot["modelDistribution"] }>) {

@@ -12,6 +12,7 @@ export function isCodexAccountSnapshot(value: unknown): value is CodexAccountSna
   if (!["connected", "stale", "unavailable", "error"].includes(String(root.status))) return false;
   if (!["live", "recent", "stale", "unavailable"].includes(String(root.freshness))) return false;
   if (!Array.isArray(root.limits) || root.limits.length > 16) return false;
+  if (root.activity !== undefined && !isCodexAccountActivity(root.activity)) return false;
   return root.limits.every((limit) => {
     if (!limit || typeof limit !== "object" || Array.isArray(limit)) return false;
     const windows = (limit as Record<string, unknown>).windows;
@@ -26,6 +27,22 @@ export function isCodexAccountSnapshot(value: unknown): value is CodexAccountSna
         && typeof item.remainingPercent === "number"
         && Number.isFinite(item.remainingPercent);
     });
+  });
+}
+
+function isCodexAccountActivity(value: unknown): value is CodexAccountSnapshot["activity"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const activity = value as Record<string, unknown>;
+  for (const key of ["lifetimeTokens", "currentStreakDays", "longestStreakDays", "peakDailyTokens", "longestRunningTurnSec"]) {
+    if (activity[key] !== undefined && (typeof activity[key] !== "number" || !Number.isFinite(activity[key]) || activity[key] < 0)) return false;
+  }
+  if (activity.dailyUsageBuckets === undefined) return true;
+  if (!Array.isArray(activity.dailyUsageBuckets) || activity.dailyUsageBuckets.length > 90) return false;
+  return activity.dailyUsageBuckets.every((bucket) => {
+    if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) return false;
+    const item = bucket as Record<string, unknown>;
+    return typeof item.startDate === "string" && item.startDate.length > 0 && item.startDate.length <= 40
+      && typeof item.tokens === "number" && Number.isFinite(item.tokens) && item.tokens >= 0;
   });
 }
 

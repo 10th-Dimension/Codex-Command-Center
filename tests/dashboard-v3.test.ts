@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { bucketTrendPoints } from "../src/components/dashboard/analytics-ui";
 import { averageTtft, distributionShares, latestSession, measuredLabel, parseDashboardRange, selectTrend, selectUsage } from "../src/lib/dashboard/analytics";
+import { accountActivityBuckets, accountActivitySummary, formatAccountSeconds, formatBackendDate } from "../src/lib/dashboard/account-activity";
 import type { DashboardSnapshot } from "../src/lib/dashboard/view-model";
 import { defaultOverlaySettings, isSafeHexColor, parseOverlaySettings, resolveOverlayLayout } from "../src/lib/overlay/settings";
 import { composeOverlaySnapshot } from "../src/lib/overlay/view-model";
@@ -67,6 +68,21 @@ test("latest session and weighted TTFT remain model-agnostic", () => {
   assert.equal(latestSession(codex)?.models[0], "gpt-future");
   assert.equal(latestSession(codex)?.reasoningEfforts[0], "ultra");
   assert.equal(averageTtft(codex), 250);
+});
+
+test("account activity keeps exact backend buckets and explicit time semantics", () => {
+  const activity = {
+    dailyUsageBuckets: [
+      { startDate: "2026-09-17", tokens: 0 },
+      { startDate: "2026-09-18", tokens: 120 },
+      { startDate: "2026-09-19", tokens: 80 },
+    ],
+    currentStreakDays: 2,
+  };
+  assert.deepEqual(accountActivityBuckets(activity, 7), activity.dailyUsageBuckets);
+  assert.deepEqual(accountActivitySummary(activity.dailyUsageBuckets), { totalTokens: 200, activeDays: 2, peak: { startDate: "2026-09-18", tokens: 120 } });
+  assert.equal(formatBackendDate("2026-09-19"), "Sep 19");
+  assert.equal(formatAccountSeconds(3_661), "1h 1m");
 });
 
 test("model and reasoning distributions accept future labels", () => {

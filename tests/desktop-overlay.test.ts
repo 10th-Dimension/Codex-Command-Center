@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { telemetryFreshness } from "../desktop/overlay/src/lib/freshness";
+import { shouldReplaceOverlaySnapshot } from "../desktop/overlay/src/lib/snapshot";
 import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../src/lib/overlay/account";
+import type { OverlaySnapshot } from "../src/lib/overlay/contracts";
 import { defaultDesktopOverlaySettings, isSafeHexColor, isSafeHotkey, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, resolveLayout, shouldPollRemote } from "../desktop/overlay/src/lib/settings";
 
 test("desktop settings preserve supported choices and bound unsafe values", () => {
@@ -44,6 +46,23 @@ test("telemetry freshness distinguishes healthy activity, idle time, degraded pa
   assert.equal(telemetryFreshness("2026-09-12T10:50:00.000Z", now).label, "Idle · 1h");
   assert.equal(telemetryFreshness("2026-09-12T11:59:52.000Z", now, false).state, "stale");
   assert.equal(telemetryFreshness(undefined, now).state, "unavailable");
+});
+
+test("native overlay keeps a usable snapshot during a degraded same-range refresh", () => {
+  const usable = {
+    generatedAt: "2026-09-12T12:00:00.000Z",
+    range: "24h",
+    lastTelemetryAt: "2026-09-12T11:59:00.000Z",
+    health: { telemetry: "connected", d1: "connected", github: "connected", ci: "connected" },
+    windowSummary: { inputTokens: 10 },
+    tokenTrend: [],
+    modelDistribution: [],
+    reasoningDistribution: [],
+  } as OverlaySnapshot;
+  const degraded = { ...usable, generatedAt: "2026-09-12T12:00:01.000Z", health: { ...usable.health, telemetry: "unavailable", d1: "unavailable" }, windowSummary: {}, tokenTrend: [], modelDistribution: [], reasoningDistribution: [] } as OverlaySnapshot;
+  assert.equal(shouldReplaceOverlaySnapshot(usable, degraded), false);
+  assert.equal(shouldReplaceOverlaySnapshot(undefined, degraded), true);
+  assert.equal(shouldReplaceOverlaySnapshot(usable, { ...degraded, range: "7d" }), true);
 });
 
 test("overlay quick controls reuse supported ranges, layouts, and the existing snapshot fetch", async () => {
@@ -148,4 +167,18 @@ test("native standard overlay reserves enough room for its operational surface",
   assert.match(config, /"height": 320/);
   assert.match(rust, /"standard" => Some\(PhysicalSize::new\(430, 320\)\)/);
   assert.match(rust, /migrate_legacy_standard_size/);
+});
+
+test("overlay layouts keep content scrollable when the window is resized", async () => {
+  const [app, styles] = await Promise.all([
+    readFile(new URL("../desktop/overlay/src/App.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/overlay/src/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(app, /overlay-content overlay-content-strip/);
+  assert.match(app, /overlay-content overlay-content-mini/);
+  assert.match(app, /overlay-content-\$\{layout\}/);
+  assert.match(styles, /\.overlay-content-standard,\.overlay-content-expanded\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto/);
+  assert.match(styles, /\.overlay-content-mini\s*\{[^}]*overflow:\s*auto/);
+  assert.match(styles, /\.overlay-content-strip\s*\{[^}]*display:\s*grid/);
+  assert.doesNotMatch(styles, /\.expanded-content\s*\{[^}]*height:\s*calc\(100% - 238px\)/);
 });
