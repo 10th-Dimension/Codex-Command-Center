@@ -68,6 +68,7 @@ test("overlay quick controls reuse supported ranges, layouts, and the existing s
   assert.match(app, /function ResizeHandles/);
   assert.match(app, /function ObservationRail/);
   assert.match(app, /Observed operations/);
+  assert.match(app, /Snapshot unavailable/);
   assert.match(app, /Recover movement/);
   assert.match(workflow, /tauri -- build --debug --no-bundle/);
   assert.match(rust, /DEFAULT_CLICK_THROUGH: &str = "Ctrl\+Shift\+O"/);
@@ -136,4 +137,15 @@ test("quota presentation uses remaining percentages, local countdowns, and expli
   assert.match(app, /Projected/);
   assert.match(app, /Banked resets/);
   assert.match(app, /Account Activity/);
+});
+
+test("native standard overlay reserves enough room for its operational surface", async () => {
+  const [config, rust] = await Promise.all([
+    readFile(new URL("../desktop/overlay/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/overlay/src-tauri/src/lib.rs", import.meta.url), "utf8"),
+  ]);
+  assert.match(config, /"width": 430/);
+  assert.match(config, /"height": 320/);
+  assert.match(rust, /"standard" => Some\(PhysicalSize::new\(430, 320\)\)/);
+  assert.match(rust, /migrate_legacy_standard_size/);
 });

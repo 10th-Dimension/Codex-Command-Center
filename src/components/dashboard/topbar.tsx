@@ -2,22 +2,33 @@
 
 import { Activity, Bot, GitBranch, ListTree, Settings, ShieldCheck, X } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 export function Topbar() {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const section = searchParams.get("section");
+  const range = searchParams.get("range");
+  const rangeQuery = range && ["24h", "7d", "30d"].includes(range) ? `range=${encodeURIComponent(range)}` : "";
+  const sectionHref = (nextSection?: string) => {
+    const query = [rangeQuery, nextSection ? `section=${encodeURIComponent(nextSection)}` : ""].filter(Boolean).join("&");
+    return query ? `/?${query}` : "/";
+  };
+  const overviewActive = pathname === "/" && !section;
+  const usageActive = pathname === "/" && ["usage", "sessions", "tools", "data-health"].includes(section ?? "");
+  const activityActive = pathname === "/" && section === "forensics";
   const [settingsOpen, setSettingsOpen] = useState(false);
   return <>
     <header className="command-topbar">
       <Link className="command-brand" href="/"><span>CC</span><div><b>Command Center</b><small>Private developer operations</small></div></Link>
       <nav aria-label="Primary navigation">
         <span className="command-nav-label">Workspace</span>
-        <Link className={pathname === "/" ? "active" : ""} href="/"><Activity size={14} />Codex</Link>
-        <Link className={pathname.startsWith("/github") ? "active" : ""} href="/github"><GitBranch size={14} />GitHub</Link>
+        <Link aria-current={overviewActive ? "page" : undefined} className={overviewActive ? "active" : ""} href={sectionHref()}><Activity size={14} />Codex</Link>
+        <Link aria-current={pathname.startsWith("/github") ? "page" : undefined} className={pathname.startsWith("/github") ? "active" : ""} href="/github"><GitBranch size={14} />GitHub</Link>
         <span className="command-nav-label">Operations</span>
-        <Link href="/?section=usage"><Bot size={14} />Usage</Link>
-        <Link href="/?section=forensics"><ListTree size={14} />Activity</Link>
+        <Link aria-current={usageActive ? "page" : undefined} className={usageActive ? "active" : ""} href={sectionHref("usage")}><Bot size={14} />Usage</Link>
+        <Link aria-current={activityActive ? "page" : undefined} className={activityActive ? "active" : ""} href={sectionHref("forensics")}><ListTree size={14} />Activity</Link>
       </nav>
       <button aria-label="Open settings" className="settings-gear" onClick={() => setSettingsOpen(true)} type="button"><Settings size={16} /></button>
     </header>

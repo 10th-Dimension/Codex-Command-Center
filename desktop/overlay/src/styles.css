@@ -24,6 +24,7 @@ button { color: inherit; }
 .brand, .header-meta, footer, .health-chip, .strip-health { display: flex; align-items: center; }
 .brand { min-width: 0; gap: 6px; color: var(--accent); letter-spacing: .13em; }
 .brand b { overflow: hidden; font-size: .67em; white-space: nowrap; text-overflow: ellipsis; }
+.brand-mode { padding: 2px 4px; border: 1px solid color-mix(in srgb, #54d7a0 28%, transparent); border-radius: 4px; color: #65dbaa; font-size: .43em; font-weight: 750; letter-spacing: .06em; }
 .click-through-indicator { display: flex; align-items: center; gap: 3px; padding: 2px 4px; border: 1px solid rgba(255,196,94,.24); border-radius: 4px; color: #ffc45e; font-size: .48em; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
 .header-meta { gap: 3px; color: color-mix(in srgb, var(--text) 43%, transparent); font-size: .62em; font-weight: 650; }
 .header-control { position: relative; }
