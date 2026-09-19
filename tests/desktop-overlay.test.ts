@@ -49,11 +49,12 @@ test("telemetry freshness distinguishes healthy activity, idle time, degraded pa
 test("overlay quick controls reuse supported ranges, layouts, and the existing snapshot fetch", async () => {
   assert.deepEqual(overlayRanges, ["24h", "7d", "30d"]);
   assert.deepEqual(overlayLayouts, ["mini", "standard", "expanded", "strip"]);
-  const [app, native, rust, main] = await Promise.all([
+  const [app, native, rust, main, workflow] = await Promise.all([
     readFile(new URL("../desktop/overlay/src/App.tsx", import.meta.url), "utf8"),
     readFile(new URL("../desktop/overlay/src/lib/native.ts", import.meta.url), "utf8"),
     readFile(new URL("../desktop/overlay/src-tauri/src/lib.rs", import.meta.url), "utf8"),
     readFile(new URL("../desktop/overlay/src-tauri/src/main.rs", import.meta.url), "utf8"),
+    readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
   ]);
   assert.ok((app.match(/overlayRanges\.map/g) ?? []).length >= 2);
   assert.ok((app.match(/overlayLayouts\.map/g) ?? []).length >= 2);
@@ -68,6 +69,7 @@ test("overlay quick controls reuse supported ranges, layouts, and the existing s
   assert.match(app, /function ObservationRail/);
   assert.match(app, /Observed operations/);
   assert.match(app, /Recover movement/);
+  assert.match(workflow, /tauri -- build --debug --no-bundle/);
   assert.match(rust, /DEFAULT_CLICK_THROUGH: &str = "Ctrl\+Shift\+O"/);
   assert.match(main, /cfg_attr\(windows, windows_subsystem = "windows"\)/);
   assert.doesNotMatch([app, native, rust].join("\n"), /codex_telemetry_events/i);

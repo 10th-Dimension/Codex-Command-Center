@@ -80,3 +80,7 @@ jobs:
 
       - name: Check native overlay
         run: cargo check --manifest-path desktop/overlay/src-tauri/Cargo.toml
+
+      - name: Build Windows overlay executable
+        working-directory: desktop/overlay
+        run: npm run tauri -- build --debug --no-bundle
