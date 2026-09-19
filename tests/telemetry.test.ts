@@ -304,7 +304,7 @@ test("ingestion validates media type, malformed payloads, and payload bounds", a
 
 test("ingestion batches writes, deduplicates retries, and runs retention cleanup", async () => {
   const database = new FakeD1();
-  const options = { database, ingestKey, retentionDays: 30, now: () => new Date(now) };
+  const options = { database, ingestKey, retentionDays: 30, now: () => new Date(now), maintenanceIntervalMs: 0 };
   const first = await handleTelemetryIngest(requestFor(jsonPayload()), options);
   const rollupsAfterFirst = database.rollupInsertCount;
   const second = await handleTelemetryIngest(requestFor(jsonPayload()), options);
