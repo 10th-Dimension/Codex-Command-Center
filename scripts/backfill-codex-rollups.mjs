@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { calculateCodexEquivalentPricing } from "../src/lib/telemetry/pricing.ts";
 
 const databaseName = "codex-command-center-telemetry";
 const allowed = new Set(["--remote", "--confirm-remote", "--rebuild"]);
@@ -145,11 +146,21 @@ for (const [range, hours] of Object.entries(ranges)) {
   const cutoff = new Date(now.getTime() - hours * 3_600_000).toISOString();
   const label = range === "24h" ? "hour_start" : "substr(hour_start,1,10)";
   const hourly = await query(`SELECT ${label} AS label,SUM(event_count) AS event_count,SUM(input_tokens) AS input_tokens,SUM(input_samples) AS input_samples,SUM(output_tokens) AS output_tokens,SUM(output_samples) AS output_samples,SUM(cached_tokens) AS cached_tokens,SUM(cached_samples) AS cached_samples,SUM(cache_write_tokens) AS cache_write_tokens,SUM(cache_write_samples) AS cache_write_samples,SUM(reasoning_tokens) AS reasoning_tokens,SUM(reasoning_samples) AS reasoning_samples,SUM(tool_tokens) AS tool_tokens,SUM(tool_token_samples) AS tool_token_samples,SUM(error_count) AS error_count,SUM(warning_count) AS warning_count,SUM(completed_tools) AS completed_tools,SUM(failed_tools) AS failed_tools,SUM(approvals) AS approvals,SUM(ttft_sum_ms) AS ttft_sum_ms,SUM(ttft_sample_count) AS ttft_sample_count,SUM(duration_sum_ms) AS duration_sum_ms,SUM(duration_sample_count) AS duration_sample_count,MAX(last_received_at) AS last_received_at FROM codex_rollup_hourly WHERE hour_start>=${sqlQuote(cutoff)} GROUP BY label ORDER BY label LIMIT 744`);
-  const models = await query(`SELECT model AS label,SUM(event_count) AS count FROM codex_rollup_model_hourly WHERE hour_start>=${sqlQuote(cutoff)} GROUP BY model ORDER BY count DESC LIMIT 8`);
+  const models = await query(`SELECT model AS label,SUM(event_count) AS count,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,SUM(cached_tokens) AS cached_tokens,SUM(reasoning_tokens) AS reasoning_tokens,SUM(tool_tokens) AS tool_tokens,COUNT(*) OVER() AS model_count FROM codex_rollup_model_hourly WHERE hour_start>=${sqlQuote(cutoff)} GROUP BY model ORDER BY count DESC LIMIT 64`);
   const reasoning = await query(`SELECT reasoning_effort AS label,SUM(event_count) AS count FROM codex_rollup_reasoning_hourly WHERE hour_start>=${sqlQuote(cutoff)} GROUP BY reasoning_effort ORDER BY count DESC LIMIT 8`);
   const sessions = await query(`SELECT *,COUNT(*) OVER() AS range_session_count FROM codex_session_summary WHERE last_seen_at>=${sqlQuote(cutoff)} ORDER BY last_seen_at DESC LIMIT 20`);
   const total = (key) => hourly.reduce((sum, row) => sum + Number(row[key] ?? 0), 0);
   const observed = hourly.length > 0;
+  const pricing = calculateCodexEquivalentPricing({
+    metrics: {
+      inputTokens: measured(total("input_tokens"), total("input_samples"), observed),
+      cachedTokens: measured(total("cached_tokens"), total("cached_samples"), observed),
+      outputTokens: measured(total("output_tokens"), total("output_samples"), observed),
+    },
+    models: models.map((row) => ({ model: row.label, eventCount: Number(row.count), inputTokens: row.input_tokens, cachedInputTokens: row.cached_tokens, outputTokens: row.output_tokens, reasoningTokens: row.reasoning_tokens, toolTokens: row.tool_tokens })),
+    modelCount: Number(models[0]?.model_count ?? models.length),
+    modelsTruncated: Number(models[0]?.model_count ?? models.length) > models.length,
+  });
   const snapshot = {
     schemaVersion: 1, range, generatedAt: now.toISOString(),
     sourceUpdatedAt: hourly.reduce((latest, row) => !row.last_received_at || latest >= row.last_received_at ? latest : row.last_received_at, "") || undefined,
@@ -166,6 +177,7 @@ for (const [range, hours] of Object.entries(ranges)) {
     models: models.map((row) => ({ label: row.label, count: Number(row.count) })),
     reasoningEfforts: reasoning.map((row) => ({ label: row.label, count: Number(row.count) })),
     sessions: sessions.map((row) => ({ sessionId: row.session_id, projectName: row.project_name ?? undefined, models: row.latest_model ? [row.latest_model] : [], reasoningEfforts: row.latest_reasoning_effort ? [row.latest_reasoning_effort] : [], eventCount: Number(row.event_count), errorCount: Number(row.error_count), warningCount: Number(row.warning_count), toolExecutions: Number(row.completed_tools), failedTools: Number(row.failed_tools), toolRelatedEvents: Number(row.completed_tools), usageEvents: Number(row.event_count), approvalEvents: Number(row.approvals), inputTokens: Number(row.input_tokens), outputTokens: Number(row.output_tokens), cachedTokens: Number(row.cached_tokens), cacheWriteTokens: Number(row.cache_write_tokens), reasoningTokens: Number(row.reasoning_tokens), toolTokens: Number(row.tool_tokens), averageTtftMs: Number(row.ttft_sample_count) ? Number(row.ttft_sum_ms) / Number(row.ttft_sample_count) : undefined, firstSeenAt: row.first_seen_at, lastSeenAt: row.last_seen_at })),
+    pricing,
   };
   const payload = JSON.stringify(snapshot);
   if (payload.length > 262_144) throw new Error(`${range} snapshot exceeds the 256 KiB bound.`);

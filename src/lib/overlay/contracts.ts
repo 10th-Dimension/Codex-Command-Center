@@ -1,3 +1,5 @@
+import type { CodexEquivalentPricing } from "../telemetry/pricing";
+
 export type OverlayRange = "24h" | "7d" | "30d";
 export type OverlayProviderStatus = "connected" | "degraded" | "unavailable";
 export type TelemetryBufferReplayState = "idle" | "buffering" | "replaying" | "degraded";
@@ -132,6 +134,7 @@ export interface OverlaySnapshot {
     completedTools?: number;
     failures?: number;
   };
+  pricing?: CodexEquivalentPricing;
   tokenTrend: OverlayTrendPoint[];
   modelDistribution: OverlayDistributionItem[];
   reasoningDistribution: OverlayDistributionItem[];

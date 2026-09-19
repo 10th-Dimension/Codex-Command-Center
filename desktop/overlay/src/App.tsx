@@ -215,6 +215,7 @@ function OverlayContent({ snapshot, relay, layout, freshness, now }: Readonly<{ 
     <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>OTel {freshness.label}</span></div>
     {layout === "standard" ? <ObservationRail session={session} summary={summary} lastTelemetryAt={snapshot.lastTelemetryAt} /> : null}
     <QuotaPanel account={snapshot.codexAccount} now={now} />
+    <PricingPanel pricing={snapshot.pricing} />
     <div className="metric-grid primary"><Metric label="Input" value={summary.inputTokens} /><Metric label="Output" value={summary.outputTokens} /><Metric label="Cached" value={summary.cachedTokens} optionalMini /><Metric label="Reasoning" value={summary.reasoningTokens} /><Metric label="Tool tokens" value={summary.toolTokens} optionalMini /><Metric label="TTFT" value={summary.averageTtftMs} duration /><Metric label="Tools" value={summary.completedTools} /><Metric label="Errors" value={summary.failures} /></div>
     {layout === "expanded" ? <Expanded snapshot={snapshot} now={now} /> : null}
     <footer><HealthChip label="Relay" status={relay === "online" ? "connected" : "degraded"} /><HealthChip label="Telemetry" status={snapshot.health.telemetry} /><HealthChip label="D1" status={snapshot.health.d1} /><BufferStatus buffer={snapshot.telemetryBuffer} /></footer>
@@ -260,6 +261,16 @@ function QuotaPanel({ account, now }: Readonly<{ account?: OverlaySnapshot["code
   const windows = primaryWindows(account);
   if (!windows.length) return <div className="quota-panel unavailable"><span>Quota unavailable</span><small>{account?.status === "error" ? "App-server error" : "Local Codex account data unavailable"}</small></div>;
   return <div className="quota-panel">{windows.slice(0, 2).map((window) => <QuotaRow key={window.slot} window={window} now={now} />)}</div>;
+}
+
+function PricingPanel({ pricing }: Readonly<{ pricing?: OverlaySnapshot["pricing"] }>) {
+  const available = pricing?.status === "available" || pricing?.status === "partial";
+  return <section className={`pricing-panel ${pricing?.status ?? "unavailable"}`} title={pricing?.note ?? "API-equivalent pricing is unavailable for this window."}>
+    <div className="section-title"><b>API-equivalent usage</b><span>{pricing?.status === "partial" ? "Partial coverage" : pricing?.status === "available" ? "All observed models" : "Unavailable"}</span></div>
+    <div className="pricing-main"><div><small>USD equivalent</small><strong>{available && pricing?.usdEquivalent !== undefined ? `$${pricing.usdEquivalent}` : "Unavailable"}</strong></div><div><small>Codex credits</small><strong>{available && pricing?.apiCredits !== undefined ? pricing.apiCredits : "—"}</strong></div><div><small>Coverage</small><strong>{pricing?.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}%`}</strong></div></div>
+    {pricing?.byModel.length ? <details className="pricing-details"><summary>Model math <span>+</span></summary><div>{pricing.byModel.map((model) => <div key={model.model}><span><b>{model.displayName}</b><small>{model.model} · {model.eventCount.toLocaleString()} events</small></span><strong>{model.status === "priced" ? `$${model.usdEquivalent}` : "Unpriced"}</strong></div>)}</div></details> : null}
+    <p>Standard token rates · feature charges excluded · reasoning is not double-counted.</p>
+  </section>;
 }
 
 function QuotaRow({ window, now }: Readonly<{ window: CodexQuotaWindow; now: number }>) {

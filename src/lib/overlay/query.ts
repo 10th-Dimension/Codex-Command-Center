@@ -23,6 +23,7 @@ function unavailableOverlay(range: TelemetryRange, github: GitHubDataSnapshot, g
     range,
     health: { telemetry: "unavailable", d1: "unavailable", github: github.health.status, ci: ciStatus(github) },
     windowSummary: {},
+    pricing: undefined,
     tokenTrend: [],
     modelDistribution: [],
     reasoningDistribution: [],
@@ -90,6 +91,7 @@ export async function getOverlaySnapshot(range: TelemetryRange): Promise<Overlay
       completedTools: codex.summary.completedTools,
       failures: codex.summary.failedTools + codex.summary.errors,
     },
+    pricing: codex.pricing,
     tokenTrend: codex.trend.map((point) => ({
       label: point.label,
       inputTokens: point.inputTokens,
