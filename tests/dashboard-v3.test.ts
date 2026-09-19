@@ -104,12 +104,25 @@ test("dashboard exposes exactly two top-level destinations and maps legacy route
   assert.equal(legacySectionRedirects["build-ci-health"], "/github?section=build-ci");
 });
 
-test("Codex page gates raw forensics and uses collapsed native detail sections", async () => {
-  const source = await readFile(new URL("../src/components/dashboard/command-pages.tsx", import.meta.url), "utf8");
+test("Codex page gates raw forensics and keeps the overview bounded", async () => {
+  const [source, analytics] = await Promise.all([
+    readFile(new URL("../src/components/dashboard/command-pages.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/dashboard/analytics-ui.tsx", import.meta.url), "utf8"),
+  ]);
   assert.match(source, /Load forensics/);
   assert.match(source, /forensics=1/);
   assert.match(source, /<details className="command-detail"/);
   assert.match(source, /Usage & performance/);
   assert.match(source, /Data health/);
+  assert.match(source, /LiveOperations/);
+  assert.match(source, /MeasuredLedger/);
+  assert.match(source, /command-metric-link/);
+  assert.match(source, /Billing equivalent/);
+  assert.match(source, /no estimated cost/);
+  assert.match(source, /Dashboard writes/);
+  assert.match(analytics, /ActivityHeatmap/);
+  assert.match(analytics, /TokenComposition/);
+  assert.match(analytics, /data-tooltip/);
+  assert.match(analytics, /chart-point/);
   assert.doesNotMatch(source, /subscription|plan limit|remaining credits/i);
 });

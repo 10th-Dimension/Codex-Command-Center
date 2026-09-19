@@ -213,6 +213,7 @@ function OverlayContent({ snapshot, relay, layout, freshness, now }: Readonly<{ 
   </>;
   return <>
     <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>OTel {freshness.label}</span></div>
+    {layout === "standard" ? <ObservationRail session={session} summary={summary} lastTelemetryAt={snapshot.lastTelemetryAt} /> : null}
     <QuotaPanel account={snapshot.codexAccount} now={now} />
     <div className="metric-grid primary"><Metric label="Input" value={summary.inputTokens} /><Metric label="Output" value={summary.outputTokens} /><Metric label="Cached" value={summary.cachedTokens} optionalMini /><Metric label="Reasoning" value={summary.reasoningTokens} /><Metric label="Tool tokens" value={summary.toolTokens} optionalMini /><Metric label="TTFT" value={summary.averageTtftMs} duration /><Metric label="Tools" value={summary.completedTools} /><Metric label="Errors" value={summary.failures} /></div>
     {layout === "expanded" ? <Expanded snapshot={snapshot} now={now} /> : null}
@@ -223,6 +224,7 @@ function OverlayContent({ snapshot, relay, layout, freshness, now }: Readonly<{ 
 function Expanded({ snapshot, now }: Readonly<{ snapshot: OverlaySnapshot; now: number }>) {
   const session = snapshot.latestSession;
   return <div className="expanded-content">
+    <ObservedOperations session={session} summary={snapshot.windowSummary} lastTelemetryAt={snapshot.lastTelemetryAt} />
     <AccountDetails account={snapshot.codexAccount} now={now} />
     <section><SectionTitle title="Token trend" note={snapshot.range.toUpperCase()} /><Sparkline points={snapshot.tokenTrend.map((point) => (point.inputTokens ?? 0) + (point.outputTokens ?? 0) + (point.cachedTokens ?? 0) + (point.reasoningTokens ?? 0) + (point.toolTokens ?? 0))} /></section>
     <div className="split"><section><SectionTitle title="Token composition" /><Composition summary={snapshot.windowSummary} /></section><section><SectionTitle title="Model mix" /><Distribution items={snapshot.modelDistribution} /></section></div>
@@ -287,6 +289,28 @@ function QuotaDetail({ window, now }: Readonly<{ window: CodexQuotaWindow; now: 
 }
 
 function Identity({ session }: Readonly<{ session?: OverlaySnapshot["latestSession"] }>) { return <div className="identity" title={session ? `Latest observed session · ${session.lastSeenAt}` : "No observed session"}><span>{friendlyModel(session?.model)}</span><i>·</i><small>{session?.reasoningEffort ?? "effort unavailable"}</small></div>; }
+
+function ObservationRail({ session, summary, lastTelemetryAt }: Readonly<{ session?: OverlaySnapshot["latestSession"]; summary: OverlaySnapshot["windowSummary"]; lastTelemetryAt?: string }>) {
+  const observed = Boolean(session);
+  const observedAt = session?.lastSeenAt ?? lastTelemetryAt;
+  return <div className={`observation-rail ${observed ? "observed" : "unavailable"}`} title="This is the latest observed telemetry, not a claim about current agent state.">
+    <StatusDot state={observed ? "connected" : "unavailable"} />
+    <div><b>{observed ? "Last session observed" : "No session observed"}</b><small>{observed ? `${friendlyModel(session?.model)} · ${session?.reasoningEffort ?? "effort unavailable"}` : "No bounded session summary is available."}</small></div>
+    <time>{observedAt ? shortAge(observedAt) : "Unavailable"}</time>
+    <span className="observation-facts">{numberLabel(summary.completedTools)} tools · {numberLabel(summary.approvals)} approvals · {numberLabel(summary.failures)} failed</span>
+  </div>;
+}
+
+function ObservedOperations({ session, summary, lastTelemetryAt }: Readonly<{ session?: OverlaySnapshot["latestSession"]; summary: OverlaySnapshot["windowSummary"]; lastTelemetryAt?: string }>) {
+  const observed = Boolean(session);
+  const observedAt = session?.lastSeenAt ?? lastTelemetryAt;
+  return <section className={`observed-panel ${observed ? "observed" : "unavailable"}`}>
+    <SectionTitle title="Observed operations" note="privacy-safe" />
+    <div className="observed-card"><StatusDot state={observed ? "connected" : "unavailable"} /><div><strong>{observed ? "Session evidence available" : "No session evidence"}</strong><small>{observedAt ? `Last observed ${shortAge(observedAt)}` : "Telemetry timestamp unavailable"}</small></div><span>{observed ? friendlyModel(session?.model) : "Unavailable"}</span></div>
+    <div className="observed-facts"><span>Events<b>{numberLabel(summary.events)}</b></span><span>Tools<b>{numberLabel(summary.completedTools)}</b></span><span>Approvals<b>{numberLabel(summary.approvals)}</b></span><span>Failures<b>{numberLabel(summary.failures)}</b></span></div>
+    <p className="privacy-note">Observed aggregates only. Prompts, commands, tool arguments, and agent-graph details are intentionally not emitted.</p>
+  </section>;
+}
 
 function ResizeHandles() {
   const directions = ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"] as const;

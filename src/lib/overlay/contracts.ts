@@ -120,12 +120,14 @@ export interface OverlaySnapshot {
     errors: number;
   };
   windowSummary: {
+    events?: number;
     sessions?: number;
     inputTokens?: number;
     outputTokens?: number;
     cachedTokens?: number;
     reasoningTokens?: number;
     toolTokens?: number;
+    approvals?: number;
     averageTtftMs?: number;
     completedTools?: number;
     failures?: number;

@@ -10,6 +10,22 @@ export interface D1PreparedStatementLike { bind(...values: unknown[]): D1Prepare
 export interface D1DatabaseLike { prepare(sql: string): D1PreparedStatementLike; batch<T = Record<string, unknown>>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> }
 export interface D1MutationResult { changes: number; rowsWritten?: number }
 
+// Retention runs inline with ingestion. Keep each maintenance pass bounded so
+// an old backlog cannot turn one otherwise small request into an unbounded D1
+// read/delete operation. Subsequent maintenance passes will drain the rest.
+export const TELEMETRY_RETENTION_DELETE_BATCH_SIZE = 500;
+// The explicit forensic view fans out into many aggregate statements. Probe
+// the indexed time range first so that a large raw table cannot multiply into
+// an unbounded read burst. The caller receives an honest unavailable state
+// instead of a partial or fabricated forensic result.
+export const TELEMETRY_FORENSICS_MAX_RAW_EVENTS = 50_000;
+export class TelemetryForensicsLimitError extends Error {
+  constructor() {
+    super(`Explicit Forensics is limited to ${TELEMETRY_FORENSICS_MAX_RAW_EVENTS.toLocaleString()} raw events in a 30-day window.`);
+    this.name = "TelemetryForensicsLimitError";
+  }
+}
+
 const INSERT_COLUMNS = [
   "id", "event_fingerprint", "occurred_at", "received_at", "event_name", "event_category", "environment", "severity_text", "severity_number",
   "session_id", "thread_id", "task_id", "project_id", "project_name", "repository_id", "workspace_id", "model", "tool_name", "tool_type", "tool_status",
@@ -61,7 +77,16 @@ export async function insertTelemetryEvents(database: D1DatabaseLike, events: No
 
 export async function deleteExpiredTelemetry(database: D1DatabaseLike, retentionDays: number, now: Date): Promise<D1MutationResult> {
   const cutoff = new Date(now.getTime() - retentionDays * 86_400_000).toISOString();
-  const result = await database.prepare("DELETE FROM codex_telemetry_events WHERE occurred_at < ?").bind(cutoff).run();
+  const result = await database.prepare(`
+    DELETE FROM codex_telemetry_events
+    WHERE id IN (
+      SELECT id
+      FROM codex_telemetry_events
+      WHERE occurred_at < ?
+      ORDER BY occurred_at ASC, id ASC
+      LIMIT ?
+    )
+  `).bind(cutoff, TELEMETRY_RETENTION_DELETE_BATCH_SIZE).run();
   if (!result.success) throw new Error("Telemetry retention cleanup failed.");
   return {
     changes: result.meta?.changes ?? 0,
@@ -136,6 +161,9 @@ export interface TelemetryForensicsSnapshot {
  */
 export async function readTelemetryForensics(database: D1DatabaseLike, now: Date): Promise<TelemetryForensicsSnapshot> {
   const cutoff30 = new Date(now.getTime() - 30 * 86_400_000).toISOString(); const cutoff7 = new Date(now.getTime() - 7 * 86_400_000).toISOString(); const cutoff24 = new Date(now.getTime() - 86_400_000).toISOString(); const today = `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
+  const preflight = await database.prepare(`SELECT id FROM codex_telemetry_events WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT ?`).bind(cutoff30, TELEMETRY_FORENSICS_MAX_RAW_EVENTS + 1).all<{ id: string }>();
+  if (!preflight.success) throw new Error("Telemetry forensic preflight failed.");
+  if ((preflight.results ?? []).length > TELEMETRY_FORENSICS_MAX_RAW_EVENTS) throw new TelemetryForensicsLimitError();
   const usageSelect = `COUNT(*) AS event_count, SUM(input_tokens) AS input_tokens, COUNT(input_tokens) AS input_samples, SUM(output_tokens) AS output_tokens, COUNT(output_tokens) AS output_samples, SUM(cached_input_tokens) AS cached_tokens, COUNT(cached_input_tokens) AS cached_samples, SUM(cache_write_tokens) AS cache_write_tokens, COUNT(cache_write_tokens) AS cache_write_samples, SUM(COALESCE(reasoning_tokens, reasoning_output_tokens)) AS reasoning_tokens, COUNT(COALESCE(reasoning_tokens, reasoning_output_tokens)) AS reasoning_samples, SUM(tool_tokens) AS tool_tokens, COUNT(tool_tokens) AS tool_samples, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_events, COUNT(DISTINCT CASE WHEN ${USAGE_FIELDS} THEN COALESCE(session_id,thread_id) END) AS usage_sessions, COUNT(DISTINCT CASE WHEN ${USAGE_FIELDS} THEN model END) AS usage_models`;
   const breakdown = (column: string) => database.prepare(`SELECT ${column} AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND ${column} IS NOT NULL GROUP BY ${column} ORDER BY count DESC LIMIT 30`).bind(cutoff30);
   const statements = [

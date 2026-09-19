@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, GitBranch, Settings, ShieldCheck, X } from "lucide-react";
+import { Activity, Bot, GitBranch, ListTree, Settings, ShieldCheck, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
@@ -12,8 +12,12 @@ export function Topbar() {
     <header className="command-topbar">
       <Link className="command-brand" href="/"><span>CC</span><div><b>Command Center</b><small>Private developer operations</small></div></Link>
       <nav aria-label="Primary navigation">
+        <span className="command-nav-label">Workspace</span>
         <Link className={pathname === "/" ? "active" : ""} href="/"><Activity size={14} />Codex</Link>
         <Link className={pathname.startsWith("/github") ? "active" : ""} href="/github"><GitBranch size={14} />GitHub</Link>
+        <span className="command-nav-label">Operations</span>
+        <Link href="/?section=usage"><Bot size={14} />Usage</Link>
+        <Link href="/?section=forensics"><ListTree size={14} />Activity</Link>
       </nav>
       <button aria-label="Open settings" className="settings-gear" onClick={() => setSettingsOpen(true)} type="button"><Settings size={16} /></button>
     </header>

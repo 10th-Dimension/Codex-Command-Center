@@ -3,7 +3,13 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createCodexTelemetryProvider } from "../src/lib/providers/codex-core";
-import type { D1DatabaseLike, D1PreparedStatementLike, D1ResultLike } from "../src/lib/telemetry/database";
+import {
+  TELEMETRY_RETENTION_DELETE_BATCH_SIZE,
+  type D1DatabaseLike,
+  type D1PreparedStatementLike,
+  type D1ResultLike,
+  readTelemetryForensics,
+} from "../src/lib/telemetry/database";
 import { handleTelemetryIngest, MAX_TELEMETRY_PAYLOAD_BYTES } from "../src/lib/telemetry/ingest";
 import { normalizeOtlpRecords } from "../src/lib/telemetry/normalize";
 import { decodeOtlpJson, decodeOtlpProtobuf } from "../src/lib/telemetry/otlp";
@@ -54,6 +60,7 @@ class FakeStatement implements D1PreparedStatementLike {
 class FakeD1 implements D1DatabaseLike {
   fingerprints = new Set<string>();
   insertedValues: unknown[][] = [];
+  statements: FakeStatement[] = [];
   deleted = 0;
   lastDeleteCutoff?: string;
   queryResults?: D1ResultLike[];
@@ -61,12 +68,17 @@ class FakeD1 implements D1DatabaseLike {
   rollupInsertCount = 0;
   rawDeleteCount = 0;
   missingRollupSchema = false;
-  prepare(sql: string) { return new FakeStatement(this, sql); }
+  prepare(sql: string) {
+    const statement = new FakeStatement(this, sql);
+    this.statements.push(statement);
+    return statement;
+  }
   async batch<T>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> {
     if (this.queryResults && statements.every((statement) => !((statement as FakeStatement).sql.includes("INSERT")))) return this.queryResults as D1ResultLike<T>[];
     return statements.map((statement) => this.execute(statement as FakeStatement) as D1ResultLike<T>);
   }
   execute(statement: FakeStatement): D1ResultLike {
+    const sql = statement.sql.trim();
     if (this.missingRollupSchema && /codex_(?:rollup|dashboard_snapshot|session_summary)/.test(statement.sql)) throw new Error("no such table: codex_rollup_hourly");
     if (statement.sql.includes("INSERT OR IGNORE")) {
       const fingerprint = String(statement.values[1]);
@@ -75,9 +87,9 @@ class FakeD1 implements D1DatabaseLike {
       this.insertedValues.push(statement.values);
       return { success: true, meta: { changes: 1 } };
     }
-    if (statement.sql.startsWith("INSERT INTO codex_rollup_")) this.rollupInsertCount += 1;
+    if (sql.startsWith("INSERT INTO codex_rollup_")) this.rollupInsertCount += 1;
     if (statement.sql.includes("FROM codex_dashboard_snapshot")) return { success: true, results: this.snapshotRows };
-    if (statement.sql.startsWith("DELETE")) { this.deleted += 1; if (statement.sql.includes("codex_telemetry_events")) this.rawDeleteCount += 1; this.lastDeleteCutoff = String(statement.values[0]); return { success: true, meta: { changes: 0 } }; }
+    if (sql.startsWith("DELETE")) { this.deleted += 1; if (statement.sql.includes("codex_telemetry_events")) this.rawDeleteCount += 1; this.lastDeleteCutoff = String(statement.values[0]); return { success: true, meta: { changes: 0 } }; }
     return { success: true, results: [] };
   }
 }
@@ -87,6 +99,21 @@ class MetadataD1 extends FakeD1 {
     const result = super.execute(statement);
     return { ...result, meta: { ...result.meta, rows_written: result.meta?.rows_written ?? 1 } };
   }
+}
+
+class ForensicsGuardStatement implements D1PreparedStatementLike {
+  values: unknown[] = [];
+  constructor(readonly sql: string) {}
+  bind(...values: unknown[]) { this.values = values; return this; }
+  async run<T>(): Promise<D1ResultLike<T>> { return { success: true }; }
+  async all<T>(): Promise<D1ResultLike<T>> {
+    return { success: true, results: Array.from({ length: 50_001 }, (_, index) => ({ id: `event-${index}` })) as T[] };
+  }
+}
+
+class ForensicsGuardD1 implements D1DatabaseLike {
+  prepare(sql: string) { return new ForensicsGuardStatement(sql); }
+  async batch<T>(): Promise<D1ResultLike<T>[]> { throw new Error("The guard should stop before the forensic fan-out."); }
 }
 
 function requestFor(payload: unknown, key = ingestKey) {
@@ -314,14 +341,36 @@ test("ingestion batches writes, deduplicates retries, and runs retention cleanup
   assert.equal(second.headers.get("x-codex-telemetry-duplicates"), "1");
   assert.equal(database.insertedValues.length, 1);
   assert.equal(database.rawDeleteCount, 1, "retention cleanup is time-gated across duplicate requests");
+  const rawDelete = database.statements.find((statement) => statement.sql.includes("DELETE FROM codex_telemetry_events"));
+  assert.ok(rawDelete);
+  assert.match(rawDelete.sql, /LIMIT \?/);
+  assert.equal(rawDelete.values[1], TELEMETRY_RETENTION_DELETE_BATCH_SIZE);
   assert.ok(database.rollupInsertCount > 0);
   assert.equal(database.rollupInsertCount, rollupsAfterFirst, "duplicate delivery must not increment rollups");
   assert.equal(database.lastDeleteCutoff, "2026-08-12T12:00:00.000Z");
   assert.equal(first.headers.get("x-codex-telemetry-ingest-requests"), "1");
   assert.equal(first.headers.get("x-codex-telemetry-snapshot-rebuilds"), "3");
   assert.equal(second.headers.get("x-codex-telemetry-snapshot-rebuilds"), "0");
+  assert.equal(second.headers.get("x-codex-telemetry-rollups"), "skipped-no-new-events");
+  assert.equal(second.headers.get("x-codex-telemetry-cleanup-deletes"), "0");
   const stored = JSON.stringify(database.insertedValues);
   assert.doesNotMatch(stored, /must-never-appear|authorization|private prompt|private output/);
+});
+
+test("duplicate-only retries skip maintenance even when the maintenance interval is eligible", async () => {
+  const database = new MetadataD1();
+  const options = { database, ingestKey, retentionDays: 30, now: () => new Date(now), maintenanceIntervalMs: 0 };
+  const first = await handleTelemetryIngest(requestFor(jsonPayload()), options);
+  const second = await handleTelemetryIngest(requestFor(jsonPayload()), options);
+
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.equal(database.rawDeleteCount, 1);
+  assert.equal(second.headers.get("x-codex-telemetry-rollups"), "skipped-no-new-events");
+  assert.equal(second.headers.get("x-codex-telemetry-rollup-upserts"), "0");
+  assert.equal(second.headers.get("x-codex-telemetry-snapshot-rebuilds"), "0");
+  assert.equal(second.headers.get("x-codex-telemetry-cleanup-deletes"), "0");
+  assert.equal(second.headers.get("x-codex-telemetry-d1-rows-written"), "1", "only the duplicate-aware insert statement was observed");
 });
 
 test("malformed OTLP protobuf is rejected without a D1 write", async () => {
@@ -395,6 +444,13 @@ test("Codex provider reports missing snapshots without an expensive raw fallback
   assert.match(snapshot.health.message, /migration 0003|backfill/i);
   assert.equal(snapshot.activity.status, "unavailable");
   assert.equal(snapshot.lastReceivedAt, undefined);
+});
+
+test("forensics refuses a raw window above the bounded read budget", async () => {
+  await assert.rejects(
+    () => readTelemetryForensics(new ForensicsGuardD1(), new Date(now)),
+    /50,000 raw events/,
+  );
 });
 
 test("ingestion exposes bounded write-amplification diagnostics without creating diagnostic rows", async () => {
