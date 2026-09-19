@@ -9,7 +9,7 @@ import type {
   ProviderHealth,
 } from "@/lib/providers/types";
 import type { D1DatabaseLike } from "@/lib/telemetry/database";
-import { readTelemetryForensics } from "@/lib/telemetry/database";
+import { readTelemetryForensics, TelemetryForensicsLimitError } from "@/lib/telemetry/database";
 import {
   readMaterializedSnapshots,
   type CodexMaterializedSnapshot,
@@ -257,7 +257,8 @@ export function createCodexTelemetryProvider(dependencies: CodexProviderDependen
           networkDecisions: data.networkDecisions,
           loadedAt,
         }, loadedAt, { description: "Explicit 30-day forensic read", limit: 100, truncated: data.activity.length === 100 });
-      } catch {
+      } catch (error) {
+        if (error instanceof TelemetryForensicsLimitError) return unavailable(error.message, "api");
         return unavailable("Codex forensics could not be loaded safely.", "api");
       }
     },
