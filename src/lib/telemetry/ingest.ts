@@ -158,6 +158,17 @@ export async function handleTelemetryIngest(request: Request, options: Telemetry
     const now = options.now?.() ?? new Date();
     const normalized = await normalizeOtlpRecords(records, now.toISOString(), { replay: request.headers.get("x-codex-telemetry-replay") === "1" });
     const insertion = await insertTelemetryEventsDetailed(options.database, normalized);
+    if (insertion.inserted === 0) {
+      return successResponse(contentType, {
+        accepted: 0,
+        duplicateCount: normalized.length,
+        rollups: "updated",
+        rollupUpserts: 0,
+        sessionSummaryUpserts: 0,
+        snapshotRebuilds: 0,
+        cleanupDeletes: 0,
+      });
+    }
     let d1RowsWritten = insertion.rowsWritten;
 
     // A retry still needs the duplicate-aware insert above, but it must not
