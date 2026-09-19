@@ -8,7 +8,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { StatusPill } from "@/components/ui/status-pill";
 import { compactNumber, selectTrend, selectUsage, type DashboardRange } from "@/lib/dashboard/analytics";
 import type { getCodexPageData, getGitHubPageData } from "@/lib/dashboard/queries";
-import type { CodexActivityRecord, CodexTelemetrySessionSummary, DataResult, IssueRecord, PullRequestRecord } from "@/lib/providers/types";
+import type { CodexActivityRecord, CodexTelemetrySessionSummary, CodexUsageSnapshot, DataResult, IssueRecord, PullRequestRecord } from "@/lib/providers/types";
 
 type CodexData = Awaited<ReturnType<typeof getCodexPageData>>;
 type GitHubData = Awaited<ReturnType<typeof getGitHubPageData>>;
@@ -42,12 +42,12 @@ export function CodexCommandPage({ data, section }: Readonly<{ data: CodexData; 
     <LocalCodexAccount />
 
     <section className="command-stat-grid command-stat-grid-ribbon">
-      <Metric label="Events observed" value={summary?.events} note={`${data.range.toUpperCase()} window`} />
-      <Metric label="Sessions" value={summary?.sessions} note="materialized summaries" />
-      <Metric label="Measured tokens" value={totalTokens} note="emitted samples only" />
-      <Metric label="Peak bucket" value={peakEvents} note="events in one bucket" />
-      <Metric label="Active buckets" value={activeBuckets} note="non-zero observations" />
-      <Metric label="Models" value={modelCount} note="bounded distribution" />
+      <Metric href={`/?range=${data.range}&section=usage`} label="Events observed" value={summary?.events} note={`${data.range.toUpperCase()} window`} />
+      <Metric href={`/?range=${data.range}&section=sessions`} label="Sessions" value={summary?.sessions} note="materialized summaries" />
+      <Metric href={`/?range=${data.range}&section=usage`} label="Measured tokens" value={totalTokens} note="emitted samples only" />
+      <Metric href={`/?range=${data.range}&section=usage`} label="Peak bucket" value={peakEvents} note="events in one bucket" />
+      <Metric href={`/?range=${data.range}&section=usage`} label="Active buckets" value={activeBuckets} note="non-zero observations" />
+      <Metric href={`/?range=${data.range}&section=usage`} label="Models" value={modelCount} note="bounded distribution" />
     </section>
 
     {usageResult.status === "unavailable" ? <section className="command-unavailable-panel"><EmptyState title="Rollup analytics unavailable" description={usageResult.reason} /></section> : null}
@@ -75,6 +75,8 @@ export function CodexCommandPage({ data, section }: Readonly<{ data: CodexData; 
         {latest ? <div className="latest-session"><strong>{latest.models[0] ?? "Model unavailable"}</strong><span>{latest.reasoningEfforts[0] ?? "Effort unavailable"}</span><p>{latest.eventCount.toLocaleString()} events · {latest.toolExecutions.toLocaleString()} tools · {latest.errorCount.toLocaleString()} errors</p><small>{formatDate(latest.firstSeenAt)} → {formatDate(latest.lastSeenAt)}</small></div> : <EmptyState compact title="No session summary" description="No materialized session summary is available in this range." />}
       </Panel>
     </section>
+
+    <MeasuredLedger result={usageResult} range={data.range} />
 
     <div className="command-details">
       <Detail title="Usage & performance" open={detailOpen("usage")}>
@@ -104,6 +106,27 @@ function LiveOperations({ telemetry, latest, summary }: Readonly<{ telemetry: Co
     <dl className="live-facts"><Fact label="Telemetry" value={telemetry.health.status} /><Fact label="Latest events" value={summary?.events.toLocaleString() ?? "Unavailable"} /><Fact label="Approval events" value={compactNumber(summary?.approvals)} /><Fact label="Failed tools" value={compactNumber(summary?.failedTools)} warning={Boolean(summary?.failedTools)} /></dl>
     <div className="live-note"><ShieldCheck size={14} /><span>Privacy-safe live context only. Pending approvals, prompts, commands, and agent graph details are not emitted into this bounded surface.</span></div>
   </div>;
+}
+
+function MeasuredLedger({ result, range }: Readonly<{ result: DataResult<CodexUsageSnapshot>; range: DashboardRange }>) {
+  const fields: Array<{ key: "inputTokens" | "outputTokens" | "cachedInputTokens" | "cacheWriteTokens" | "reasoningTokens" | "toolTokens"; label: string }> = [
+    { key: "inputTokens", label: "Input" },
+    { key: "outputTokens", label: "Output" },
+    { key: "cachedInputTokens", label: "Cached" },
+    { key: "cacheWriteTokens", label: "Cache write" },
+    { key: "reasoningTokens", label: "Reasoning" },
+    { key: "toolTokens", label: "Tool" },
+  ];
+  return <section className="panel usage-ledger">
+    <header><div><span>Measured token ledger</span><small>{range.toUpperCase()} · exact emitted fields</small></div><span className="ledger-badge">No fabricated cost</span></header>
+    <div className="usage-ledger-body">
+      <div className="usage-table-wrap"><table><thead><tr><th>Field</th><th>Exact tokens</th><th>Sample state</th></tr></thead><tbody>{fields.map((field) => {
+        const metric = result.status === "connected" ? result.data[field.key] : undefined;
+        return <tr key={field.key}><th scope="row">{field.label}</th><td>{metric ? metricLabel(metric) : "Unavailable"}</td><td>{metric?.availability === "available" ? `${metric.sampleCount.toLocaleString()} samples` : metric?.availability === "no-samples" ? "No samples" : "Unavailable"}</td></tr>;
+      })}</tbody></table></div>
+      <aside className="ledger-note"><span>Billing equivalent</span><strong>Unavailable</strong><p>No pricing source is configured. The dashboard reports measured token counts exactly and does not turn operational telemetry into a bill.</p></aside>
+    </div>
+  </section>;
 }
 
 export function GitHubCommandPage({ data, section }: Readonly<{ data: GitHubData; section?: string }>) {
@@ -145,7 +168,12 @@ function Forensics({ result }: Readonly<{ result: NonNullable<CodexData["forensi
 }
 function EventRecord({ event }: Readonly<{ event: CodexActivityRecord }>) { return <div><span><b>{event.eventName}</b><small>{event.category} · {event.model ?? "model unavailable"}</small></span><span>{event.toolName ?? event.status ?? "No additional safe dimension"}</span><time>{formatAge(event.occurredAt)}</time></div>; }
 function RangeLinks({ range }: Readonly<{ range: DashboardRange }>) { return <div className="command-range">{(["24h", "7d", "30d"] as DashboardRange[]).map((item) => <Link className={range === item ? "active" : ""} href={`/?range=${item}`} key={item}>{item.toUpperCase()}</Link>)}</div>; }
-function Metric({ label, value, text, note }: Readonly<{ label: string; value?: number; text?: string; note?: string }>) { return <article className="command-metric"><span>{label}</span><strong>{text ?? compactNumber(value)}</strong>{note ? <small>{note}</small> : null}</article>; }
+function Metric({ label, value, text, note, href, tooltip }: Readonly<{ label: string; value?: number; text?: string; note?: string; href?: string; tooltip?: string }>) {
+  const exact = text ?? (value === undefined ? "Unavailable" : value.toLocaleString("en-US"));
+  const body = <><span>{label}</span><strong>{text ?? compactNumber(value)}</strong>{note ? <small>{note}</small> : null}</>;
+  const props = { className: `command-metric ${href ? "command-metric-link" : ""}`, "data-tooltip": tooltip ?? `${label}: ${exact}`, title: tooltip ?? `${label}: ${exact}` };
+  return href ? <Link {...props} href={href}>{body}</Link> : <article {...props}>{body}</article>;
+}
 function Panel({ title, icon: Icon, note, className, children }: Readonly<{ title: string; icon: typeof Activity; note?: string; className?: string; children: React.ReactNode }>) { return <section className={`panel command-panel ${className ?? ""}`}><header><span><Icon size={14} />{title}</span>{note ? <small>{note}</small> : null}</header>{children}</section>; }
 function Fact({ label, value, warning }: Readonly<{ label: string; value: string; warning?: boolean }>) { return <div className={warning ? "warning" : ""}><dt>{label}</dt><dd>{value}</dd></div>; }
 function Detail({ title, open, children }: Readonly<{ title: string; open?: boolean; children: React.ReactNode }>) { return <details className="command-detail" open={open}><summary>{title}<span>+</span></summary><div>{children}</div></details>; }

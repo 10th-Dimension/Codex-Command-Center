@@ -9,11 +9,11 @@ export function TokenTrend({ result, compact = false }: Readonly<{ result: DataR
   const width = 600, height = compact ? 94 : 150, top = 8, bottom = 18, chartHeight = height - top - bottom; const totals = result.data.map((point) => series.reduce((sum, item) => sum + (point[item.key] ?? 0), 0)); const maximum = Math.max(...totals, 1);
   if (!totals.some(Boolean)) return <div className="chart-empty">No token samples in this range</div>;
   const x = (index: number) => result.data.length === 1 ? width / 2 : index / (result.data.length - 1) * width; const y = (value: number) => top + chartHeight - value / maximum * chartHeight;
-  return <div className="token-chart"><svg aria-label="Token activity trend" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}>{[0, .5, 1].map((part) => <line className="chart-grid-line" key={part} x1="0" x2={width} y1={top + chartHeight * part} y2={top + chartHeight * part} />)}{series.map((item) => <polyline fill="none" key={item.key} points={result.data.map((point, index) => `${x(index)},${y(point[item.key] ?? 0)}`).join(" ")} stroke={item.color} strokeLinecap="round" strokeLinejoin="round" strokeWidth={compact ? 2 : 2.4} vectorEffect="non-scaling-stroke" />)}</svg>{!compact ? <div className="chart-legend">{series.map((item) => <span key={item.key}><i style={{ "--legend-color": item.color } as CSSProperties} />{item.label}</span>)}</div> : null}</div>;
+  return <div className="token-chart"><svg aria-label="Token activity trend" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}>{[0, .5, 1].map((part) => <line className="chart-grid-line" key={part} x1="0" x2={width} y1={top + chartHeight * part} y2={top + chartHeight * part} />)}{series.map((item) => <polyline fill="none" key={item.key} points={result.data.map((point, index) => `${x(index)},${y(point[item.key] ?? 0)}`).join(" ")} stroke={item.color} strokeLinecap="round" strokeLinejoin="round" strokeWidth={compact ? 2 : 2.4} vectorEffect="non-scaling-stroke" />)}{result.data.map((point, index) => <circle className="chart-point" cx={x(index)} cy={y(totals[index])} fill="#0e1419" key={`${point.label}-${index}`} r={compact ? 3 : 4} stroke="#dffaff" strokeWidth="1.5" tabIndex={0}><title>{activityTooltip(point, totals[index])}</title></circle>)}</svg>{!compact ? <div className="chart-legend">{series.map((item) => <span key={item.key}><i style={{ "--legend-color": item.color } as CSSProperties} />{item.label}</span>)}</div> : null}</div>;
 }
 export function Distribution({ result, empty = "No observations" }: Readonly<{ result: DataResult<CodexTelemetryBreakdown[]>; empty?: string }>) {
   if (result.status === "unavailable") return <div className="distribution-empty">Unavailable</div>; if (!result.data.length) return <div className="distribution-empty">{empty}</div>;
-  return <div className="distribution-list">{distributionShares(result.data).slice(0, 5).map((item, index) => <div className="distribution-row" key={item.label}><div><span>{item.label}</span><b>{item.share}%</b></div><div className="distribution-track"><i style={{ width: `${item.share}%`, opacity: 1 - index * .11 }} /></div></div>)}</div>;
+  return <div className="distribution-list">{distributionShares(result.data).slice(0, 5).map((item, index) => { const tooltip = `${item.label} · ${item.count.toLocaleString()} observed events · ${item.share}% of returned events`; return <div className="distribution-row" data-tooltip={tooltip} key={item.label} title={tooltip}><div><span>{item.label}</span><b>{item.share}%</b></div><div className="distribution-track"><i style={{ width: `${item.share}%`, opacity: 1 - index * .11 }} /></div></div>; })}</div>;
 }
 
 export function ActivityHeatmap({ result }: Readonly<{ result: DataResult<CodexTelemetryTrendPoint[]> }>) {
@@ -23,7 +23,8 @@ export function ActivityHeatmap({ result }: Readonly<{ result: DataResult<CodexT
   return <div className="activity-heatmap" aria-label="Observed Codex activity by time bucket" role="img">
     {result.data.map((point, index) => {
       const level = point.events === 0 ? 0 : Math.min(4, Math.ceil(point.events / maximum * 4));
-      return <span aria-label={`${point.label}: ${point.events.toLocaleString()} events`} className={`activity-cell activity-cell-${level}`} key={`${point.label}-${index}`} title={`${point.label} · ${point.events.toLocaleString()} events`} />;
+      const tooltip = activityTooltip(point);
+      return <span aria-label={tooltip} className={`activity-cell activity-cell-${level}`} data-tooltip={tooltip} key={`${point.label}-${index}`} tabIndex={0} title={tooltip} />;
     })}
   </div>;
 }
@@ -46,4 +47,12 @@ export function TokenComposition({ result }: Readonly<{ result: DataResult<Codex
     <div className="composition-bar" aria-label="Measured token composition" role="img">{items.map((item) => <i key={item.key} style={{ background: item.color, width: `${item.value / total * 100}%` }} title={`${item.label}: ${item.value.toLocaleString()}`} />)}</div>
     <div className="composition-list">{items.map((item) => <div className="composition-row" key={item.key}><span><i style={{ background: item.color }} />{item.label}</span><b>{item.value.toLocaleString()}</b><small>{Math.round(item.value / total * 100)}%</small></div>)}</div>
   </div>;
+}
+
+function activityTooltip(point: CodexTelemetryTrendPoint, total?: number) {
+  const measuredTokens = [point.inputTokens, point.outputTokens, point.cachedTokens, point.cacheWriteTokens, point.reasoningTokens, point.toolTokens].map((value) => value ?? 0).reduce<number>((sum, value) => sum + value, 0);
+  const observedTokens = total ?? measuredTokens;
+  const parts = [`${point.label}`, `${point.events.toLocaleString()} events`, `${observedTokens.toLocaleString()} measured tokens`, `${point.toolExecutions.toLocaleString()} completed tools`];
+  if (point.errors) parts.push(`${point.errors.toLocaleString()} errors`);
+  return parts.join(" · ");
 }

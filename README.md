@@ -2,6 +2,8 @@
 
 Codex Command Center is an open-source observability and developer-operations dashboard for Codex, GitHub, usage telemetry, account quota, delivery health, and development activity. It combines privacy-filtered OpenTelemetry history, resilient local buffering, real-time local Codex account data, and a native Windows overlay.
 
+The product is designed as one cohesive command center: the website is the deep Usage and Operations workspace, while Codex Live is its always-available companion. The shared visual language carries measured KPI cards, density and trend views, exact-value hover details, model and reasoning breakdowns, latest-session context, delivery health, and privacy-safe observed operations from the full dashboard into the compact Windows surface. The implementation uses the repository's own provider contracts, materialized snapshots, and native overlay host; it does not treat operational telemetry as billing data or fabricate live agent state.
+
 The project has two related product surfaces and one shared server/provider architecture:
 
 - **Codex Command Center website:** the full Next.js 16 observability dashboard, deployed through vinext on Cloudflare Workers.
@@ -194,7 +196,7 @@ Usage reports only token counts legitimately emitted by telemetry: input, output
 
 ## Website and native overlay
 
-The website remains the analysis surface. Its main Codex view opens with a measured KPI ribbon, token activity trend and density map, token composition, model/reasoning distributions, latest-session context, and a bounded live-operations card. It does not estimate monetary cost or claim live agent state that telemetry did not emit. Codex Live is intentionally smaller: it prioritizes the latest model and reasoning effort actually observed in telemetry, emitted token classes, TTFT, tool executions/failures, telemetry freshness, local-relay reachability, and—in Expanded mode—compact distributions and delivery health. It does not claim that a last-observed model is still active, and it does not attempt to reproduce the full dashboard.
+The website is the deep Usage and Operations workspace. Its main Codex view opens with a measured KPI ribbon, token activity trend and density map, token composition, model/reasoning distributions, latest-session context, and a bounded live-operations card. KPI cards link to their bounded detail sections; trend points, activity cells, distribution rows, and metrics expose exact observed values on hover and keyboard focus; and the measured-token ledger shows the emitted fields and sample state. It does not estimate monetary cost or claim live agent state that telemetry did not emit. Codex Live is the always-available companion: it prioritizes the latest model and reasoning effort actually observed in telemetry, emitted token classes, TTFT, tool executions/failures, telemetry freshness, local-relay reachability, and—in Expanded mode—compact distributions, delivery health, and an observed-operations rail. It does not claim that a last-observed model is still active, and it does not attempt to reproduce the full dashboard.
 
 The retained `/overlay` route remains a browser-based preview/reference surface. The actual companion in `desktop/overlay/` packages its own Vite/React frontend inside a frameless Tauri window; it does not open that route in Edge and does not require Edge or a local development server during normal use.
 

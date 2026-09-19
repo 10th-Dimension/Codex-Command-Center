@@ -115,9 +115,14 @@ test("Codex page gates raw forensics and keeps the overview bounded", async () =
   assert.match(source, /Usage & performance/);
   assert.match(source, /Data health/);
   assert.match(source, /LiveOperations/);
+  assert.match(source, /MeasuredLedger/);
+  assert.match(source, /command-metric-link/);
+  assert.match(source, /Billing equivalent/);
   assert.match(source, /no estimated cost/);
   assert.match(source, /Dashboard writes/);
   assert.match(analytics, /ActivityHeatmap/);
   assert.match(analytics, /TokenComposition/);
+  assert.match(analytics, /data-tooltip/);
+  assert.match(analytics, /chart-point/);
   assert.doesNotMatch(source, /subscription|plan limit|remaining credits/i);
 });

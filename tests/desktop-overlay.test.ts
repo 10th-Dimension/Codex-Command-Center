@@ -65,6 +65,8 @@ test("overlay quick controls reuse supported ranges, layouts, and the existing s
   assert.match(rust, /fn recover_overlay[\s\S]+click_through = false;[\s\S]+lock_position = false;/);
   assert.match(native, /startResizeDragging/);
   assert.match(app, /function ResizeHandles/);
+  assert.match(app, /function ObservationRail/);
+  assert.match(app, /Observed operations/);
   assert.match(app, /Recover movement/);
   assert.match(rust, /DEFAULT_CLICK_THROUGH: &str = "Ctrl\+Shift\+O"/);
   assert.match(main, /cfg_attr\(windows, windows_subsystem = "windows"\)/);
