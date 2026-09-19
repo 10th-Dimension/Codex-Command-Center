@@ -1,3 +1,5 @@
+import type { CodexEquivalentPricing } from "@/lib/telemetry/pricing";
+
 export type ProviderId =
   | "github"
   | "codex"
@@ -402,6 +404,7 @@ export interface CodexTelemetrySnapshot {
     thirtyDay: DataResult<CodexTelemetryTrendPoint[]>;
   };
   usage: DataResult<CodexUsageSnapshot[]>;
+  pricing?: DataResult<CodexEquivalentPricing>;
   categories: DataResult<CodexTelemetryBreakdown[]>;
   models: DataResult<CodexTelemetryBreakdown[]>;
   modelAnalytics: DataResult<CodexTelemetryModelSummary[]>;

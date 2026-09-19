@@ -9,6 +9,7 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { compactNumber, selectTrend, selectUsage, type DashboardRange } from "@/lib/dashboard/analytics";
 import type { getCodexPageData, getGitHubPageData } from "@/lib/dashboard/queries";
 import type { CodexActivityRecord, CodexTelemetrySessionSummary, CodexUsageSnapshot, DataResult, IssueRecord, PullRequestRecord } from "@/lib/providers/types";
+import type { CodexEquivalentPricing } from "@/lib/telemetry/pricing";
 
 type CodexData = Awaited<ReturnType<typeof getCodexPageData>>;
 type GitHubData = Awaited<ReturnType<typeof getGitHubPageData>>;
@@ -17,6 +18,7 @@ type CodexSummary = NonNullable<NonNullable<CodexData["snapshot"]["rollupSummari
 export function CodexCommandPage({ data, section }: Readonly<{ data: CodexData; section?: string }>) {
   const telemetry = data.snapshot;
   const usageResult = selectUsage(telemetry, data.range);
+  const pricingResult: DataResult<CodexEquivalentPricing> = telemetry.pricing ?? { status: "unavailable", source: "codex", reason: "Pricing is not available in this snapshot yet." };
   const trend = selectTrend(telemetry, data.range);
   const usage = usageResult.status === "connected" ? usageResult.data : undefined;
   const summary = telemetry.rollupSummaries?.[data.range];
@@ -54,7 +56,7 @@ export function CodexCommandPage({ data, section }: Readonly<{ data: CodexData; 
 
     <section className="command-overview-grid">
       <Panel className="overview-activity-panel" title="Token activity" icon={Activity} note={data.range.toUpperCase()}>
-        <div className="overview-panel-intro"><span>Measured tokens by time bucket</span><small>{summary?.events.toLocaleString() ?? "—"} events · no monetary estimate</small></div>
+        <div className="overview-panel-intro"><span>Measured tokens by time bucket</span><small>{summary?.events.toLocaleString() ?? "—"} events · standard rates below</small></div>
         <TokenTrend result={trend} />
         <div className="activity-map-heading"><span>Activity density</span><small>Each cell is an observed time bucket</small></div>
         <ActivityHeatmap result={trend} />
@@ -76,7 +78,7 @@ export function CodexCommandPage({ data, section }: Readonly<{ data: CodexData; 
       </Panel>
     </section>
 
-    <MeasuredLedger result={usageResult} range={data.range} />
+    <MeasuredLedger result={usageResult} pricing={pricingResult} range={data.range} />
 
     <div className="command-details">
       <Detail title="Usage & performance" open={detailOpen("usage")}>
@@ -108,7 +110,7 @@ function LiveOperations({ telemetry, latest, summary }: Readonly<{ telemetry: Co
   </div>;
 }
 
-function MeasuredLedger({ result, range }: Readonly<{ result: DataResult<CodexUsageSnapshot>; range: DashboardRange }>) {
+function MeasuredLedger({ result, pricing, range }: Readonly<{ result: DataResult<CodexUsageSnapshot>; pricing: DataResult<CodexEquivalentPricing>; range: DashboardRange }>) {
   const fields: Array<{ key: "inputTokens" | "outputTokens" | "cachedInputTokens" | "cacheWriteTokens" | "reasoningTokens" | "toolTokens"; label: string }> = [
     { key: "inputTokens", label: "Input" },
     { key: "outputTokens", label: "Output" },
@@ -118,15 +120,30 @@ function MeasuredLedger({ result, range }: Readonly<{ result: DataResult<CodexUs
     { key: "toolTokens", label: "Tool" },
   ];
   return <section className="panel usage-ledger">
-    <header><div><span>Measured token ledger</span><small>{range.toUpperCase()} · exact emitted fields</small></div><span className="ledger-badge">No fabricated cost</span></header>
+    <header><div><span>Measured token ledger</span><small>{range.toUpperCase()} · exact emitted fields</small></div><span className="ledger-badge">Official token rates</span></header>
     <div className="usage-ledger-body">
       <div className="usage-table-wrap"><table><thead><tr><th>Field</th><th>Exact tokens</th><th>Sample state</th></tr></thead><tbody>{fields.map((field) => {
         const metric = result.status === "connected" ? result.data[field.key] : undefined;
         return <tr key={field.key}><th scope="row">{field.label}</th><td>{metric ? metricLabel(metric) : "Unavailable"}</td><td>{metric?.availability === "available" ? `${metric.sampleCount.toLocaleString()} samples` : metric?.availability === "no-samples" ? "No samples" : "Unavailable"}</td></tr>;
       })}</tbody></table></div>
-      <aside className="ledger-note"><span>Billing equivalent</span><strong>Unavailable</strong><p>No pricing source is configured. The dashboard reports measured token counts exactly and does not turn operational telemetry into a bill.</p></aside>
+      <ApiEquivalentCard result={pricing} />
     </div>
   </section>;
+}
+
+function ApiEquivalentCard({ result }: Readonly<{ result: DataResult<CodexEquivalentPricing> }>) {
+  if (result.status === "unavailable") {
+    return <aside className="ledger-note pricing-card pricing-unavailable"><span>API-equivalent usage</span><strong>Unavailable</strong><p>{result.reason}</p></aside>;
+  }
+  const pricing = result.data;
+  const statusLabel = pricing.status === "available" ? "Complete coverage" : "Partial coverage";
+  return <aside className={`ledger-note pricing-card pricing-${pricing.status}`}>
+    <div className="pricing-card-heading"><span>API-equivalent usage</span><b>{statusLabel}</b></div>
+    <div className="pricing-primary"><div><small>USD equivalent</small><strong>{pricing.usdEquivalent === undefined ? "Unavailable" : `$${pricing.usdEquivalent}`}</strong></div><div><small>Codex credits</small><strong>{pricing.apiCredits === undefined ? "Unavailable" : pricing.apiCredits}</strong></div></div>
+    <div className="pricing-meta"><span>Coverage <b>{pricing.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}%`}</b></span><span>Models <b>{pricing.modelCount}</b></span></div>
+    {pricing.byModel.length ? <details className="pricing-breakdown"><summary>Inspect model math <span>+</span></summary><div>{pricing.byModel.map((model) => <div className="pricing-model-row" key={model.model}><span><b>{model.displayName}</b><small>{model.model} · {model.eventCount.toLocaleString()} events</small></span><strong>{model.status === "priced" ? `$${model.usdEquivalent}` : "Unpriced"}</strong></div>)}</div></details> : null}
+    <p>{pricing.note} This is a token-rate comparison, not a live account balance or invoice.</p>
+  </aside>;
 }
 
 export function GitHubCommandPage({ data, section }: Readonly<{ data: GitHubData; section?: string }>) {

@@ -5,6 +5,7 @@ import { Activity, Bot, CheckCircle2, ChevronDown, CircleAlert, Settings2, Shiel
 import { compactNumber, formatDuration } from "@/lib/dashboard/analytics";
 import { defaultOverlaySettings, parseOverlaySettings, resolveOverlayLayout, type OverlayLayout, type OverlaySettings } from "@/lib/overlay/settings";
 import type { OverlaySnapshot } from "@/lib/overlay/view-model";
+import type { CodexEquivalentPricing } from "@/lib/telemetry/pricing";
 
 const storageKey = "codex-command-center.overlay-settings.v1";
 
@@ -34,6 +35,7 @@ export function OverlayView({ initialSnapshot }: Readonly<{ initialSnapshot: Ove
       <header className="overlay-header"><div className="overlay-brand"><Activity size={13} /><span>CODEX</span><i /></div><div className="overlay-header-actions"><span>{initialSnapshot.range.toUpperCase()}</span><button aria-expanded={showSettings} aria-label="Overlay settings" onClick={() => setShowSettings(!showSettings)} type="button"><Settings2 size={13} /></button></div></header>
       <section className="overlay-strip-content"><OverlayIdentity session={session} /><OverlayMetric label="Input" value={summary.inputTokens} /><OverlayMetric label="Output" value={summary.outputTokens} stripOptional /><OverlayMetric label="Cached" value={summary.cachedTokens} stripOptional /><OverlayMetric label="Reasoning" value={summary.reasoningTokens} /><OverlayMetric label="Tool" value={summary.toolTokens} stripOptional /><OverlayMetric label="TTFT" value={summary.averageTtftMs} duration /><OverlayMetric label="Tools" value={summary.completedTools} /><div className={`overlay-health ${healthy ? "healthy" : "attention"}`}>{healthy ? <CheckCircle2 size={13} /> : <CircleAlert size={13} />}<span>{healthy ? "Healthy" : "Attention"}</span></div></section>
       <ObservationRail session={session} summary={summary} lastTelemetryAt={initialSnapshot.lastTelemetryAt} />
+      <OverlayPricing pricing={initialSnapshot.pricing} />
       <section className="overlay-expanded-content"><div className="overlay-section-title"><span>Window summary</span><small>{initialSnapshot.range.toUpperCase()}</small></div><div className="overlay-summary-grid"><OverlayMetric label="Sessions" value={summary.sessions} /><OverlayMetric label="Input" value={summary.inputTokens} /><OverlayMetric label="Output" value={summary.outputTokens} /><OverlayMetric label="Cached" value={summary.cachedTokens} /><OverlayMetric label="Reasoning" value={summary.reasoningTokens} /><OverlayMetric label="Tool" value={summary.toolTokens} /></div><div className="overlay-section-title"><span>Latest session</span><small>{session ? relativeTime(session.lastSeenAt) : "No session"}</small></div>{session ? <div className="overlay-session"><OverlayIdentity session={session} /><dl><div><dt>TTFT</dt><dd>{formatDuration(session.averageTtftMs)}</dd></div><div><dt>Tools</dt><dd>{session.completedTools}</dd></div><div><dt>Failures</dt><dd>{session.toolFailures ?? "—"}</dd></div><div><dt>Approvals</dt><dd>{session.approvals}</dd></div></dl></div> : <div className="overlay-empty">No retained session telemetry</div>}<div className="overlay-section-title"><span>Source health</span><small>Operational only</small></div><div className="overlay-health-grid">{Object.entries(initialSnapshot.health).map(([key, status]) => <div key={key}><i className={status} /><span>{key}</span><b>{status}</b></div>)}</div></section>
       {showSettings ? <SettingsPanel settings={settings} update={update} close={() => setShowSettings(false)} /> : null}
     </div>
@@ -42,6 +44,16 @@ export function OverlayView({ initialSnapshot }: Readonly<{ initialSnapshot: Ove
 
 function OverlayIdentity({ session }: Readonly<{ session?: OverlaySnapshot["latestSession"] }>) { return <div className="overlay-identity"><div><Bot size={15} /></div><span><strong>{session?.model ?? "No model"}</strong><small>{session?.reasoningEffort ?? "effort n/a"}</small></span></div>; }
 function OverlayMetric({ label, value, duration, stripOptional }: Readonly<{ label: string; value?: number; duration?: boolean; stripOptional?: boolean }>) { return <div className={`overlay-metric ${stripOptional ? "strip-optional" : ""}`}><span>{label}</span><strong>{duration ? formatDuration(value) : compactNumber(value)}</strong></div>; }
+
+function OverlayPricing({ pricing }: Readonly<{ pricing?: CodexEquivalentPricing }>) {
+  const available = pricing?.status === "available" || pricing?.status === "partial";
+  return <section className={`overlay-pricing ${pricing?.status ?? "unavailable"}`} title={pricing?.note ?? "API-equivalent pricing is unavailable for this window."}>
+    <div><span>API-equivalent usage</span><small>{pricing?.status === "partial" ? "Partial coverage" : pricing?.status === "available" ? "All observed models" : "Unavailable"}</small></div>
+    <strong>{available && pricing?.usdEquivalent !== undefined ? `$${pricing.usdEquivalent}` : "Unavailable"}</strong>
+    <b>{available && pricing?.apiCredits !== undefined ? `${pricing.apiCredits} credits` : "No priced token samples"}</b>
+    <em>{pricing?.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}% covered`}</em>
+  </section>;
+}
 
 function ObservationRail({ session, summary, lastTelemetryAt }: Readonly<{ session?: OverlaySnapshot["latestSession"]; summary: OverlaySnapshot["windowSummary"]; lastTelemetryAt?: string }>) {
   const observedAt = session?.lastSeenAt ?? lastTelemetryAt;

@@ -131,8 +131,8 @@ test("Codex page gates raw forensics and keeps the overview bounded", async () =
   assert.match(source, /LiveOperations/);
   assert.match(source, /MeasuredLedger/);
   assert.match(source, /command-metric-link/);
-  assert.match(source, /Billing equivalent/);
-  assert.match(source, /no monetary estimate/);
+  assert.match(source, /API-equivalent usage/);
+  assert.match(source, /standard rates below/);
   assert.match(source, /Dashboard writes/);
   assert.match(analytics, /ActivityHeatmap/);
   assert.match(analytics, /TokenComposition/);

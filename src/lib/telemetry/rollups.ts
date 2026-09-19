@@ -6,6 +6,7 @@ import type {
 } from "@/lib/providers/types";
 import type { D1DatabaseLike, D1MutationResult, D1PreparedStatementLike, D1ResultLike } from "@/lib/telemetry/database";
 import type { NormalizedTelemetryEvent } from "@/lib/telemetry/normalize";
+import { calculateCodexEquivalentPricing, type CodexEquivalentPricing, type CodexPricingModelUsage } from "@/lib/telemetry/pricing";
 
 export type TelemetryRange = "24h" | "7d" | "30d";
 export const TELEMETRY_RANGES: readonly TelemetryRange[] = ["24h", "7d", "30d"];
@@ -87,6 +88,7 @@ export interface CodexMaterializedSnapshot {
   models: CodexTelemetryBreakdown[];
   reasoningEfforts: CodexTelemetryBreakdown[];
   sessions: CodexTelemetrySessionSummary[];
+  pricing?: CodexEquivalentPricing;
 }
 
 export interface RollupWriteResult {
@@ -350,6 +352,16 @@ interface HourlyRow {
   last_received_at: string | null;
 }
 
+interface ModelPricingRow {
+  label: string;
+  count: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_tokens: number | null;
+  reasoning_tokens: number | null;
+  tool_tokens: number | null;
+  model_count: number;
+}
 interface CountRow { label: string; count: number }
 interface SnapshotRow { range: TelemetryRange; generated_at: string; payload_json: string }
 interface SessionRow {
@@ -406,17 +418,32 @@ export async function buildMaterializedSnapshot(database: D1DatabaseLike, range:
   const cutoff = cutoffFor(range, now);
   const results = await database.batch([
     database.prepare(hourlyQuery(range)).bind(cutoff),
-    database.prepare("SELECT model AS label,SUM(event_count) AS count FROM codex_rollup_model_hourly WHERE hour_start>=? GROUP BY model ORDER BY count DESC LIMIT 8").bind(cutoff),
+    database.prepare("SELECT model AS label,SUM(event_count) AS count,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,SUM(cached_tokens) AS cached_tokens,SUM(reasoning_tokens) AS reasoning_tokens,SUM(tool_tokens) AS tool_tokens,COUNT(*) OVER() AS model_count FROM codex_rollup_model_hourly WHERE hour_start>=? GROUP BY model ORDER BY count DESC LIMIT 64").bind(cutoff),
     database.prepare("SELECT reasoning_effort AS label,SUM(event_count) AS count FROM codex_rollup_reasoning_hourly WHERE hour_start>=? GROUP BY reasoning_effort ORDER BY count DESC LIMIT 8").bind(cutoff),
     database.prepare("SELECT *,COUNT(*) OVER() AS range_session_count FROM codex_session_summary WHERE last_seen_at>=? ORDER BY last_seen_at DESC LIMIT 20").bind(cutoff),
   ]);
   if (results.length !== 4) throw new Error("Telemetry snapshot batch returned an unexpected result count.");
   const hourly = resultRows(results[0] as unknown as D1ResultLike<HourlyRow>);
-  const modelRows = resultRows(results[1] as unknown as D1ResultLike<CountRow>);
+  const modelRows = resultRows(results[1] as unknown as D1ResultLike<ModelPricingRow>);
   const reasoningRows = resultRows(results[2] as unknown as D1ResultLike<CountRow>);
   const sessionRows = resultRows(results[3] as unknown as D1ResultLike<SessionRow>);
   const observed = hourly.length > 0;
   const sourceUpdatedAt = hourly.reduce<string | undefined>((latest, row) => !row.last_received_at || latest && latest >= row.last_received_at ? latest : row.last_received_at, undefined);
+  const pricingModels: CodexPricingModelUsage[] = modelRows.map((row) => ({
+    model: row.label,
+    eventCount: Number(row.count),
+    inputTokens: row.input_tokens,
+    cachedInputTokens: row.cached_tokens,
+    outputTokens: row.output_tokens,
+    reasoningTokens: row.reasoning_tokens,
+    toolTokens: row.tool_tokens,
+  }));
+  const pricing = calculateCodexEquivalentPricing({
+    metrics: { inputTokens: measured(sum(hourly, "input_tokens"), sum(hourly, "input_samples"), observed), cachedTokens: measured(sum(hourly, "cached_tokens"), sum(hourly, "cached_samples"), observed), outputTokens: measured(sum(hourly, "output_tokens"), sum(hourly, "output_samples"), observed) },
+    models: pricingModels,
+    modelCount: Number(modelRows[0]?.model_count ?? modelRows.length),
+    modelsTruncated: Number(modelRows[0]?.model_count ?? modelRows.length) > modelRows.length,
+  });
   const snapshot: CodexMaterializedSnapshot = {
     schemaVersion: 1,
     range,
@@ -439,7 +466,7 @@ export async function buildMaterializedSnapshot(database: D1DatabaseLike, range:
     trend: hourly.map((row) => ({ label: row.label, events: Number(row.event_count), errors: Number(row.error_count),
       toolExecutions: Number(row.completed_tools), inputTokens: Number(row.input_tokens), outputTokens: Number(row.output_tokens),
       cachedTokens: Number(row.cached_tokens), cacheWriteTokens: Number(row.cache_write_tokens), reasoningTokens: Number(row.reasoning_tokens), toolTokens: Number(row.tool_tokens) })),
-    models: modelRows.map((row) => ({ label: row.label, count: Number(row.count) })),
+    models: modelRows.slice(0, 8).map((row) => ({ label: row.label, count: Number(row.count) })),
     reasoningEfforts: reasoningRows.map((row) => ({ label: row.label, count: Number(row.count) })),
     sessions: sessionRows.map((row) => ({ sessionId: row.session_id, projectName: row.project_name ?? undefined,
       models: row.latest_model ? [row.latest_model] : [], reasoningEfforts: row.latest_reasoning_effort ? [row.latest_reasoning_effort] : [],
@@ -449,6 +476,7 @@ export async function buildMaterializedSnapshot(database: D1DatabaseLike, range:
       cachedTokens: Number(row.cached_tokens), cacheWriteTokens: Number(row.cache_write_tokens), reasoningTokens: Number(row.reasoning_tokens),
       toolTokens: Number(row.tool_tokens), averageTtftMs: Number(row.ttft_sample_count) ? Number(row.ttft_sum_ms) / Number(row.ttft_sample_count) : undefined,
       firstSeenAt: row.first_seen_at, lastSeenAt: row.last_seen_at })),
+    pricing,
   };
   return snapshot;
 }
