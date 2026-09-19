@@ -1,15 +1,69 @@
 "use client";
-import type { CSSProperties } from "react";
-import { dashboardRanges, distributionShares, measuredValue, type DashboardRange } from "@/lib/dashboard/analytics";
+import { useState, type CSSProperties } from "react";
+import { compactNumber, dashboardRanges, distributionShares, measuredValue, type DashboardRange } from "@/lib/dashboard/analytics";
 import type { CodexTelemetryBreakdown, CodexTelemetryTrendPoint, CodexUsageSnapshot, DataResult } from "@/lib/providers/types";
 export function RangeSelector({ value, onChange, label = "Time range" }: Readonly<{ value: DashboardRange; onChange: (value: DashboardRange) => void; label?: string }>) { return <div className="range-selector" role="group" aria-label={label}>{dashboardRanges.map((range) => <button aria-pressed={range === value} className={range === value ? "active" : ""} key={range} onClick={() => onChange(range)} type="button">{range.toUpperCase()}</button>)}</div>; }
-const series = [{ key: "inputTokens" as const, label: "Input", color: "#68d8e8" }, { key: "outputTokens" as const, label: "Output", color: "#a78bfa" }, { key: "cachedTokens" as const, label: "Cached", color: "#55d6a9" }, { key: "cacheWriteTokens" as const, label: "Cache write", color: "#7dd3fc" }, { key: "reasoningTokens" as const, label: "Reasoning", color: "#f4b860" }, { key: "toolTokens" as const, label: "Tool", color: "#f472b6" }];
+const tokenFields = ["inputTokens", "outputTokens", "cachedTokens", "cacheWriteTokens", "reasoningTokens", "toolTokens"] as const;
+const displaySeries = { label: "Measured tokens", color: "#d197f1" };
+const MAX_DISPLAY_POINTS = 48;
+
 export function TokenTrend({ result, compact = false }: Readonly<{ result: DataResult<CodexTelemetryTrendPoint[]>; compact?: boolean }>) {
-  if (result.status === "unavailable") return <div className="chart-empty">Token trend unavailable</div>; if (!result.data.length) return <div className="chart-empty">No samples in this range</div>;
-  const width = 600, height = compact ? 94 : 150, top = 8, bottom = 18, chartHeight = height - top - bottom; const totals = result.data.map((point) => series.reduce((sum, item) => sum + (point[item.key] ?? 0), 0)); const maximum = Math.max(...totals, 1);
+  const [activeIndex, setActiveIndex] = useState<number>();
+  if (result.status === "unavailable") return <div className="chart-empty">Token trend unavailable</div>;
+  if (!result.data.length) return <div className="chart-empty">No samples in this range</div>;
+
+  const points = bucketTrendPoints(result.data, compact ? 24 : MAX_DISPLAY_POINTS);
+  const totals = points.map(tokenTotal);
   if (!totals.some(Boolean)) return <div className="chart-empty">No token samples in this range</div>;
-  const x = (index: number) => result.data.length === 1 ? width / 2 : index / (result.data.length - 1) * width; const y = (value: number) => top + chartHeight - value / maximum * chartHeight;
-  return <div className="token-chart"><svg aria-label="Token activity trend" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}>{[0, .5, 1].map((part) => <line className="chart-grid-line" key={part} x1="0" x2={width} y1={top + chartHeight * part} y2={top + chartHeight * part} />)}{series.map((item) => <polyline fill="none" key={item.key} points={result.data.map((point, index) => `${x(index)},${y(point[item.key] ?? 0)}`).join(" ")} stroke={item.color} strokeLinecap="round" strokeLinejoin="round" strokeWidth={compact ? 2 : 2.4} vectorEffect="non-scaling-stroke" />)}{result.data.map((point, index) => <circle className="chart-point" cx={x(index)} cy={y(totals[index])} fill="#0e1419" key={`${point.label}-${index}`} r={compact ? 3 : 4} stroke="#dffaff" strokeWidth="1.5" tabIndex={0}><title>{activityTooltip(point, totals[index])}</title></circle>)}</svg>{!compact ? <div className="chart-legend">{series.map((item) => <span key={item.key}><i style={{ "--legend-color": item.color } as CSSProperties} />{item.label}</span>)}</div> : null}</div>;
+
+  const width = 720;
+  const height = compact ? 104 : 218;
+  const padding = { top: 12, right: 14, bottom: compact ? 12 : 34, left: compact ? 6 : 50 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maximum = Math.max(...totals, 1);
+  const x = (index: number) => padding.left + (points.length === 1 ? plotWidth / 2 : index / (points.length - 1) * plotWidth);
+  const y = (value: number) => padding.top + plotHeight - value / maximum * plotHeight;
+  const activePoint = activeIndex === undefined ? undefined : points[activeIndex];
+  const activeTotal = activeIndex === undefined ? undefined : totals[activeIndex];
+  const labelIndexes = points.length === 1 ? [0] : [0, Math.floor((points.length - 1) / 2), points.length - 1];
+
+  return <div className={`token-chart ${compact ? "token-chart-compact" : ""}`}>
+    <div className="token-chart-frame">
+      <svg aria-label="Measured token activity by time bucket" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}>
+        {[0, .5, 1].map((part) => <g key={part}><line className="chart-grid-line" x1={padding.left} x2={width - padding.right} y1={padding.top + plotHeight * part} y2={padding.top + plotHeight * part} />{!compact ? <text className="chart-axis-label" dominantBaseline="middle" textAnchor="end" x={padding.left - 8} y={padding.top + plotHeight * part}>{compactNumber(maximum * (1 - part))}</text> : null}</g>)}
+        <polyline className="measured-token-line" fill="none" points={points.map((point, index) => `${x(index)},${y(totals[index])}`).join(" ")} stroke={displaySeries.color} strokeLinecap="round" strokeLinejoin="round" strokeWidth={compact ? 2.2 : 2.8} vectorEffect="non-scaling-stroke" />
+        {points.map((point, index) => <circle aria-label={activityTooltip(point, totals[index])} className={`chart-point ${activeIndex === index ? "active" : ""}`} cx={x(index)} cy={y(totals[index])} fill="#10161c" key={`${point.label}-${index}`} onBlur={() => setActiveIndex(undefined)} onFocus={() => setActiveIndex(index)} onMouseEnter={() => setActiveIndex(index)} onMouseLeave={() => setActiveIndex(undefined)} r={compact ? 3 : 4.5} stroke="#effcff" strokeWidth="1.5" tabIndex={0}><title>{activityTooltip(point, totals[index])}</title></circle>)}
+        {!compact ? labelIndexes.map((index) => <text className="chart-x-label" key={`${points[index].label}-${index}`} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} x={x(index)} y={height - 10}>{points[index].label}</text>) : null}
+      </svg>
+      {!compact ? <div aria-live="polite" className={`token-chart-tooltip ${activePoint ? "visible" : ""}`}>{activePoint && activeTotal !== undefined ? activityTooltip(activePoint, activeTotal) : "Hover or focus a point for the exact bucket"}</div> : null}
+    </div>
+    {!compact ? <div className="chart-legend"><span><i style={{ "--legend-color": displaySeries.color } as CSSProperties} />{displaySeries.label}</span><small>{points.length < result.data.length ? `Grouped into ${points.length} display buckets from ${result.data.length} samples` : "Each point is an exact returned time bucket"}</small></div> : null}
+  </div>;
+}
+
+export function bucketTrendPoints(points: CodexTelemetryTrendPoint[], maximumPoints = MAX_DISPLAY_POINTS): CodexTelemetryTrendPoint[] {
+  if (points.length <= maximumPoints) return points;
+  const bucketSize = Math.ceil(points.length / maximumPoints);
+  const buckets: CodexTelemetryTrendPoint[] = [];
+  for (let start = 0; start < points.length; start += bucketSize) {
+    const group = points.slice(start, start + bucketSize);
+    buckets.push({
+      label: group.length === 1 ? group[0].label : `${group[0].label} – ${group[group.length - 1].label}`,
+      events: group.reduce((sum, point) => sum + point.events, 0),
+      errors: group.reduce((sum, point) => sum + point.errors, 0),
+      toolExecutions: group.reduce((sum, point) => sum + point.toolExecutions, 0),
+      ...Object.fromEntries(tokenFields.map((field) => {
+        const values = group.map((point) => point[field]).filter((value): value is number => typeof value === "number");
+        return [field, values.length ? values.reduce((sum, value) => sum + value, 0) : undefined];
+      })),
+    });
+  }
+  return buckets;
+}
+
+function tokenTotal(point: CodexTelemetryTrendPoint) {
+  return tokenFields.reduce((sum, field) => sum + (point[field] ?? 0), 0);
 }
 export function Distribution({ result, empty = "No observations" }: Readonly<{ result: DataResult<CodexTelemetryBreakdown[]>; empty?: string }>) {
   if (result.status === "unavailable") return <div className="distribution-empty">Unavailable</div>; if (!result.data.length) return <div className="distribution-empty">{empty}</div>;

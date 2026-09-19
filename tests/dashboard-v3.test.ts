@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { bucketTrendPoints } from "../src/components/dashboard/analytics-ui";
 import { averageTtft, distributionShares, latestSession, measuredLabel, parseDashboardRange, selectTrend, selectUsage } from "../src/lib/dashboard/analytics";
 import type { DashboardSnapshot } from "../src/lib/dashboard/view-model";
 import { defaultOverlaySettings, isSafeHexColor, parseOverlaySettings, resolveOverlayLayout } from "../src/lib/overlay/settings";
@@ -41,6 +42,19 @@ test("range selection maps only valid dashboard windows", () => {
   const trend = selectTrend(codex, "24h");
   assert.equal(usage.status === "connected" ? usage.data.sessionsWithUsage : -1, 4);
   assert.equal(trend.status === "connected" ? trend.data[0].toolExecutions : -1, 3);
+});
+
+test("trend display grouping preserves exact totals and activity counts", () => {
+  const grouped = bucketTrendPoints([
+    { label: "00:00", events: 1, errors: 0, toolExecutions: 1, inputTokens: 2 },
+    { label: "01:00", events: 2, errors: 1, toolExecutions: 0, inputTokens: 3 },
+    { label: "02:00", events: 4, errors: 0, toolExecutions: 2, outputTokens: 5 },
+    { label: "03:00", events: 8, errors: 2, toolExecutions: 3, outputTokens: 7 },
+  ], 2);
+  assert.deepEqual(grouped, [
+    { label: "00:00 – 01:00", events: 3, errors: 1, toolExecutions: 1, inputTokens: 5, outputTokens: undefined, cachedTokens: undefined, cacheWriteTokens: undefined, reasoningTokens: undefined, toolTokens: undefined },
+    { label: "02:00 – 03:00", events: 12, errors: 2, toolExecutions: 5, inputTokens: undefined, outputTokens: 12, cachedTokens: undefined, cacheWriteTokens: undefined, reasoningTokens: undefined, toolTokens: undefined },
+  ]);
 });
 
 test("metric semantics preserve zero, unavailable, and no samples", () => {
@@ -118,11 +132,24 @@ test("Codex page gates raw forensics and keeps the overview bounded", async () =
   assert.match(source, /MeasuredLedger/);
   assert.match(source, /command-metric-link/);
   assert.match(source, /Billing equivalent/);
-  assert.match(source, /no estimated cost/);
+  assert.match(source, /no monetary estimate/);
   assert.match(source, /Dashboard writes/);
   assert.match(analytics, /ActivityHeatmap/);
   assert.match(analytics, /TokenComposition/);
   assert.match(analytics, /data-tooltip/);
   assert.match(analytics, /chart-point/);
+  assert.match(source, /Measured tokens by time bucket/);
+  assert.match(analytics, /Measured token activity by time bucket/);
+  assert.match(analytics, /exact returned time bucket/);
   assert.doesNotMatch(source, /subscription|plan limit|remaining credits/i);
+});
+
+test("workspace navigation reflects query sections and returns to the overview", async () => {
+  const source = await readFile(new URL("../src/components/dashboard/topbar.tsx", import.meta.url), "utf8");
+  assert.match(source, /useSearchParams/);
+  assert.match(source, /overviewActive/);
+  assert.match(source, /usageActive/);
+  assert.match(source, /activityActive/);
+  assert.match(source, /aria-current/);
+  assert.match(source, /sectionHref\(\)/);
 });

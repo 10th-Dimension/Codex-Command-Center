@@ -54,7 +54,7 @@ export function CodexCommandPage({ data, section }: Readonly<{ data: CodexData; 
 
     <section className="command-overview-grid">
       <Panel className="overview-activity-panel" title="Token activity" icon={Activity} note={data.range.toUpperCase()}>
-        <div className="overview-panel-intro"><span>Observed token movement</span><small>{summary?.events.toLocaleString() ?? "—"} events · no estimated cost</small></div>
+        <div className="overview-panel-intro"><span>Measured tokens by time bucket</span><small>{summary?.events.toLocaleString() ?? "—"} events · no monetary estimate</small></div>
         <TokenTrend result={trend} />
         <div className="activity-map-heading"><span>Activity density</span><small>Each cell is an observed time bucket</small></div>
         <ActivityHeatmap result={trend} />

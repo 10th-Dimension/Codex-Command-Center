@@ -747,7 +747,7 @@ fn apply_effect(window: &WebviewWindow, requested: &str) -> String {
 fn layout_size(layout: &str) -> Option<PhysicalSize<u32>> {
     match layout {
         "mini" => Some(PhysicalSize::new(300, 150)),
-        "standard" => Some(PhysicalSize::new(360, 250)),
+        "standard" => Some(PhysicalSize::new(430, 320)),
         "expanded" => Some(PhysicalSize::new(430, 500)),
         "strip" => Some(PhysicalSize::new(600, 90)),
         _ => None,
@@ -842,6 +842,15 @@ fn ensure_window_visible(window: &WebviewWindow) -> Result<(), String> {
         position_corner(window, "top-right")?;
     }
     Ok(())
+}
+
+fn migrate_legacy_standard_size(window: &WebviewWindow) {
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    if size.width == 360 && size.height == 250 {
+        let _ = window.set_size(PhysicalSize::new(430, 320));
+    }
 }
 
 fn register_shortcuts(
@@ -1288,6 +1297,7 @@ pub fn run() {
             reconcile_relay(app.handle(), chatgpt_running);
             start_chatgpt_watcher(app.handle().clone());
             if let Some(window) = app.get_webview_window("main") {
+                migrate_legacy_standard_size(&window);
                 let _ = ensure_window_visible(&window);
                 let should_show = with_state(app.handle(), |state| {
                     !state.follow_chatgpt || state.chatgpt_running
