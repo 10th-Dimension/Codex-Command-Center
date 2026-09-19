@@ -320,8 +320,26 @@ test("ingestion batches writes, deduplicates retries, and runs retention cleanup
   assert.equal(first.headers.get("x-codex-telemetry-ingest-requests"), "1");
   assert.equal(first.headers.get("x-codex-telemetry-snapshot-rebuilds"), "3");
   assert.equal(second.headers.get("x-codex-telemetry-snapshot-rebuilds"), "0");
+  assert.equal(second.headers.get("x-codex-telemetry-rollups"), "skipped-no-new-events");
+  assert.equal(second.headers.get("x-codex-telemetry-cleanup-deletes"), "0");
   const stored = JSON.stringify(database.insertedValues);
   assert.doesNotMatch(stored, /must-never-appear|authorization|private prompt|private output/);
+});
+
+test("duplicate-only retries skip maintenance even when the maintenance interval is eligible", async () => {
+  const database = new MetadataD1();
+  const options = { database, ingestKey, retentionDays: 30, now: () => new Date(now), maintenanceIntervalMs: 0 };
+  const first = await handleTelemetryIngest(requestFor(jsonPayload()), options);
+  const second = await handleTelemetryIngest(requestFor(jsonPayload()), options);
+
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.equal(database.rawDeleteCount, 1);
+  assert.equal(second.headers.get("x-codex-telemetry-rollups"), "skipped-no-new-events");
+  assert.equal(second.headers.get("x-codex-telemetry-rollup-upserts"), "0");
+  assert.equal(second.headers.get("x-codex-telemetry-snapshot-rebuilds"), "0");
+  assert.equal(second.headers.get("x-codex-telemetry-cleanup-deletes"), "0");
+  assert.equal(second.headers.get("x-codex-telemetry-d1-rows-written"), "1", "only the duplicate-aware insert statement was observed");
 });
 
 test("malformed OTLP protobuf is rejected without a D1 write", async () => {

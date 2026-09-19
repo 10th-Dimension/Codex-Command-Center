@@ -54,7 +54,7 @@ function safeJsonError(status: number, code: string) {
 function successResponse(contentType: string, diagnostics: {
   accepted: number;
   duplicateCount: number;
-  rollups: "updated" | "schema-unavailable";
+  rollups: "updated" | "schema-unavailable" | "skipped-no-new-events";
   rollupUpserts: number;
   sessionSummaryUpserts: number;
   snapshotRebuilds: number;
@@ -159,6 +159,23 @@ export async function handleTelemetryIngest(request: Request, options: Telemetry
     const normalized = await normalizeOtlpRecords(records, now.toISOString(), { replay: request.headers.get("x-codex-telemetry-replay") === "1" });
     const insertion = await insertTelemetryEventsDetailed(options.database, normalized);
     let d1RowsWritten = insertion.rowsWritten;
+
+    // A retry still needs the duplicate-aware insert above, but it must not
+    // reopen the maintenance path. This keeps exporter retries from paying
+    // for cleanup queries or snapshot rewrites when no new evidence arrived.
+    if (insertion.inserted === 0) {
+      return successResponse(contentType, {
+        accepted: 0,
+        duplicateCount: normalized.length,
+        rollups: "skipped-no-new-events",
+        rollupUpserts: 0,
+        sessionSummaryUpserts: 0,
+        snapshotRebuilds: 0,
+        cleanupDeletes: 0,
+        ...(d1RowsWritten === undefined ? {} : { d1RowsWritten }),
+      });
+    }
+
     let rollupState: "updated" | "schema-unavailable" = "updated";
     let rollupUpserts = 0;
     let sessionSummaryUpserts = 0;
