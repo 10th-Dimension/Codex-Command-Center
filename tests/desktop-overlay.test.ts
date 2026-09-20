@@ -88,6 +88,8 @@ test("overlay quick controls reuse supported ranges, layouts, and the existing s
   assert.match(app, /function ObservationRail/);
   assert.match(app, /Observed operations/);
   assert.match(app, /Snapshot unavailable/);
+  assert.match(app, /overlayCache/);
+  assert.match(app, /Snapshot stale · showing last good data/);
   assert.match(app, /Recover movement/);
   assert.match(workflow, /tauri -- build --debug --no-bundle/);
   assert.match(rust, /DEFAULT_CLICK_THROUGH: &str = "Ctrl\+Shift\+O"/);

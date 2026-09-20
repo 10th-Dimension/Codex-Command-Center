@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createCodexAccountService, discoverCodexExecutable, unavailableCodexAccount, type CodexAccountProvider } from "./codex-app-server-client";
 import { defaultTelemetrySpoolDirectory, TelemetrySpool, type TelemetryBufferHealth, type TelemetrySpoolContentType, type TelemetrySpoolReplayResult } from "./telemetry-spool";
 import { sanitizeTelemetryPayload } from "./telemetry-spool-payload";
-import type { CodexAccountSnapshot } from "../src/lib/overlay/contracts";
+import type { CodexAccountSnapshot, OverlayCacheState } from "../src/lib/overlay/contracts";
 
 export const TELEMETRY_RELAY_HOST = "127.0.0.1";
 export const TELEMETRY_RELAY_PORT = 14318;
@@ -24,6 +24,7 @@ export const ACCOUNT_RELAY_PATH = "/v1/account";
 export const ACCOUNT_MAX_BYTES = 65_536;
 export const TELEMETRY_REPLAY_BACKOFF_DEFAULT_MS = 5_000;
 export const OVERLAY_RANGES = ["24h", "7d", "30d"] as const;
+const OVERLAY_CACHE_STATES = ["fresh", "upstream", "stale"] as const;
 export type OverlayRange = typeof OVERLAY_RANGES[number];
 
 const environmentNames = [
@@ -101,6 +102,7 @@ export function isSafeOverlayPayload(value: unknown): value is Record<string, un
   const root = value as Record<string, unknown>;
   if (typeof root.generatedAt !== "string" || !OVERLAY_RANGES.includes(root.range as OverlayRange)) return false;
   if (!root.health || typeof root.health !== "object" || !root.windowSummary || typeof root.windowSummary !== "object") return false;
+  if (root.overlayCache !== undefined && !OVERLAY_CACHE_STATES.includes(root.overlayCache as OverlayCacheState)) return false;
   if (root.telemetryBuffer !== undefined && !isSafeTelemetryBufferPayload(root.telemetryBuffer)) return false;
   const pending: unknown[] = [root];
   let visited = 0;
@@ -376,8 +378,8 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
     return isSafeCodexAccountPayload(snapshot) ? snapshot : unavailableCodexAccount("error");
   }
 
-  async function overlayBody(payload: Record<string, unknown>) {
-    const finalPayload = { ...payload, codexAccount: accountSnapshot(), telemetryBuffer: await spool.health() };
+  async function overlayBody(payload: Record<string, unknown>, overlayCache: OverlayCacheState) {
+    const finalPayload = { ...payload, overlayCache, codexAccount: accountSnapshot(), telemetryBuffer: await spool.health() };
     if (!isSafeOverlayPayload(finalPayload)) throw new Error("unsafe_overlay_payload");
     const body = new TextEncoder().encode(JSON.stringify(finalPayload));
     if (body.byteLength > OVERLAY_MAX_BYTES) throw new Error("overlay_response_too_large");
@@ -468,17 +470,17 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
       const cached = overlayCache.get(range);
       if (cached && now() - cached.fetchedAt < overlayRefreshMs) {
         response.writeHead(200, { "content-type": "application/json; charset=utf-8", "x-codex-overlay-cache": "fresh" });
-        response.end(await overlayBody(cached.payload));
+        response.end(await overlayBody(cached.payload, "fresh"));
         return;
       }
       try {
-        const body = await overlayBody(await fetchOverlay(range));
+        const body = await overlayBody(await fetchOverlay(range), "upstream");
         response.writeHead(200, { "content-type": "application/json; charset=utf-8", "x-codex-overlay-cache": "upstream" });
         response.end(body);
       } catch {
         if (cached) {
           response.writeHead(200, { "content-type": "application/json; charset=utf-8", "x-codex-overlay-cache": "stale" });
-          response.end(await overlayBody(cached.payload));
+          response.end(await overlayBody(cached.payload, "stale"));
           return;
         }
         response.writeHead(502, { "content-type": "application/json" });
