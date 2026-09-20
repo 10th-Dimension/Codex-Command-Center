@@ -78,7 +78,7 @@ export async function insertTelemetryEvents(database: D1DatabaseLike, events: No
 export async function deleteExpiredTelemetry(database: D1DatabaseLike, retentionDays: number, now: Date): Promise<D1MutationResult> {
   const cutoff = new Date(now.getTime() - retentionDays * 86_400_000).toISOString();
   const result = await database.prepare(`
-    DELETE FROM codex_telemetry_events
+    DELETE FROM codex_telemetry_events INDEXED BY sqlite_autoindex_codex_telemetry_events_1
     WHERE id IN (
       SELECT id
       FROM codex_telemetry_events

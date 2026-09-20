@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    window::{Effect, EffectsBuilder},
+    window::EffectsBuilder,
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartExt};
@@ -728,14 +728,14 @@ fn recover_overlay(app: AppHandle) -> Result<(), String> {
 }
 
 fn apply_effect(window: &WebviewWindow, requested: &str) -> String {
-    let result = match requested {
-        "mica" => window.set_effects(EffectsBuilder::new().effect(Effect::Mica).build()),
-        "acrylic" => window.set_effects(EffectsBuilder::new().effect(Effect::Acrylic).build()),
-        "solid" | "translucent" => {
-            window.set_effects(EffectsBuilder::new().clear_effects().build())
-        }
-        _ => return "translucent".into(),
-    };
+    if !matches!(requested, "mica" | "acrylic" | "solid" | "translucent") {
+        return "translucent".into();
+    }
+
+    // Windows changes native Mica/Acrylic tint when a window gains or loses focus.
+    // The web surface already renders each named appearance, so keep the native
+    // backdrop clear to make the configured opacity stable in both states.
+    let result = window.set_effects(EffectsBuilder::new().clear_effects().build());
     if result.is_ok() {
         requested.into()
     } else {

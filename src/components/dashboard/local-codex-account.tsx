@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Gauge, RefreshCw } from "lucide-react";
+import { Gauge, RefreshCw } from "lucide-react";
 
+import { AccountActivityPanel } from "@/components/dashboard/account-activity";
 import { absoluteResetTime, estimateUsagePace, isCodexAccountSnapshot, quotaFreshness, resetCountdown } from "@/lib/overlay/account";
 import type { CodexAccountSnapshot, CodexQuotaLimit, CodexQuotaWindow } from "@/lib/overlay/contracts";
 
 const LOCAL_ACCOUNT_URL = "http://127.0.0.1:14318/v1/account";
 const LOCAL_REFRESH_MS = 45_000;
 
-export function LocalCodexAccount() {
+export function LocalCodexAccount({ showActivity = true }: Readonly<{ showActivity?: boolean }>) {
   const [snapshot, setSnapshot] = useState<CodexAccountSnapshot>();
   const [unavailable, setUnavailable] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -43,23 +44,25 @@ export function LocalCodexAccount() {
   const windows = useMemo(() => snapshot?.limits.flatMap((limit) => limit.windows.map((window) => ({ limit, window }))) ?? [], [snapshot]);
   const activity = snapshot?.activity;
 
-  return <section className="local-account panel">
-    <header>
-      <span><Gauge size={14} /> Account quota</span>
-      <small className={`local-account-freshness ${freshness.state}`}>{freshness.label}</small>
-    </header>
-    {!snapshot || unavailable || snapshot.status === "unavailable" || snapshot.status === "error" ? <div className="local-account-empty">
-      <RefreshCw size={15} /><div><b>Quota unavailable</b><p>Codex Live must be running on this PC. Browser localhost policy may also block this local-only card.</p></div>
-    </div> : <>
-      <div className="local-account-meta">
-        <span>{snapshot.planType ? `${snapshot.planType} plan` : "Plan unavailable"}</span>
-        <span>{snapshot.ordinaryUsageAllowed === false ? "Included usage blocked" : snapshot.ordinaryUsageAllowed === true ? "Included usage available" : "Availability unknown"}</span>
-        {snapshot.resetCredits ? <span>Banked resets: {snapshot.resetCredits.availableCount}</span> : null}
-      </div>
-      {windows.length ? <div className="quota-window-grid">{windows.map(({ limit, window }, index) => <QuotaWindow key={`${limit.limitId ?? "default"}-${window.slot}-${index}`} limit={limit} window={window} now={now} />)}</div> : <div className="local-account-empty"><Gauge size={15} /><div><b>Quota unavailable</b><p>The authenticated account returned no usage windows.</p></div></div>}
-      {activity ? <div className="account-activity"><span><Activity size={12} /> Account Activity</span><b>{activity.lifetimeTokens === undefined ? "Lifetime tokens unavailable" : `${activity.lifetimeTokens.toLocaleString()} lifetime tokens`}</b>{activity.currentStreakDays !== undefined ? <small>{activity.currentStreakDays} day current streak</small> : null}<p>OpenAI backend activity; daily bucket timezone semantics are not assumed.</p></div> : null}
-    </>}
-  </section>;
+  return <>
+    <section className="local-account panel">
+      <header>
+        <span><Gauge size={14} /> Account quota</span>
+        <small className={`local-account-freshness ${freshness.state}`}>{freshness.label}</small>
+      </header>
+      {!snapshot || unavailable || snapshot.status === "unavailable" || snapshot.status === "error" ? <div className="local-account-empty">
+        <RefreshCw size={15} /><div><b>Quota unavailable</b><p>Codex Live must be running on this PC. Browser localhost policy may also block this local-only card.</p></div>
+      </div> : <>
+        <div className="local-account-meta">
+          <span>{snapshot.planType ? `${snapshot.planType} plan` : "Plan unavailable"}</span>
+          <span>{snapshot.ordinaryUsageAllowed === false ? "Included usage blocked" : snapshot.ordinaryUsageAllowed === true ? "Included usage available" : "Availability unknown"}</span>
+          {snapshot.resetCredits ? <span>Banked resets: {snapshot.resetCredits.availableCount}</span> : null}
+        </div>
+        {windows.length ? <div className="quota-window-grid">{windows.map(({ limit, window }, index) => <QuotaWindow key={`${limit.limitId ?? "default"}-${window.slot}-${index}`} limit={limit} window={window} now={now} />)}</div> : <div className="local-account-empty"><Gauge size={15} /><div><b>Quota unavailable</b><p>The authenticated account returned no usage windows.</p></div></div>}
+      </>}
+    </section>
+    {showActivity ? <AccountActivityPanel activity={activity} observedAt={snapshot?.activityObservedAt} /> : null}
+  </>;
 }
 
 function QuotaWindow({ limit, window, now }: Readonly<{ limit: CodexQuotaLimit; window: CodexQuotaWindow; now: number }>) {

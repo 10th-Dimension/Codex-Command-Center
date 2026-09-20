@@ -16,5 +16,5 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src", "../../src/lib/overlay/contracts.ts"]
+  "include": ["src", "../../src/lib/overlay/contracts.ts", "../../src/lib/telemetry/stacked-token-series.ts", "../../src/lib/telemetry/token-visuals.ts"]
 }

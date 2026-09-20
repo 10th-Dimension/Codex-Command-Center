@@ -4,11 +4,12 @@ import test from "node:test";
 
 import { bucketTrendPoints } from "../src/components/dashboard/analytics-ui";
 import { averageTtft, distributionShares, latestSession, measuredLabel, parseDashboardRange, selectTrend, selectUsage } from "../src/lib/dashboard/analytics";
+import { accountActivityBuckets, accountActivitySummary, formatAccountSeconds, formatBackendDate } from "../src/lib/dashboard/account-activity";
 import type { DashboardSnapshot } from "../src/lib/dashboard/view-model";
 import { defaultOverlaySettings, isSafeHexColor, parseOverlaySettings, resolveOverlayLayout } from "../src/lib/overlay/settings";
 import { composeOverlaySnapshot } from "../src/lib/overlay/view-model";
 import type { CodexTelemetrySnapshot } from "../src/lib/providers/types";
-import { legacySectionRedirects, navigationItems } from "../src/lib/navigation";
+import { codexWorkspaceMode, legacySectionRedirects, navigationItems } from "../src/lib/navigation";
 
 const now = "2026-09-12T12:00:00.000Z";
 const connected = <T>(data: T) => ({ status: "connected" as const, source: "codex" as const, data, asOf: now });
@@ -69,6 +70,21 @@ test("latest session and weighted TTFT remain model-agnostic", () => {
   assert.equal(averageTtft(codex), 250);
 });
 
+test("account activity keeps exact backend buckets and explicit time semantics", () => {
+  const activity = {
+    dailyUsageBuckets: [
+      { startDate: "2026-09-17", tokens: 0 },
+      { startDate: "2026-09-18", tokens: 120 },
+      { startDate: "2026-09-19", tokens: 80 },
+    ],
+    currentStreakDays: 2,
+  };
+  assert.deepEqual(accountActivityBuckets(activity, 7), activity.dailyUsageBuckets);
+  assert.deepEqual(accountActivitySummary(activity.dailyUsageBuckets), { totalTokens: 200, activeDays: 2, peak: { startDate: "2026-09-18", tokens: 120 } });
+  assert.equal(formatBackendDate("2026-09-19"), "Sep 19");
+  assert.equal(formatAccountSeconds(3_661), "1h 1m");
+});
+
 test("model and reasoning distributions accept future labels", () => {
   assert.deepEqual(distributionShares([{ label: "gpt-future", count: 3 }, { label: "gpt-next", count: 1 }]), [{ label: "gpt-future", count: 3, share: 75 }, { label: "gpt-next", count: 1, share: 25 }]);
   assert.deepEqual(distributionShares([{ label: "ultra", count: 2 }, { label: "future-tier", count: 2 }]).map((item) => item.share), [50, 50]);
@@ -109,10 +125,15 @@ test("future subscription seam contains no fabricated implementation", async () 
   assert.doesNotMatch(source, /return\s*\{[^}]*fiveHourUsed/s);
 });
 
-test("dashboard exposes exactly two top-level destinations and maps legacy routes", () => {
-  assert.deepEqual(navigationItems.map((item) => [item.label, item.href]), [["Codex", "/"], ["GitHub", "/github"]]);
+test("dashboard exposes distinct workspace destinations and maps legacy routes", () => {
+  assert.deepEqual(navigationItems.map((item) => [item.label, item.href]), [["Overview", "/"], ["Usage", "/?section=usage"], ["Activity", "/?section=activity"], ["GitHub", "/github"]]);
+  assert.equal(codexWorkspaceMode(), "overview");
+  assert.equal(codexWorkspaceMode("usage"), "usage");
+  assert.equal(codexWorkspaceMode("sessions"), "usage");
+  assert.equal(codexWorkspaceMode("activity"), "activity");
+  assert.equal(codexWorkspaceMode("forensics"), "activity");
   assert.equal(legacySectionRedirects.usage, "/?section=usage");
-  assert.equal(legacySectionRedirects["codex-activity"], "/?section=forensics");
+  assert.equal(legacySectionRedirects["codex-activity"], "/?section=activity");
   assert.equal(legacySectionRedirects.repositories, "/github?section=repository");
   assert.equal(legacySectionRedirects["pull-requests-issues"], "/github?section=pull-requests");
   assert.equal(legacySectionRedirects["build-ci-health"], "/github?section=build-ci");
@@ -132,7 +153,7 @@ test("Codex page gates raw forensics and keeps the overview bounded", async () =
   assert.match(source, /MeasuredLedger/);
   assert.match(source, /command-metric-link/);
   assert.match(source, /API-equivalent usage/);
-  assert.match(source, /standard rates below/);
+  assert.match(source, /open Usage for the full ledger/);
   assert.match(source, /Dashboard writes/);
   assert.match(analytics, /ActivityHeatmap/);
   assert.match(analytics, /TokenComposition/);
@@ -150,6 +171,7 @@ test("workspace navigation reflects query sections and returns to the overview",
   assert.match(source, /overviewActive/);
   assert.match(source, /usageActive/);
   assert.match(source, /activityActive/);
+  assert.match(source, /codexWorkspaceMode/);
   assert.match(source, /aria-current/);
   assert.match(source, /sectionHref\(\)/);
 });

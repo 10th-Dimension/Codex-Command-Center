@@ -63,7 +63,13 @@ try {
       INSERT INTO codex_telemetry_events (id,event_fingerprint,occurred_at,received_at,event_name,event_category,session_id,model,input_tokens,output_tokens,safe_attribute_keys_json,unknown_attribute_keys_json)
       SELECT 'expired-audit-'||n,'expired-fingerprint-'||n,datetime('now','-40 days'),datetime('now'),
         'codex.expired_event','api-request','expired-session-'||(n%20),'audit-model',1,1,'[]','[]' FROM seq`);
-  await query(`DELETE FROM codex_telemetry_events WHERE id IN (
+  const retentionPlan = await query(`EXPLAIN QUERY PLAN DELETE FROM codex_telemetry_events INDEXED BY sqlite_autoindex_codex_telemetry_events_1 WHERE id IN (
+      SELECT id FROM codex_telemetry_events WHERE occurred_at < datetime('now','-30 days') ORDER BY occurred_at ASC, id ASC LIMIT 500
+    )`);
+  assert.ok(retentionPlan.results.some((row) => /sqlite_autoindex_codex_telemetry_events_1 \(id=\?\)/.test(String(row.detail))), "retention delete must target selected IDs through the primary-key index");
+  assert.ok(retentionPlan.results.some((row) => /idx_codex_telemetry_events_occurred_at/.test(String(row.detail))), "retention selection must use the occurred-at index");
+  assert.ok(!retentionPlan.results.some((row) => /^SCAN codex_telemetry_events$/i.test(String(row.detail))), "retention delete must not scan the full raw table");
+  await query(`DELETE FROM codex_telemetry_events INDEXED BY sqlite_autoindex_codex_telemetry_events_1 WHERE id IN (
       SELECT id FROM codex_telemetry_events WHERE occurred_at < datetime('now','-30 days') ORDER BY occurred_at ASC, id ASC LIMIT 500
     )`);
   const remainingExpired = await query("SELECT COUNT(*) AS remaining FROM codex_telemetry_events WHERE occurred_at < datetime('now','-30 days')");
@@ -96,7 +102,7 @@ try {
 
   console.log("D1 COST AUDIT (isolated local database; production was not accessed)");
   console.log("Stress rows:", 50_000);
-  console.log("Raw retention cleanup: one bounded 500-row batch PASS");
+  console.log("Raw retention cleanup: one indexed 500-row primary-key batch, no outer table scan PASS");
   console.log("Old forensic/raw path: 35 statements; an indexed 50,000-event preflight gate runs before raw telemetry scans and grouped 30-day analytics.");
   console.log("Overlay normal path:", { ...cost(overlay), returned_rows: overlay.results.length, raw_table_touched: false, budget: "<=5 PASS" });
   console.log("Codex normal page:", { ...cost(codexPage), returned_rows: codexPage.results.length, raw_table_touched: false, budget: "<=50 PASS" });

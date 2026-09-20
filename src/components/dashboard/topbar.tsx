@@ -1,9 +1,11 @@
 "use client";
 
-import { Activity, Bot, GitBranch, ListTree, Settings, ShieldCheck, X } from "lucide-react";
+import { BarChart3, GitBranch, LayoutDashboard, ListTree, Settings, ShieldCheck, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useState } from "react";
+
+import { codexWorkspaceMode } from "@/lib/navigation";
 
 export function Topbar() {
   const pathname = usePathname();
@@ -15,20 +17,21 @@ export function Topbar() {
     const query = [rangeQuery, nextSection ? `section=${encodeURIComponent(nextSection)}` : ""].filter(Boolean).join("&");
     return query ? `/?${query}` : "/";
   };
-  const overviewActive = pathname === "/" && !section;
-  const usageActive = pathname === "/" && ["usage", "sessions", "tools", "data-health"].includes(section ?? "");
-  const activityActive = pathname === "/" && section === "forensics";
+  const workspaceMode = codexWorkspaceMode(section ?? undefined);
+  const overviewActive = pathname === "/" && workspaceMode === "overview";
+  const usageActive = pathname === "/" && workspaceMode === "usage";
+  const activityActive = pathname === "/" && workspaceMode === "activity";
   const [settingsOpen, setSettingsOpen] = useState(false);
   return <>
     <header className="command-topbar">
       <Link className="command-brand" href="/"><span>CC</span><div><b>Command Center</b><small>Private developer operations</small></div></Link>
       <nav aria-label="Primary navigation">
         <span className="command-nav-label">Workspace</span>
-        <Link aria-current={overviewActive ? "page" : undefined} className={overviewActive ? "active" : ""} href={sectionHref()}><Activity size={14} />Codex</Link>
+        <Link aria-current={overviewActive ? "page" : undefined} className={overviewActive ? "active" : ""} href={sectionHref()}><LayoutDashboard size={14} />Overview</Link>
+        <Link aria-current={usageActive ? "page" : undefined} className={usageActive ? "active" : ""} href={sectionHref("usage")}><BarChart3 size={14} />Usage</Link>
+        <Link aria-current={activityActive ? "page" : undefined} className={activityActive ? "active" : ""} href={sectionHref("activity")}><ListTree size={14} />Activity</Link>
+        <span className="command-nav-label">Delivery</span>
         <Link aria-current={pathname.startsWith("/github") ? "page" : undefined} className={pathname.startsWith("/github") ? "active" : ""} href="/github"><GitBranch size={14} />GitHub</Link>
-        <span className="command-nav-label">Operations</span>
-        <Link aria-current={usageActive ? "page" : undefined} className={usageActive ? "active" : ""} href={sectionHref("usage")}><Bot size={14} />Usage</Link>
-        <Link aria-current={activityActive ? "page" : undefined} className={activityActive ? "active" : ""} href={sectionHref("forensics")}><ListTree size={14} />Activity</Link>
       </nav>
       <button aria-label="Open settings" className="settings-gear" onClick={() => setSettingsOpen(true)} type="button"><Settings size={16} /></button>
     </header>

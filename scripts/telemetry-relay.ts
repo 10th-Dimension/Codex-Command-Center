@@ -130,6 +130,19 @@ export function isSafeTelemetryBufferPayload(value: unknown): value is Telemetry
   return true;
 }
 
+/**
+ * A response can be structurally safe while still being an outage envelope
+ * (`health: unavailable`, empty summaries, and no telemetry timestamp). Do
+ * not let that envelope replace a previously usable snapshot in the local
+ * cache. The dashboard and overlay read this bounded snapshot, never raw D1.
+ */
+export function isUsableOverlayPayload(value: Record<string, unknown>): boolean {
+  const health = value.health;
+  if (!health || typeof health !== "object" || Array.isArray(health)) return false;
+  const healthRecord = health as Record<string, unknown>;
+  return healthRecord.telemetry === "connected" && healthRecord.d1 === "connected";
+}
+
 export function isSafeCodexAccountPayload(value: unknown): value is CodexAccountSnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const root = value as Record<string, unknown>;
@@ -343,6 +356,10 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
       if (body.byteLength > OVERLAY_MAX_BYTES) throw new Error("overlay_response_too_large");
       const parsed = JSON.parse(new TextDecoder().decode(body)) as unknown;
       if (!isSafeOverlayPayload(parsed)) throw new Error("unsafe_overlay_payload");
+      const cached = overlayCache.get(range);
+      if (cached && isUsableOverlayPayload(cached.payload) && !isUsableOverlayPayload(parsed)) {
+        throw new Error("degraded_overlay_upstream");
+      }
       overlayCache.set(range, { payload: parsed, fetchedAt: now() });
       return parsed;
     })();

@@ -5,8 +5,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { ACCOUNT_MAX_BYTES, ACCOUNT_RELAY_PATH, createTelemetryRelay, isSafeCodexAccountPayload, isSafeOverlayPayload, OVERLAY_UPSTREAM_PATH, TELEMETRY_RELAY_HEALTH_PATH, TELEMETRY_RELAY_HOST } from "../scripts/telemetry-relay";
+import { ACCOUNT_MAX_BYTES, ACCOUNT_RELAY_PATH, createTelemetryRelay, isSafeCodexAccountPayload, isSafeOverlayPayload, isUsableOverlayPayload, OVERLAY_UPSTREAM_PATH, TELEMETRY_RELAY_HEALTH_PATH, TELEMETRY_RELAY_HOST } from "../scripts/telemetry-relay";
 import { TelemetrySpool } from "../scripts/telemetry-spool";
+
+// Keep the suite isolated from the user's running Codex Live relay. The
+// production relay intentionally uses a durable per-user spool, while tests
+// must never consume or assert against that live queue.
+const testStateDirectory = await mkdtemp(join(tmpdir(), "codex-relay-suite-"));
+const previousLocalAppData = process.env.LOCALAPPDATA;
+process.env.LOCALAPPDATA = testStateDirectory;
+test.after(async () => {
+  if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = previousLocalAppData;
+  await rm(testStateDirectory, { recursive: true, force: true });
+});
 
 const relayConfiguration = {
   TELEMETRY_COLLECTOR_URL: "https://command-center.example/api/telemetry/ingest",
@@ -202,6 +214,45 @@ test("overlay relay serves the last safe snapshot when a stale refresh is offlin
   }
 });
 
+test("overlay relay does not let a safe degraded envelope replace a usable cache", async () => {
+  let clock = 1_000;
+  let degraded = false;
+  let calls = 0;
+  const unavailableSnapshot = {
+    ...overlaySnapshot,
+    generatedAt: "2026-09-12T12:00:01.000Z",
+    health: { telemetry: "unavailable", d1: "unavailable", github: "connected", ci: "connected" },
+    windowSummary: {},
+    tokenTrend: [],
+    modelDistribution: [],
+    reasoningDistribution: [],
+  };
+  const relay = createTelemetryRelay(relayConfiguration, {
+    now: () => clock,
+    overlayRefreshMs: 15_000,
+    fetchImpl: async () => {
+      calls += 1;
+      return Response.json(degraded ? unavailableSnapshot : overlaySnapshot);
+    },
+  });
+  const relayPort = await listen(relay);
+  try {
+    const first = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
+    assert.equal(first.status, 200);
+    assert.equal(isUsableOverlayPayload(overlaySnapshot), true);
+    degraded = true;
+    clock += 15_001;
+    const recovered = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
+    assert.equal(recovered.status, 200);
+    assert.equal(recovered.headers.get("x-codex-overlay-cache"), "stale");
+    const body = await recovered.json() as typeof overlaySnapshot & { windowSummary: { inputTokens?: number } };
+    assert.equal(body.windowSummary.inputTokens, 10);
+    assert.equal(calls, 2);
+  } finally {
+    await close(relay);
+  }
+});
+
 test("overlay endpoint validates range, method, and rejects arbitrary proxy paths", async () => {
   let calls = 0;
   const relay = createTelemetryRelay(relayConfiguration, { fetchImpl: async () => { calls += 1; return Response.json(overlaySnapshot); } });
@@ -239,6 +290,8 @@ test("overlay endpoint handles unavailable, timed-out, and invalid upstream resp
 
 test("safe overlay validator rejects credential and private-content fields", () => {
   assert.equal(isSafeOverlayPayload(overlaySnapshot), true);
+  assert.equal(isUsableOverlayPayload(overlaySnapshot), true);
+  assert.equal(isUsableOverlayPayload({ ...overlaySnapshot, health: { ...overlaySnapshot.health, telemetry: "unavailable" } }), false);
   for (const key of ["prompt", "command", "stdout", "authorization", "user.email", "hostname", "secret"]) {
     assert.equal(isSafeOverlayPayload({ ...overlaySnapshot, nested: { [key]: "private" } }), false);
   }
