@@ -181,4 +181,17 @@ test("overlay layouts keep content scrollable when the window is resized", async
   assert.match(styles, /\.overlay-content-mini\s*\{[^}]*overflow:\s*auto/);
   assert.match(styles, /\.overlay-content-strip\s*\{[^}]*display:\s*grid/);
   assert.doesNotMatch(styles, /\.expanded-content\s*\{[^}]*height:\s*calc\(100% - 238px\)/);
+  assert.match(styles, /footer\s*\{[^}]*position:\s*relative/);
+  assert.match(styles, /footer\s*\{[^}]*flex-wrap:\s*wrap/);
+  assert.doesNotMatch(styles, /footer\s*\{[^}]*(?:position:\s*(?:absolute|fixed|sticky)|inset:)/);
+  assert.doesNotMatch(styles, /\.overlay-content-(?:standard|expanded|mini)[^{]*\{[^}]*padding-bottom:/);
+  assert.doesNotMatch(styles, /footer \.health-chip[^}]*display:\s*none/);
+  assert.match(styles, /@media \(max-width: 330px\)\s*\{[^}]*\.split\s*\{[^}]*grid-template-columns:\s*1fr/);
+});
+
+test("overlay appearance remains stable when the native window loses focus", async () => {
+  const rust = await readFile(new URL("../desktop/overlay/src-tauri/src/lib.rs", import.meta.url), "utf8");
+  assert.match(rust, /native Mica\/Acrylic tint when a window gains or loses focus/);
+  assert.match(rust, /apply_effect[\s\S]*clear_effects\(\)/);
+  assert.doesNotMatch(rust, /\.effect\(Effect::(?:Mica|Acrylic)\)/);
 });

@@ -9,7 +9,7 @@ import type { DashboardSnapshot } from "../src/lib/dashboard/view-model";
 import { defaultOverlaySettings, isSafeHexColor, parseOverlaySettings, resolveOverlayLayout } from "../src/lib/overlay/settings";
 import { composeOverlaySnapshot } from "../src/lib/overlay/view-model";
 import type { CodexTelemetrySnapshot } from "../src/lib/providers/types";
-import { legacySectionRedirects, navigationItems } from "../src/lib/navigation";
+import { codexWorkspaceMode, legacySectionRedirects, navigationItems } from "../src/lib/navigation";
 
 const now = "2026-09-12T12:00:00.000Z";
 const connected = <T>(data: T) => ({ status: "connected" as const, source: "codex" as const, data, asOf: now });
@@ -125,10 +125,15 @@ test("future subscription seam contains no fabricated implementation", async () 
   assert.doesNotMatch(source, /return\s*\{[^}]*fiveHourUsed/s);
 });
 
-test("dashboard exposes exactly two top-level destinations and maps legacy routes", () => {
-  assert.deepEqual(navigationItems.map((item) => [item.label, item.href]), [["Codex", "/"], ["GitHub", "/github"]]);
+test("dashboard exposes distinct workspace destinations and maps legacy routes", () => {
+  assert.deepEqual(navigationItems.map((item) => [item.label, item.href]), [["Overview", "/"], ["Usage", "/?section=usage"], ["Activity", "/?section=activity"], ["GitHub", "/github"]]);
+  assert.equal(codexWorkspaceMode(), "overview");
+  assert.equal(codexWorkspaceMode("usage"), "usage");
+  assert.equal(codexWorkspaceMode("sessions"), "usage");
+  assert.equal(codexWorkspaceMode("activity"), "activity");
+  assert.equal(codexWorkspaceMode("forensics"), "activity");
   assert.equal(legacySectionRedirects.usage, "/?section=usage");
-  assert.equal(legacySectionRedirects["codex-activity"], "/?section=forensics");
+  assert.equal(legacySectionRedirects["codex-activity"], "/?section=activity");
   assert.equal(legacySectionRedirects.repositories, "/github?section=repository");
   assert.equal(legacySectionRedirects["pull-requests-issues"], "/github?section=pull-requests");
   assert.equal(legacySectionRedirects["build-ci-health"], "/github?section=build-ci");
@@ -148,7 +153,7 @@ test("Codex page gates raw forensics and keeps the overview bounded", async () =
   assert.match(source, /MeasuredLedger/);
   assert.match(source, /command-metric-link/);
   assert.match(source, /API-equivalent usage/);
-  assert.match(source, /standard rates below/);
+  assert.match(source, /open Usage for the full ledger/);
   assert.match(source, /Dashboard writes/);
   assert.match(analytics, /ActivityHeatmap/);
   assert.match(analytics, /TokenComposition/);
@@ -166,6 +171,7 @@ test("workspace navigation reflects query sections and returns to the overview",
   assert.match(source, /overviewActive/);
   assert.match(source, /usageActive/);
   assert.match(source, /activityActive/);
+  assert.match(source, /codexWorkspaceMode/);
   assert.match(source, /aria-current/);
   assert.match(source, /sectionHref\(\)/);
 });

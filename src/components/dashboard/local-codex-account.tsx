@@ -10,7 +10,7 @@ import type { CodexAccountSnapshot, CodexQuotaLimit, CodexQuotaWindow } from "@/
 const LOCAL_ACCOUNT_URL = "http://127.0.0.1:14318/v1/account";
 const LOCAL_REFRESH_MS = 45_000;
 
-export function LocalCodexAccount() {
+export function LocalCodexAccount({ showActivity = true }: Readonly<{ showActivity?: boolean }>) {
   const [snapshot, setSnapshot] = useState<CodexAccountSnapshot>();
   const [unavailable, setUnavailable] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -61,7 +61,7 @@ export function LocalCodexAccount() {
         {windows.length ? <div className="quota-window-grid">{windows.map(({ limit, window }, index) => <QuotaWindow key={`${limit.limitId ?? "default"}-${window.slot}-${index}`} limit={limit} window={window} now={now} />)}</div> : <div className="local-account-empty"><Gauge size={15} /><div><b>Quota unavailable</b><p>The authenticated account returned no usage windows.</p></div></div>}
       </>}
     </section>
-    <AccountActivityPanel activity={activity} observedAt={snapshot?.activityObservedAt} />
+    {showActivity ? <AccountActivityPanel activity={activity} observedAt={snapshot?.activityObservedAt} /> : null}
   </>;
 }
 

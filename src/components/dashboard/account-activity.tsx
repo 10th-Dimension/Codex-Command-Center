@@ -14,7 +14,7 @@ export function AccountActivityPanel({ activity, observedAt }: Readonly<{ activi
   const buckets = accountActivityBuckets(activity, range);
   const summary = accountActivitySummary(buckets);
   const maximum = Math.max(...buckets.map((bucket) => bucket.tokens), 1);
-  const observedLabel = observedAt ? `Updated ${formatRelativeTime(observedAt)}` : "Update time unavailable";
+  const observedLabel = observedAt ? formatRelativeTime(observedAt) : "Update time unavailable";
 
   if (!activity) return <section className="account-activity-panel panel">
     <header className="account-section-header"><div><span><Activity size={14} /> Daily usage history</span><small>Account Activity</small></div><b className="account-source-badge unavailable">Unavailable</b></header>
@@ -31,12 +31,14 @@ export function AccountActivityPanel({ activity, observedAt }: Readonly<{ activi
       <AccountActivityStat icon={Flame} label="Current streak" value={activity.currentStreakDays === undefined ? "—" : `${activity.currentStreakDays}d`} detail="Backend summary" />
     </div>
     {buckets.length ? <>
-      <div className="account-bar-chart" aria-label={`Daily account token history for the last ${range} days`} role="img">
+      <div className="account-bar-chart" aria-label={`Daily account token history for the last ${range} days`} data-range={range}>
         <div className="account-bar-grid" aria-hidden="true"><i /><i /><i /><i /></div>
-        <div className="account-bars" style={{ "--bar-count": buckets.length } as CSSProperties}>{buckets.map((bucket) => {
+        <div className="account-bars" style={{ "--bar-count": buckets.length } as CSSProperties}>{buckets.map((bucket, index) => {
           const height = bucket.tokens > 0 ? Math.max(5, bucket.tokens / maximum * 100) : 0;
           const label = `${bucket.startDate} · ${bucket.tokens.toLocaleString()} tokens${bucket.tokens === 0 ? " · no reported usage" : ""}`;
-          return <button aria-label={label} className={`account-bar ${bucket.tokens ? "has-value" : "empty"}`} data-tooltip={label} key={bucket.startDate} style={{ "--bar-height": `${height}%` } as CSSProperties} title={label} type="button"><i /><span>{formatBackendDate(bucket.startDate)}</span></button>;
+          const showDate = range === 7 || index % 5 === 0 || index === buckets.length - 1;
+          const edge = index === 0 ? "edge-start" : index === buckets.length - 1 ? "edge-end" : "";
+          return <button aria-label={label} className={`account-bar ${bucket.tokens ? "has-value" : "empty"} ${edge}`} data-tooltip={label} key={bucket.startDate} style={{ "--bar-height": `${height}%` } as CSSProperties} title={label} type="button"><i />{showDate ? <span aria-hidden="true">{formatBackendDate(bucket.startDate)}</span> : null}</button>;
         })}</div>
       </div>
       <details className="account-daily-ledger" open>
