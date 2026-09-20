@@ -176,13 +176,16 @@ test("overlay relay serves local cache and enforces the minimum upstream refresh
   try {
     const first = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
     assert.equal(first.headers.get("x-codex-overlay-cache"), "upstream");
+    assert.equal((await first.clone().json() as typeof overlaySnapshot & { overlayCache: string }).overlayCache, "upstream");
     clock += 14_999;
     const cached = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
     assert.equal(cached.headers.get("x-codex-overlay-cache"), "fresh");
+    assert.equal((await cached.clone().json() as typeof overlaySnapshot & { overlayCache: string }).overlayCache, "fresh");
     assert.equal(calls, 1);
     clock += 1;
     const refreshed = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
     assert.equal(refreshed.headers.get("x-codex-overlay-cache"), "upstream");
+    assert.equal((await refreshed.clone().json() as typeof overlaySnapshot & { overlayCache: string }).overlayCache, "upstream");
     assert.equal(calls, 2);
   } finally {
     await close(relay);
@@ -208,7 +211,7 @@ test("overlay relay serves the last safe snapshot when a stale refresh is offlin
     const stale = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=7d`);
     assert.equal(stale.status, 200);
     assert.equal(stale.headers.get("x-codex-overlay-cache"), "stale");
-    assert.deepEqual(await stale.json(), { ...overlaySnapshot, codexAccount: { status: "unavailable", freshness: "unavailable", limits: [] }, telemetryBuffer: { queuedBatches: 0, queuedBytes: 0, droppedBatches: 0, replayState: "idle" } });
+    assert.deepEqual(await stale.json(), { ...overlaySnapshot, overlayCache: "stale", codexAccount: { status: "unavailable", freshness: "unavailable", limits: [] }, telemetryBuffer: { queuedBatches: 0, queuedBytes: 0, droppedBatches: 0, replayState: "idle" } });
   } finally {
     await close(relay);
   }
@@ -245,8 +248,9 @@ test("overlay relay does not let a safe degraded envelope replace a usable cache
     const recovered = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
     assert.equal(recovered.status, 200);
     assert.equal(recovered.headers.get("x-codex-overlay-cache"), "stale");
-    const body = await recovered.json() as typeof overlaySnapshot & { windowSummary: { inputTokens?: number } };
+    const body = await recovered.json() as typeof overlaySnapshot & { overlayCache: string; windowSummary: { inputTokens?: number } };
     assert.equal(body.windowSummary.inputTokens, 10);
+    assert.equal(body.overlayCache, "stale");
     assert.equal(calls, 2);
   } finally {
     await close(relay);
@@ -290,6 +294,8 @@ test("overlay endpoint handles unavailable, timed-out, and invalid upstream resp
 
 test("safe overlay validator rejects credential and private-content fields", () => {
   assert.equal(isSafeOverlayPayload(overlaySnapshot), true);
+  assert.equal(isSafeOverlayPayload({ ...overlaySnapshot, overlayCache: "stale" }), true);
+  assert.equal(isSafeOverlayPayload({ ...overlaySnapshot, overlayCache: "unexpected" }), false);
   assert.equal(isUsableOverlayPayload(overlaySnapshot), true);
   assert.equal(isUsableOverlayPayload({ ...overlaySnapshot, health: { ...overlaySnapshot.health, telemetry: "unavailable" } }), false);
   for (const key of ["prompt", "command", "stdout", "authorization", "user.email", "hostname", "secret"]) {

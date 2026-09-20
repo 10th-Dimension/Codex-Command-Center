@@ -45,8 +45,9 @@ export function App() {
       }
       snapshotRef.current = next;
       setSnapshot(next);
-      setRelay("online");
-      setMessage(undefined);
+      const showingStaleCache = next.overlayCache === "stale";
+      setRelay(showingStaleCache ? "upstream-error" : "online");
+      setMessage(showingStaleCache ? "Snapshot stale · showing last good data" : undefined);
     } catch (error) {
       const detail = String(error);
       const hasLastGoodSnapshot = snapshotRef.current ? isUsableOverlaySnapshot(snapshotRef.current) : false;
@@ -196,7 +197,7 @@ export function App() {
     void startDrag(settings.edgeSnapping);
   };
 
-  const dataPathHealthy = (relay === "online" || relay === "paused") && snapshot?.health.telemetry === "connected" && snapshot.health.d1 === "connected";
+  const dataPathHealthy = (relay === "online" || relay === "paused") && snapshot?.overlayCache !== "stale" && snapshot?.health.telemetry === "connected" && snapshot.health.d1 === "connected";
   const freshness = telemetryFreshness(snapshot?.lastTelemetryAt, undefined, dataPathHealthy);
   const colors = { "--text": textColorValue(settings), "--accent": settings.accentColor, "--surface-opacity": settings.opacity / 100, "--font-scale": settings.fontScale / 100 } as CSSProperties;
 

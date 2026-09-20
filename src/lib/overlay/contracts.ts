@@ -3,6 +3,7 @@ import type { CodexEquivalentPricing } from "../telemetry/pricing";
 export type OverlayRange = "24h" | "7d" | "30d";
 export type OverlayProviderStatus = "connected" | "degraded" | "unavailable";
 export type TelemetryBufferReplayState = "idle" | "buffering" | "replaying" | "degraded";
+export type OverlayCacheState = "fresh" | "upstream" | "stale";
 
 export interface TelemetryBufferHealth {
   queuedBatches: number;
@@ -98,6 +99,7 @@ export interface OverlayDistributionItem {
 export interface OverlaySnapshot {
   generatedAt: string;
   range: OverlayRange;
+  overlayCache?: OverlayCacheState;
   lastTelemetryAt?: string;
   health: {
     telemetry: OverlayProviderStatus;
