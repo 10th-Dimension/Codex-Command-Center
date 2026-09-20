@@ -232,7 +232,7 @@ function OverlayContent({ snapshot, relay, layout, freshness, now }: Readonly<{ 
     <footer><HealthChip label="Relay" status={relay === "online" ? "connected" : "degraded"} /><HealthChip label="Telemetry" status={snapshot.health.telemetry} /><HealthChip label="D1" status={snapshot.health.d1} /><BufferStatus buffer={snapshot.telemetryBuffer} /></footer>
   </div>;
   return <div className={`overlay-content overlay-content-${layout}`}>
-    <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>OTel {freshness.label}</span></div>
+    <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>Snapshot {freshness.label}</span></div>
     {layout === "standard" ? <ObservationRail session={session} summary={summary} lastTelemetryAt={snapshot.lastTelemetryAt} /> : null}
     <QuotaPanel account={snapshot.codexAccount} now={now} />
     <PricingPanel pricing={snapshot.pricing} />
@@ -353,7 +353,7 @@ function HealthChip({ label, status }: Readonly<{ label: string; status: string 
 function BufferStatus({ buffer }: Readonly<{ buffer?: TelemetryBufferHealth }>) {
   if (!buffer) return null;
   const state = buffer.replayState === "replaying" ? "replaying" : buffer.replayState === "degraded" ? "degraded" : buffer.queuedBatches ? "buffering" : "connected";
-  const label = buffer.replayState === "replaying" ? `OTel replaying${buffer.queuedBatches ? ` · ${buffer.queuedBatches}` : ""}` : buffer.queuedBatches ? `OTel buffered · ${buffer.queuedBatches}` : buffer.droppedBatches ? `OTel degraded · ${buffer.droppedBatches} dropped` : "OTel live";
+  const label = buffer.replayState === "replaying" ? `OTel delivery replaying${buffer.queuedBatches ? ` · ${buffer.queuedBatches}` : ""}` : buffer.queuedBatches ? `OTel delivery buffered · ${buffer.queuedBatches}` : buffer.droppedBatches ? `OTel delivery degraded · ${buffer.droppedBatches} dropped` : "OTel delivery live";
   const title = `${buffer.queuedBatches} queued batch${buffer.queuedBatches === 1 ? "" : "es"}${buffer.oldestQueuedAgeSeconds === undefined ? "" : ` · oldest ${buffer.oldestQueuedAgeSeconds}s`}${buffer.droppedBatches ? ` · ${buffer.droppedBatches} dropped` : ""}`;
   return <span className="buffer-status" title={title}><StatusDot state={state} />{label}</span>;
 }
