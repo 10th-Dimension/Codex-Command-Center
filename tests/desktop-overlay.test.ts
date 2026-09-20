@@ -10,7 +10,9 @@ import { defaultDesktopOverlaySettings, isSafeHexColor, isSafeHotkey, overlayLay
 
 test("desktop settings preserve supported choices and bound unsafe values", () => {
   const parsed = parseDesktopOverlaySettings({ opacity: 2, fontScale: 400, refreshSeconds: 1, layout: "expanded", density: "comfortable", textColor: "red", surface: "light" });
-  assert.equal(parsed.opacity, 20);
+  assert.equal(parsed.opacity, 2);
+  assert.equal(parseDesktopOverlaySettings({ opacity: -1 }).opacity, 0);
+  assert.equal(parseDesktopOverlaySettings({ opacity: 101 }).opacity, 100);
   assert.equal(parsed.fontScale, 150);
   assert.equal(parsed.refreshSeconds, 5);
   assert.equal(parsed.layout, "expanded");
