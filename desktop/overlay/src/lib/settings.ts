@@ -81,7 +81,7 @@ export function parseDesktopOverlaySettings(value: unknown): DesktopOverlaySetti
     range: choice(input.range, overlayRanges, defaultDesktopOverlaySettings.range),
     effect: choice(input.effect, ["translucent", "mica", "acrylic", "solid"] as const, defaultDesktopOverlaySettings.effect),
     surface: choice(input.surface, ["dark", "light"] as const, defaultDesktopOverlaySettings.surface),
-    opacity: bounded(input.opacity, 20, 100, defaultDesktopOverlaySettings.opacity),
+    opacity: bounded(input.opacity, 0, 100, defaultDesktopOverlaySettings.opacity),
     textColor: choice(input.textColor, ["auto", "white", "black", "red", "amber", "cyan", "custom"] as const, defaultDesktopOverlaySettings.textColor),
     customTextColor: isSafeHexColor(input.customTextColor) ? input.customTextColor : defaultDesktopOverlaySettings.customTextColor,
     accentColor: isSafeHexColor(input.accentColor) ? input.accentColor : defaultDesktopOverlaySettings.accentColor,

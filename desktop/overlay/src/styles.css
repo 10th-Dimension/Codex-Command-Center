@@ -4,7 +4,7 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; back
 button, input, select { font: inherit; }
 button { color: inherit; }
 .app { --text: #f5fafb; --accent: #66d9e8; --surface-opacity: .86; --font-scale: 1; width: 100%; height: 100%; min-width: 280px; min-height: 120px; padding: 1px; color: var(--text); font-size: calc(13px * var(--font-scale)); user-select: none; }
-.instrument { position: relative; display: flex; min-width: 0; min-height: 0; flex-direction: column; width: 100%; height: 100%; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 25%, rgba(130,150,160,.18)); border-radius: 12px; background: rgba(8, 13, 17, var(--surface-opacity)); box-shadow: inset 0 1px rgba(255,255,255,.055), 0 12px 40px rgba(0,0,0,.18); }
+.instrument { position: relative; display: flex; min-width: 0; min-height: 0; flex-direction: column; width: 100%; height: 100%; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 25%, rgba(130,150,160,.18)); border-radius: 12px; background-color: rgb(8 13 17 / var(--surface-opacity)); box-shadow: inset 0 1px rgba(255,255,255,.055), 0 12px 40px rgba(0,0,0,.18); }
 .resize-handle { position: absolute; z-index: 60; display: block; }
 .resize-north, .resize-south { right: 8px; left: 8px; height: 6px; cursor: ns-resize; }
 .resize-east, .resize-west { top: 8px; bottom: 8px; width: 6px; cursor: ew-resize; }
@@ -12,13 +12,13 @@ button { color: inherit; }
 .resize-north-east, .resize-south-east, .resize-south-west, .resize-north-west { width: 12px; height: 12px; }
 .resize-north-east { top: 0; right: 0; cursor: nesw-resize; }.resize-south-east { right: 0; bottom: 0; cursor: nwse-resize; }
 .resize-south-west { bottom: 0; left: 0; cursor: nesw-resize; }.resize-north-west { top: 0; left: 0; cursor: nwse-resize; }
-.effect-solid .instrument { background: #0a1014; }
-.effect-mica .instrument { background: linear-gradient(145deg, rgba(25,34,40,calc(var(--surface-opacity) * .78)), rgba(8,13,17,calc(var(--surface-opacity) * .88))); }
-.effect-acrylic .instrument { background: rgba(8,14,18,calc(var(--surface-opacity) * .78)); }
-.surface-light .instrument { background: rgba(238, 245, 247, var(--surface-opacity)); box-shadow: inset 0 1px rgba(255,255,255,.65), 0 12px 40px rgba(0,0,0,.14); }
-.surface-light.effect-solid .instrument { background: #eef5f7; }
-.surface-light.effect-mica .instrument { background: linear-gradient(145deg, rgba(249,252,252,calc(var(--surface-opacity) * .88)), rgba(221,234,237,calc(var(--surface-opacity) * .84))); }
-.surface-light.effect-acrylic .instrument { background: rgba(238,245,247,calc(var(--surface-opacity) * .74)); }
+.effect-solid .instrument { background-color: rgb(10 16 20 / var(--surface-opacity)); }
+.effect-mica .instrument { background: linear-gradient(145deg, rgb(25 34 40 / var(--surface-opacity)), rgb(8 13 17 / var(--surface-opacity))); }
+.effect-acrylic .instrument { background-color: rgb(8 14 18 / var(--surface-opacity)); }
+.surface-light .instrument { background-color: rgb(238 245 247 / var(--surface-opacity)); box-shadow: inset 0 1px rgba(255,255,255,.65), 0 12px 40px rgba(0,0,0,.14); }
+.surface-light.effect-solid .instrument { background-color: rgb(238 245 247 / var(--surface-opacity)); }
+.surface-light.effect-mica .instrument { background: linear-gradient(145deg, rgb(249 252 252 / var(--surface-opacity)), rgb(221 234 237 / var(--surface-opacity))); }
+.surface-light.effect-acrylic .instrument { background-color: rgb(238 245 247 / var(--surface-opacity)); }
 .drag-region { height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 8px 0 10px; border-bottom: 1px solid color-mix(in srgb, var(--text) 10%, transparent); cursor: move; }
 .drag-region button, .drag-region input, .drag-region select { cursor: pointer; }
 .overlay-content { min-width: 0; min-height: 0; flex: 1 1 auto; }.overlay-content-standard,.overlay-content-expanded { overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(130,150,160,.18) transparent; }.overlay-content-mini { overflow: auto; scrollbar-width: thin; scrollbar-color: rgba(130,150,160,.18) transparent; }.overlay-content-strip { display: grid; overflow: hidden; padding: 0; }.overlay-content-strip .strip-content { min-width: 0; height: 100%; }
