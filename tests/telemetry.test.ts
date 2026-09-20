@@ -343,6 +343,8 @@ test("ingestion batches writes, deduplicates retries, and runs retention cleanup
   assert.equal(database.rawDeleteCount, 1, "retention cleanup is time-gated across duplicate requests");
   const rawDelete = database.statements.find((statement) => statement.sql.includes("DELETE FROM codex_telemetry_events"));
   assert.ok(rawDelete);
+  assert.match(rawDelete.sql, /INDEXED BY sqlite_autoindex_codex_telemetry_events_1/);
+  assert.match(rawDelete.sql, /WHERE id IN\s*\(\s*SELECT id/);
   assert.match(rawDelete.sql, /LIMIT \?/);
   assert.equal(rawDelete.values[1], TELEMETRY_RETENTION_DELETE_BATCH_SIZE);
   assert.ok(database.rollupInsertCount > 0);
