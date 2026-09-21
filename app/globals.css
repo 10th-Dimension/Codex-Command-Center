@@ -534,3 +534,7 @@ body { font-size: 14px; line-height: 1.5; }
 .activity-tooltip-content p { margin: 0; color: #b9c9ce; }
 .activity-heatmap-key { display: block; margin: 7px 12px 12px; color: #7d9199; font-size: 8px; line-height: 1.35; }
 .activity-cell[data-tooltip]::after { display: none !important; content: none !important; }
+
+.token-chart-tooltip { overflow: visible; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
+.token-chart-compact .token-chart-tooltip { left: 8px; right: 8px; max-width: none; }
+.chart-x-label-compact { font-size: 8px; }

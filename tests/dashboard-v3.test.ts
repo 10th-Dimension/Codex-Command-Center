@@ -175,6 +175,8 @@ test("Codex page gates raw forensics and keeps the overview bounded", async () =
   assert.match(analytics, /data-tooltip/);
   assert.match(analytics, /chart-point/);
   assert.match(analytics, /chart-point-label/);
+  assert.match(analytics, /chart-x-label-compact/);
+  assert.match(analytics, /token-chart-tooltip/);
   assert.match(analytics, /activity-cell-number/);
   assert.match(analytics, /activity-heatmap-tooltip/);
   assert.match(analytics, /local time follows this computer/);
@@ -224,4 +226,6 @@ test("Command Center branding uses the heartbeat mark and useful settings action
   assert.match(styles, /\.command-hero-modern[^}]*rgba\(104,216,232,\.22\)/);
   assert.match(styles, /\.command-topbar \{ border-right-color: transparent/);
   assert.match(styles, /\.command-hero-modern::after \{ background: transparent/);
+  assert.match(styles, /\.token-chart-compact \.token-chart-tooltip/);
+  assert.match(styles, /overflow-wrap: anywhere/);
 });
