@@ -174,6 +174,10 @@ test("Codex page gates raw forensics and keeps the overview bounded", async () =
   assert.match(analytics, /TokenComposition/);
   assert.match(analytics, /data-tooltip/);
   assert.match(analytics, /chart-point/);
+  assert.match(analytics, /chart-point-label/);
+  assert.match(analytics, /activity-cell-number/);
+  assert.match(analytics, /activity-heatmap-tooltip/);
+  assert.match(analytics, /local time follows this computer/);
   assert.match(source, /Measured tokens by time bucket/);
   assert.match(analytics, /Measured token activity by time bucket/);
   assert.match(analytics, /exact returned time bucket/);

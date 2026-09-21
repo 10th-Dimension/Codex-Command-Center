@@ -72,6 +72,8 @@ console.log(`${remote ? "REMOTE" : "LOCAL"} rollup backfill target: ${databaseNa
 console.log("The utility reads only privacy-safe scalar/dimension columns and never reads prompt, command, output, credential, or reasoning text.");
 console.log(rebuild ? "Existing rollup and snapshot rows will be rebuilt; raw telemetry will not be modified." : "Rollup tables are empty; additive backfill will begin.");
 
+const TREND_BUCKET_MINUTES = 10;
+const trendBucketSql = `strftime('%Y-%m-%dT%H:', occurred_at) || printf('%02d:00.000Z', CAST(strftime('%M', occurred_at) AS INTEGER) / ${TREND_BUCKET_MINUTES} * ${TREND_BUCKET_MINUTES})`;
 const tempDirectory = await mkdtemp(join(tmpdir(), "codex-rollup-backfill-"));
 const sqlPath = join(tempDirectory, "backfill.sql");
 const rebuildPrefix = rebuild ? `
@@ -83,7 +85,7 @@ DELETE FROM codex_session_summary;
 ` : "";
 const backfillSql = `${rebuildPrefix}
 INSERT INTO codex_rollup_hourly
-SELECT substr(occurred_at,1,13) || ':00:00.000Z',COUNT(*),COALESCE(SUM(input_tokens),0),COUNT(input_tokens),
+SELECT ${trendBucketSql},COUNT(*),COALESCE(SUM(input_tokens),0),COUNT(input_tokens),
   COALESCE(SUM(output_tokens),0),COUNT(output_tokens),COALESCE(SUM(cached_input_tokens),0),COUNT(cached_input_tokens),
   COALESCE(SUM(cache_write_tokens),0),COUNT(cache_write_tokens),COALESCE(SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)),0),COUNT(COALESCE(reasoning_tokens,reasoning_output_tokens)),
   COALESCE(SUM(tool_tokens),0),COUNT(tool_tokens),
@@ -93,7 +95,7 @@ SELECT substr(occurred_at,1,13) || ':00:00.000Z',COUNT(*),COALESCE(SUM(input_tok
   SUM(CASE WHEN tool_execution_state='failed' THEN 1 ELSE 0 END),
   SUM(CASE WHEN event_category IN ('approval','decision') THEN 1 ELSE 0 END),
   COALESCE(SUM(ttft_ms),0),COUNT(ttft_ms),COALESCE(SUM(duration_ms),0),COUNT(duration_ms),MAX(received_at)
-FROM codex_telemetry_events GROUP BY substr(occurred_at,1,13);
+FROM codex_telemetry_events GROUP BY ${trendBucketSql};
 
 INSERT INTO codex_rollup_model_hourly
 SELECT substr(occurred_at,1,13) || ':00:00.000Z',model,COUNT(*),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),

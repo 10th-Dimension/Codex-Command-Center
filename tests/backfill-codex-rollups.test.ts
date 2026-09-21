@@ -67,9 +67,9 @@ test("historical backfill writes zeroes for absent count dimensions without chan
     const backfill = await run(process.execPath, [backfillScript, `--persist-to=${persistence}`]);
     assert.match(backfill.stdout, /Backfill complete/);
 
-    const hourlyRows = await query("SELECT completed_tools,failed_tools,error_count,warning_count,approvals FROM codex_rollup_hourly");
+    const hourlyRows = await query("SELECT hour_start,completed_tools,failed_tools,error_count,warning_count,approvals FROM codex_rollup_hourly ORDER BY hour_start");
     const sessionRows = await query("SELECT completed_tools,failed_tools,error_count,warning_count,approvals FROM codex_session_summary");
-    const snapshots = await query("SELECT range FROM codex_dashboard_snapshot ORDER BY range");
+    const snapshots = await query("SELECT range,payload_json FROM codex_dashboard_snapshot ORDER BY range");
     const rawAfter = await query("SELECT * FROM codex_telemetry_events ORDER BY id");
     const expectedCounters = {
       completed_tools: 0,
@@ -80,7 +80,17 @@ test("historical backfill writes zeroes for absent count dimensions without chan
     };
 
     assert.equal(hourlyRows.length, 1);
-    assert.deepEqual(hourlyRows[0], expectedCounters);
+    assert.deepEqual({
+      completed_tools: hourlyRows[0]?.completed_tools,
+      failed_tools: hourlyRows[0]?.failed_tools,
+      error_count: hourlyRows[0]?.error_count,
+      warning_count: hourlyRows[0]?.warning_count,
+      approvals: hourlyRows[0]?.approvals,
+    }, expectedCounters);
+    assert.match(String(hourlyRows[0]?.hour_start), /T\d{2}:(00|10|20|30|40|50):00\.000Z$/);
+    const overviewSnapshot = snapshots.find((row) => row.range === "24h");
+    const overviewPayload = JSON.parse(String(overviewSnapshot?.payload_json)) as { trend?: Array<{ label?: string }> };
+    assert.equal(overviewPayload.trend?.[0]?.label, hourlyRows[0]?.hour_start);
     assert.equal(sessionRows.length, 1);
     assert.deepEqual(sessionRows[0], expectedCounters);
     assert.deepEqual(snapshots.map((row) => row.range).sort(), ["24h", "30d", "7d"]);
