@@ -125,10 +125,7 @@ function UsageWorkspace(props: Readonly<WorkspaceProps & { pricingResult: DataRe
     </section>
     <MeasuredLedger result={usageResult} pricing={pricingResult} range={data.range} />
     <div className="command-details">
-      <Detail title="Usage & performance" open={detailOpen("usage")}><div className="detail-grid"><Fact label="Cache writes" value={usage ? metricLabel(usage.cacheWriteTokens) : "Unavailable"} /><Fact label="Average duration" value={duration(summary?.averageDurationMs)} /><Fact label="Approvals" value={compactNumber(summary?.approvals)} /><Fact label="Warnings" value={compactNumber(summary?.warnings)} /></div></Detail>
-      <SessionsDetail open={detailOpen("sessions")} telemetry={telemetry} />
-      <ToolsDetail open={detailOpen("tools")} summary={summary} usage={usage} />
-      <DataHealthDetail open={detailOpen("data-health")} telemetry={telemetry} />
+      <Detail title="Usage & performance" open={detailOpen("usage")}><div className="detail-grid"><Fact label="Cache writes" value={usage ? metricLabel(usage.cacheWriteTokens) : "Unavailable"} /><Fact label="Average duration" value={duration(summary?.averageDurationMs)} /><Fact label="Approvals" value={compactNumber(summary?.approvals)} /><Fact label="Warnings" value={compactNumber(summary?.warnings)} /></div><p className="detail-note">Sessions, tools, forensics, and data health are grouped on the Activity page so this workspace stays focused on usage. <Link className="detail-link" href={`/?range=${data.range}&section=activity`}>Open Activity</Link></p></Detail>
     </div>
   </>;
 }

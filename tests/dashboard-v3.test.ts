@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { bucketTrendPoints } from "../src/components/dashboard/analytics-ui";
+import { bucketTrendPoints, formatTrendAxisLabel, formatTrendLabel } from "../src/components/dashboard/analytics-ui";
 import { averageTtft, distributionShares, latestSession, measuredLabel, parseDashboardRange, selectTrend, selectUsage } from "../src/lib/dashboard/analytics";
 import { accountActivityBuckets, accountActivitySummary, formatAccountSeconds, formatBackendDate } from "../src/lib/dashboard/account-activity";
 import type { DashboardSnapshot } from "../src/lib/dashboard/view-model";
@@ -56,6 +56,13 @@ test("trend display grouping preserves exact totals and activity counts", () => 
     { label: "00:00 – 01:00", events: 3, errors: 1, toolExecutions: 1, inputTokens: 5, outputTokens: undefined, cachedTokens: undefined, cacheWriteTokens: undefined, reasoningTokens: undefined, toolTokens: undefined },
     { label: "02:00 – 03:00", events: 12, errors: 2, toolExecutions: 5, inputTokens: undefined, outputTokens: 12, cachedTokens: undefined, cacheWriteTokens: undefined, reasoningTokens: undefined, toolTokens: undefined },
   ]);
+});
+
+test("trend labels are readable and localizable without exposing raw ISO timestamps", () => {
+  assert.equal(formatTrendLabel("2026-09-21T15:00:00.000Z", "America/Los_Angeles"), "Sep 21, 2026 · 8:00 AM");
+  assert.equal(formatTrendLabel("2026-09-21", "America/Los_Angeles"), "Sep 21, 2026");
+  assert.equal(formatTrendAxisLabel("2026-09-21T15:00:00.000Z", "America/Los_Angeles"), "8:00 AM");
+  assert.doesNotMatch(formatTrendLabel("2026-09-21T15:00:00.000Z", "America/Los_Angeles"), /T15:00:00\.000Z/);
 });
 
 test("metric semantics preserve zero, unavailable, and no samples", () => {
@@ -162,7 +169,20 @@ test("Codex page gates raw forensics and keeps the overview bounded", async () =
   assert.match(source, /Measured tokens by time bucket/);
   assert.match(analytics, /Measured token activity by time bucket/);
   assert.match(analytics, /exact returned time bucket/);
+  assert.match(analytics, /formatTrendLabel/);
+  assert.doesNotMatch(analytics, /<title>\{activityTooltip/);
   assert.doesNotMatch(source, /subscription|plan limit|remaining credits/i);
+});
+
+test("usage and activity keep their detail responsibilities separate", async () => {
+  const source = await readFile(new URL("../src/components/dashboard/command-pages.tsx", import.meta.url), "utf8");
+  const usageWorkspace = source.match(/function UsageWorkspace[\s\S]*?function ActivityWorkspace/)?.[0] ?? "";
+  const activityWorkspace = source.match(/function ActivityWorkspace[\s\S]*?function LatestSession/)?.[0] ?? "";
+  assert.doesNotMatch(usageWorkspace, /SessionsDetail|ToolsDetail|DataHealthDetail/);
+  assert.match(usageWorkspace, /Open Activity/);
+  assert.match(activityWorkspace, /SessionsDetail/);
+  assert.match(activityWorkspace, /ToolsDetail/);
+  assert.match(activityWorkspace, /DataHealthDetail/);
 });
 
 test("workspace navigation reflects query sections and returns to the overview", async () => {
@@ -174,4 +194,16 @@ test("workspace navigation reflects query sections and returns to the overview",
   assert.match(source, /codexWorkspaceMode/);
   assert.match(source, /aria-current/);
   assert.match(source, /sectionHref\(\)/);
+});
+
+test("Command Center branding uses the heartbeat mark and useful settings actions", async () => {
+  const [brand, source] = await Promise.all([
+    readFile(new URL("../src/components/brand/codex-mark.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/dashboard/topbar.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(brand, /M14 7C/);
+  assert.match(brand, /M10 25h7l3-7/);
+  assert.match(source, /Refresh dashboard/);
+  assert.match(source, /Open Codex Live/);
+  assert.match(source, /useBrowserTimeZone/);
 });

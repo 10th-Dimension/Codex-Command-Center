@@ -1,5 +1,6 @@
 "use client";
 import { useState, type CSSProperties } from "react";
+import { useBrowserTimeZone } from "@/components/dashboard/browser-time";
 import { compactNumber, dashboardRanges, distributionShares, measuredValue, type DashboardRange } from "@/lib/dashboard/analytics";
 import type { CodexTelemetryBreakdown, CodexTelemetryTrendPoint, CodexUsageSnapshot, DataResult } from "@/lib/providers/types";
 import { stackTokenSeries } from "@/lib/telemetry/stacked-token-series";
@@ -18,6 +19,7 @@ const MAX_DISPLAY_POINTS = 48;
 
 export function TokenTrend({ result, compact = false }: Readonly<{ result: DataResult<CodexTelemetryTrendPoint[]>; compact?: boolean }>) {
   const [activeIndex, setActiveIndex] = useState<number>();
+  const timeZone = useBrowserTimeZone();
   if (result.status === "unavailable") return <div className="chart-empty">Token trend unavailable</div>;
   if (!result.data.length) return <div className="chart-empty">No samples in this range</div>;
 
@@ -45,10 +47,10 @@ export function TokenTrend({ result, compact = false }: Readonly<{ result: DataR
         {stacked.map(({ definition, base, topValues }) => <path className="token-series-area" d={stackedAreaPath(topValues, base, x, y)} fill={definition.color} fillOpacity={0.3} key={definition.id} stroke={definition.color} strokeOpacity={0.84} strokeWidth="0.9" vectorEffect="non-scaling-stroke" />)}
         <polyline aria-label="Total measured tokens" className="token-total-line" fill="none" points={totals.map((value, index) => `${x(index)},${y(value)}`).join(" ")} />
         {activeIndex !== undefined ? <line className="chart-hover-line" x1={x(activeIndex)} x2={x(activeIndex)} y1={padding.top} y2={padding.top + plotHeight} /> : null}
-        {points.map((point, index) => <circle aria-label={activityTooltip(point, totals[index])} className={`chart-point ${activeIndex === index ? "active" : ""}`} cx={x(index)} cy={y(totals[index])} fill="#10161c" key={`${point.label}-${index}`} onBlur={() => setActiveIndex(undefined)} onFocus={() => setActiveIndex(index)} onMouseEnter={() => setActiveIndex(index)} onMouseLeave={() => setActiveIndex(undefined)} r={compact ? 3 : 4.5} stroke="#effcff" strokeWidth="1.5" tabIndex={0}><title>{activityTooltip(point, totals[index])}</title></circle>)}
-        {!compact ? labelIndexes.map((index) => <text className="chart-x-label" key={`${points[index].label}-${index}`} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} x={x(index)} y={height - 10}>{points[index].label}</text>) : null}
+        {points.map((point, index) => <circle aria-label={activityTooltipText(point, totals[index], timeZone)} className={`chart-point ${activeIndex === index ? "active" : ""}`} cx={x(index)} cy={y(totals[index])} fill="#10161c" key={`${point.label}-${index}`} onBlur={() => setActiveIndex(undefined)} onFocus={() => setActiveIndex(index)} onMouseEnter={() => setActiveIndex(index)} onMouseLeave={() => setActiveIndex(undefined)} r={compact ? 3 : 4.5} stroke="#effcff" strokeWidth="1.5" tabIndex={0} />)}
+        {!compact ? labelIndexes.map((index) => <text className="chart-x-label" key={`${points[index].label}-${index}`} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} x={x(index)} y={height - 10}>{formatTrendAxisLabel(points[index].label, timeZone)}</text>) : null}
       </svg>
-      {!compact ? <div aria-live="polite" className={`token-chart-tooltip ${activePoint ? "visible" : ""}`}>{activePoint && activeTotal !== undefined ? activityTooltip(activePoint, activeTotal) : "Hover or focus a point for the exact bucket"}</div> : null}
+      {!compact ? <div aria-live="polite" className={`token-chart-tooltip ${activePoint ? "visible" : ""}`}>{activePoint && activeTotal !== undefined ? <TokenTooltip point={activePoint} timeZone={timeZone} total={activeTotal} /> : "Hover or focus a point for the exact bucket"}</div> : null}
     </div>
     {!compact ? <div className="chart-legend">{trendSeries.map((series) => <span key={series.id}><i style={{ "--legend-color": series.color } as CSSProperties} />{series.label}</span>)}<small>Band thickness = actual tokens · {points.length < result.data.length ? `grouped into ${points.length} display buckets from ${result.data.length} samples` : "each point is an exact returned time bucket"}</small></div> : null}
   </div>;
@@ -89,14 +91,16 @@ export function Distribution({ result, empty = "No observations" }: Readonly<{ r
 }
 
 export function ActivityHeatmap({ result }: Readonly<{ result: DataResult<CodexTelemetryTrendPoint[]> }>) {
+  const timeZone = useBrowserTimeZone();
   if (result.status === "unavailable") return <div className="activity-heatmap-empty">Activity map unavailable</div>;
   if (!result.data.length) return <div className="activity-heatmap-empty">No activity buckets in this range</div>;
   const maximum = Math.max(...result.data.map((point) => point.events), 1);
   return <div className="activity-heatmap" aria-label="Observed Codex activity by time bucket" role="img">
     {result.data.map((point, index) => {
       const level = point.events === 0 ? 0 : Math.min(4, Math.ceil(point.events / maximum * 4));
-      const tooltip = activityTooltip(point);
-      return <span aria-label={tooltip} className={`activity-cell activity-cell-${level}`} data-tooltip={tooltip} key={`${point.label}-${index}`} tabIndex={0} title={tooltip} />;
+      const tooltip = activityTooltipText(point, undefined, timeZone);
+      const edge = index === 0 ? "edge-start" : index === result.data.length - 1 ? "edge-end" : "";
+      return <span aria-label={tooltip} className={`activity-cell activity-cell-${level} ${edge}`} data-tooltip={tooltip} key={`${point.label}-${index}`} tabIndex={0} />;
     })}
   </div>;
 }
@@ -121,12 +125,44 @@ export function TokenComposition({ result }: Readonly<{ result: DataResult<Codex
   </div>;
 }
 
-function activityTooltip(point: CodexTelemetryTrendPoint, total?: number) {
+export function formatTrendLabel(label: string, timeZone = "UTC"): string {
+  if (label.includes(" – ")) return label.split(" – ").map((part) => formatTrendLabel(part, timeZone)).join(" – ");
+  if (/^\d{4}-\d{2}-\d{2}$/.test(label)) {
+    const date = new Date(`${label}T12:00:00.000Z`);
+    return Number.isNaN(date.getTime()) ? label : new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", timeZone: "UTC", year: "numeric" }).format(date);
+  }
+  const date = new Date(label);
+  if (Number.isNaN(date.getTime())) return label;
+  const dateLabel = new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", timeZone, year: "numeric" }).format(date);
+  const timeLabel = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone }).format(date);
+  return `${dateLabel} · ${timeLabel}`;
+}
+
+export function formatTrendAxisLabel(label: string, timeZone = "UTC") {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(label)) {
+    const date = new Date(`${label}T12:00:00.000Z`);
+    return Number.isNaN(date.getTime()) ? label : new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", timeZone: "UTC" }).format(date);
+  }
+  const date = new Date(label);
+  return Number.isNaN(date.getTime()) ? label : new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone }).format(date);
+}
+
+export function activityTooltipText(point: CodexTelemetryTrendPoint, total?: number, timeZone = "UTC") {
   const measuredTokens = [point.inputTokens, point.outputTokens, point.cachedTokens, point.cacheWriteTokens, point.reasoningTokens, point.toolTokens].map((value) => value ?? 0).reduce<number>((sum, value) => sum + value, 0);
   const observedTokens = total ?? measuredTokens;
-  const parts = [`${point.label}`, `${point.events.toLocaleString()} events`, `${observedTokens.toLocaleString()} measured tokens`, `${point.toolExecutions.toLocaleString()} completed tools`];
+  const parts = [formatTrendLabel(point.label, timeZone), `${point.events.toLocaleString()} events`, `${observedTokens.toLocaleString()} measured tokens`, `${point.toolExecutions.toLocaleString()} completed tools`];
   const fields = trendSeries.filter((series) => (point[series.key] ?? 0) > 0).map((series) => `${series.label} ${(point[series.key] ?? 0).toLocaleString()}`);
   if (fields.length) parts.push(fields.join(", "));
   if (point.errors) parts.push(`${point.errors.toLocaleString()} errors`);
   return parts.join(" · ");
+}
+
+function TokenTooltip({ point, timeZone, total }: Readonly<{ point: CodexTelemetryTrendPoint; timeZone: string; total: number }>) {
+  const fields = trendSeries.filter((series) => (point[series.key] ?? 0) > 0);
+  return <div className="token-tooltip-content">
+    <strong>{formatTrendLabel(point.label, timeZone)}</strong>
+    <div className="token-tooltip-stats"><span><b>{point.events.toLocaleString()}</b> events</span><span><b>{total.toLocaleString()}</b> measured tokens</span><span><b>{point.toolExecutions.toLocaleString()}</b> completed tools</span></div>
+    {fields.length ? <div className="token-tooltip-fields">{fields.map((series) => <span key={series.id}><i style={{ background: series.color }} />{series.label} {point[series.key]?.toLocaleString()}</span>)}</div> : null}
+    {point.errors ? <small>{point.errors.toLocaleString()} errors observed</small> : null}
+  </div>;
 }
