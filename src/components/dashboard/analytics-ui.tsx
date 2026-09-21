@@ -99,10 +99,17 @@ export function ActivityHeatmap({ result }: Readonly<{ result: DataResult<CodexT
     {result.data.map((point, index) => {
       const level = point.events === 0 ? 0 : Math.min(4, Math.ceil(point.events / maximum * 4));
       const tooltip = activityTooltipText(point, undefined, timeZone);
-      const edge = index === 0 ? "edge-start" : index === result.data.length - 1 ? "edge-end" : "";
+      const edge = activityCellEdge(index, result.data.length);
       return <span aria-label={tooltip} className={`activity-cell activity-cell-${level} ${edge}`} data-tooltip={tooltip} key={`${point.label}-${index}`} tabIndex={0} />;
     })}
   </div>;
+}
+
+export function activityCellEdge(index: number, length: number): "edge-start" | "edge-end" | "" {
+  const edgeBand = Math.max(2, Math.ceil(length * 0.12));
+  if (index < edgeBand) return "edge-start";
+  if (index >= length - edgeBand) return "edge-end";
+  return "";
 }
 
 const compositionSeries = [
