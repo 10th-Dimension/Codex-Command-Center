@@ -18,7 +18,7 @@ const trendSeries = [
 const MAX_DISPLAY_POINTS = 48;
 const MAX_COMPACT_POINTS = 24;
 
-export function TokenTrend({ result, compact = false }: Readonly<{ result: DataResult<CodexTelemetryTrendPoint[]>; compact?: boolean }>) {
+export function TokenTrend({ result, compact = false, interactive = !compact }: Readonly<{ result: DataResult<CodexTelemetryTrendPoint[]>; compact?: boolean; interactive?: boolean }>) {
   const [activeIndex, setActiveIndex] = useState<number>();
   const timeZone = useBrowserTimeZone();
   if (result.status === "unavailable") return <div className="chart-empty">Token trend unavailable</div>;
@@ -36,28 +36,29 @@ export function TokenTrend({ result, compact = false }: Readonly<{ result: DataR
   const maximum = Math.max(...totals, 1);
   const x = (index: number) => padding.left + (points.length === 1 ? plotWidth / 2 : index / (points.length - 1) * plotWidth);
   const y = (value: number) => padding.top + plotHeight - value / maximum * plotHeight;
-  const activePoint = activeIndex === undefined ? undefined : points[activeIndex];
-  const activeTotal = activeIndex === undefined ? undefined : totals[activeIndex];
+  const showDetails = interactive && !compact;
+  const activePoint = showDetails && activeIndex !== undefined ? points[activeIndex] : undefined;
+  const activeTotal = showDetails && activeIndex !== undefined ? totals[activeIndex] : undefined;
   const labelIndexes = points.length === 1 ? [0] : [0, Math.floor((points.length - 1) / 2), points.length - 1];
   const stacked = stackTokenSeries(points, trendSeries, (point, key) => point[key]);
   const pointLabelY = (index: number) => Math.min(height - padding.bottom - 3, Math.max(padding.top + 10, y(totals[index]) - 9));
 
-  return <div className={`token-chart ${compact ? "token-chart-compact" : ""}`}>
+  return <div className={`token-chart ${compact ? "token-chart-compact" : ""} ${showDetails ? "" : "token-chart-visual"}`}>
     <div className="token-chart-frame">
       <svg aria-label="Measured token activity by time bucket" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`}>
         {[0, .5, 1].map((part) => <g key={part}><line className="chart-grid-line" x1={padding.left} x2={width - padding.right} y1={padding.top + plotHeight * part} y2={padding.top + plotHeight * part} />{!compact ? <text className="chart-axis-label" dominantBaseline="middle" textAnchor="end" x={padding.left - 8} y={padding.top + plotHeight * part}>{compactNumber(maximum * (1 - part))}</text> : null}</g>)}
         {stacked.map(({ definition, base, topValues }) => <path className="token-series-area" d={stackedAreaPath(topValues, base, x, y)} fill={definition.color} fillOpacity={0.3} key={definition.id} stroke={definition.color} strokeOpacity={0.84} strokeWidth="0.9" vectorEffect="non-scaling-stroke" />)}
         <polyline aria-label="Total measured tokens" className="token-total-line" fill="none" points={totals.map((value, index) => `${x(index)},${y(value)}`).join(" ")} />
-        {activeIndex !== undefined ? <line className="chart-hover-line" x1={x(activeIndex)} x2={x(activeIndex)} y1={padding.top} y2={padding.top + plotHeight} /> : null}
+        {showDetails && activeIndex !== undefined ? <line className="chart-hover-line" x1={x(activeIndex)} x2={x(activeIndex)} y1={padding.top} y2={padding.top + plotHeight} /> : null}
         {points.map((point, index) => <g key={`${point.label}-${index}`}>
-          <circle aria-label={`Bucket ${index + 1} of ${points.length} · ${activityTooltipText(point, totals[index], timeZone)}`} className={`chart-point ${activeIndex === index ? "active" : ""}`} cx={x(index)} cy={y(totals[index])} fill="#10161c" onBlur={() => setActiveIndex(undefined)} onFocus={() => setActiveIndex(index)} onMouseEnter={() => setActiveIndex(index)} onMouseLeave={() => setActiveIndex(undefined)} r={compact ? 3 : 4.5} stroke="#effcff" strokeWidth="1.5" tabIndex={0} />
-          <text aria-hidden="true" className="chart-point-label" dominantBaseline="middle" textAnchor="middle" x={x(index)} y={pointLabelY(index)}>{index + 1}</text>
+          <circle aria-label={showDetails ? `Bucket ${index + 1} of ${points.length} · ${activityTooltipText(point, totals[index], timeZone)}` : undefined} className={`chart-point ${activeIndex === index ? "active" : ""}`} cx={x(index)} cy={y(totals[index])} fill="#10161c" onBlur={showDetails ? () => setActiveIndex(undefined) : undefined} onFocus={showDetails ? () => setActiveIndex(index) : undefined} onMouseEnter={showDetails ? () => setActiveIndex(index) : undefined} onMouseLeave={showDetails ? () => setActiveIndex(undefined) : undefined} r={compact ? 3 : 4.5} stroke="#effcff" strokeWidth="1.5" tabIndex={showDetails ? 0 : undefined} />
+          {showDetails ? <text aria-hidden="true" className="chart-point-label" dominantBaseline="middle" textAnchor="middle" x={x(index)} y={pointLabelY(index)}>{index + 1}</text> : null}
         </g>)}
-        {labelIndexes.map((index) => <text className={`chart-x-label ${compact ? "chart-x-label-compact" : ""}`} key={`${points[index].label}-${index}`} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} x={x(index)} y={compact ? height - 3 : height - 10}>{formatTrendAxisLabel(points[index].label, timeZone)}</text>)}
+        {showDetails ? labelIndexes.map((index) => <text className="chart-x-label" key={`${points[index].label}-${index}`} textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"} x={x(index)} y={height - 10}>{formatTrendAxisLabel(points[index].label, timeZone)}</text>) : null}
       </svg>
-      <div aria-live="polite" className={`token-chart-tooltip ${activePoint ? "visible" : ""}`}>{activePoint && activeTotal !== undefined ? <TokenTooltip index={activeIndex ?? 0} point={activePoint} timeZone={timeZone} total={activeTotal} totalPoints={points.length} /> : "Hover or focus a numbered point for the exact local-time bucket"}</div>
+      {showDetails && activePoint && activeTotal !== undefined ? <div aria-live="polite" className="token-chart-tooltip visible"><TokenTooltip index={activeIndex ?? 0} point={activePoint} timeZone={timeZone} total={activeTotal} totalPoints={points.length} /></div> : null}
     </div>
-    {!compact ? <div className="chart-legend">{trendSeries.map((series) => <span key={series.id}><i style={{ "--legend-color": series.color } as CSSProperties} />{series.label}</span>)}<small>Numbers match the activity buckets below · band thickness = actual tokens · {points.length < result.data.length ? `grouped into ${points.length} display buckets from ${result.data.length} samples` : "each point is an exact returned time bucket"}</small></div> : null}
+    {showDetails ? <div className="chart-legend">{trendSeries.map((series) => <span key={series.id}><i style={{ "--legend-color": series.color } as CSSProperties} />{series.label}</span>)}<small>Numbers match the activity buckets below · band thickness = actual tokens · {points.length < result.data.length ? `grouped into ${points.length} display buckets from ${result.data.length} samples` : "each point is an exact returned time bucket"}</small></div> : null}
   </div>;
 }
 
@@ -112,9 +113,7 @@ export function ActivityHeatmap({ result }: Readonly<{ result: DataResult<CodexT
         return <span aria-label={`Bucket ${index + 1} of ${points.length} · ${tooltip}`} className={`activity-cell activity-cell-${level} ${edge} ${activeIndex === index ? "active" : ""}`} data-tooltip={tooltip} key={`${point.label}-${index}`} onBlur={() => setActiveIndex(undefined)} onFocus={() => setActiveIndex(index)} onMouseEnter={() => setActiveIndex(index)} onMouseLeave={() => setActiveIndex(undefined)} role="button" tabIndex={0}><span aria-hidden="true" className="activity-cell-number">{index + 1}</span></span>;
       })}
     </div>
-    <div aria-live="polite" className={`activity-heatmap-tooltip ${activePoint ? "visible" : "placeholder"}`}>
-      {activePoint && activeIndex !== undefined ? <ActivityTooltip index={activeIndex} point={activePoint} timeZone={timeZone} totalPoints={points.length} /> : "Hover or focus a numbered bucket for exact local-time details"}
-    </div>
+    {activePoint && activeIndex !== undefined ? <div aria-live="polite" className="activity-heatmap-tooltip visible"><ActivityTooltip index={activeIndex} point={activePoint} timeZone={timeZone} totalPoints={points.length} /></div> : null}
     <small className="activity-heatmap-key">Point 1 ↔ bucket 1 · point 2 ↔ bucket 2 · local time follows this computer</small>
   </div>;
 }

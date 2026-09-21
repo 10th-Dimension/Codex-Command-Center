@@ -94,9 +94,7 @@ function OverviewWorkspace(props: Readonly<WorkspaceProps>) {
     <section className="command-overview-grid">
       <Panel className="overview-activity-panel" title="Token activity" icon={Activity} note={data.range.toUpperCase()}>
         <div className="overview-panel-intro"><span>Measured tokens by time bucket</span><small>{summary?.events.toLocaleString() ?? "—"} events · open Usage for the full ledger</small></div>
-        <TokenTrend compact result={trend} />
-        <div className="activity-map-heading"><span>Activity density</span><small>Each cell is an observed time bucket</small></div>
-        <ActivityHeatmap result={trend} />
+        <TokenTrend compact interactive={false} result={trend} />
       </Panel>
       <Panel className="overview-live-panel" title="Live operations" icon={Activity} note="observed state"><LiveOperations telemetry={telemetry} latest={latest} summary={summary} /></Panel>
       <Panel className="overview-composition-panel" title="Measured composition" icon={Boxes} note="token fields"><TokenComposition result={usageResult} /></Panel>
@@ -118,6 +116,8 @@ function UsageWorkspace(props: Readonly<WorkspaceProps & { pricingResult: DataRe
       <Panel className="usage-activity-panel" title="Measured token trend" icon={BarChart3} note={data.range.toUpperCase()}>
         <div className="overview-panel-intro"><span>Exact measured fields by time bucket</span><small>{summary?.events.toLocaleString() ?? "—"} events · hover or focus for values</small></div>
         <TokenTrend result={trend} />
+        <div className="activity-map-heading"><span>Activity density</span><small>Each cell is an observed time bucket</small></div>
+        <ActivityHeatmap result={trend} />
       </Panel>
       <Panel className="usage-composition-panel" title="Token composition" icon={Boxes} note="exact ratios"><TokenComposition result={usageResult} /></Panel>
       <Panel className="usage-model-panel" title="Model mix" icon={Bot} note="top 5"><Distribution result={telemetry.models} /></Panel>
