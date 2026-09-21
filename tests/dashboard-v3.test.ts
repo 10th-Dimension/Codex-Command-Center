@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { bucketTrendPoints, formatTrendAxisLabel, formatTrendLabel } from "../src/components/dashboard/analytics-ui";
+import { activityCellEdge, bucketTrendPoints, formatTrendAxisLabel, formatTrendLabel } from "../src/components/dashboard/analytics-ui";
 import { averageTtft, distributionShares, latestSession, measuredLabel, parseDashboardRange, selectTrend, selectUsage } from "../src/lib/dashboard/analytics";
 import { accountActivityBuckets, accountActivitySummary, formatAccountSeconds, formatBackendDate } from "../src/lib/dashboard/account-activity";
 import type { DashboardSnapshot } from "../src/lib/dashboard/view-model";
@@ -63,6 +63,14 @@ test("trend labels are readable and localizable without exposing raw ISO timesta
   assert.equal(formatTrendLabel("2026-09-21", "America/Los_Angeles"), "Sep 21, 2026");
   assert.equal(formatTrendAxisLabel("2026-09-21T15:00:00.000Z", "America/Los_Angeles"), "8:00 AM");
   assert.doesNotMatch(formatTrendLabel("2026-09-21T15:00:00.000Z", "America/Los_Angeles"), /T15:00:00\.000Z/);
+});
+
+test("activity heatmap tooltips anchor inward from both edge bands", () => {
+  assert.equal(activityCellEdge(0, 20), "edge-start");
+  assert.equal(activityCellEdge(2, 20), "edge-start");
+  assert.equal(activityCellEdge(10, 20), "");
+  assert.equal(activityCellEdge(17, 20), "edge-end");
+  assert.equal(activityCellEdge(19, 20), "edge-end");
 });
 
 test("metric semantics preserve zero, unavailable, and no samples", () => {
