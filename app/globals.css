@@ -495,3 +495,21 @@ body { font-size: 14px; line-height: 1.5; }
 .command-metric-link:hover,.command-metric-link:focus-visible { border-color: rgba(104,216,232,.42); background: linear-gradient(145deg, rgba(20,57,63,.88), rgba(12,20,25,.94)); box-shadow: 0 12px 24px rgba(0,0,0,.2), 0 0 0 1px rgba(104,216,232,.1); }.command-metric[data-tooltip]::after { border-color: rgba(104,216,232,.34); color: #e7fbfd; background: rgba(7,19,23,.98); box-shadow: 0 14px 28px rgba(0,0,0,.34), 0 0 0 1px rgba(194,126,229,.06); }.command-metric[data-tooltip]::before { border-color: rgba(104,216,232,.34); background: rgba(7,19,23,.98); }
 .activity-cell:hover,.activity-cell:focus-visible { box-shadow: 0 0 0 2px rgba(104,216,232,.82), 0 0 14px rgba(104,216,232,.42); }.activity-cell[data-tooltip]::after,.distribution-row[data-tooltip]::after { border-color: rgba(104,216,232,.34); color: #e7fbfd; background: rgba(7,19,23,.98); box-shadow: 0 14px 28px rgba(0,0,0,.34), 0 0 0 1px rgba(194,126,229,.06); }
 .token-chart-tooltip { border-color: rgba(104,216,232,.42); background: linear-gradient(145deg, rgba(7,24,29,.985), rgba(10,18,23,.985) 78%, rgba(28,15,34,.985)); box-shadow: 0 16px 32px rgba(0,0,0,.38), 0 0 0 1px rgba(104,216,232,.08); }.token-tooltip-content > strong { color: var(--command-cyan-bright); }.token-tooltip-fields { border-top-color: rgba(104,216,232,.18); }
+
+/* Primary controls stay cyan. Purple is only a quiet edge accent, never the
+   apparent fill, border, or glow of an actionable control. */
+.command-hero-modern { border-color: rgba(104,216,232,.22); background: linear-gradient(120deg, rgba(13,34,40,.84), rgba(10,17,22,.94) 52%, rgba(12,15,20,.96)); box-shadow: inset 0 1px rgba(104,216,232,.08), 0 20px 45px rgba(0,0,0,.18); }
+.command-hero-modern::after { background: rgba(104,216,232,.12); }
+.command-secondary-action,.command-secondary-action:hover,.command-secondary-action:focus-visible { border-color: rgba(104,216,232,.48) !important; color: #f4feff !important; background: rgba(104,216,232,.1) !important; box-shadow: 0 0 16px rgba(104,216,232,.14) !important; }
+.command-secondary-action:hover,.command-secondary-action:focus-visible { border-color: rgba(154,243,250,.72) !important; background: rgba(104,216,232,.16) !important; box-shadow: 0 0 20px rgba(104,216,232,.2) !important; }
+.command-health-strip-modern { border-color: rgba(104,216,232,.24); background: linear-gradient(90deg, rgba(25,76,84,.32), rgba(10,18,23,.84)); }
+.command-range a.active,.command-subnav a.active { color: #f4feff; background: rgba(104,216,232,.16); box-shadow: inset 0 0 0 1px rgba(104,216,232,.3), 0 0 14px rgba(104,216,232,.08); }
+.command-refresh:hover,.command-refresh:focus-visible { border-color: rgba(104,216,232,.45); color: #f4feff; background: rgba(104,216,232,.1); box-shadow: 0 0 16px rgba(104,216,232,.12); }
+.command-topbar { border-right-color: transparent; background: linear-gradient(180deg, rgba(6,12,16,.995), rgba(8,14,18,.99) 58%, rgba(9,13,18,.995)); }
+.command-topbar::after { right: 0; background: radial-gradient(circle at 10% 0%, rgba(104,216,232,.16), transparent 62%); }
+
+/* Keep large page surfaces neutral; cyan is reserved for information and
+   interaction rather than decorative color washes. */
+.command-hero-modern { background: linear-gradient(120deg, rgba(18,24,30,.97), rgba(11,16,21,.99) 54%, rgba(10,14,19,.99)); }
+.command-hero-modern::after { background: transparent; }
+.command-health-strip-modern { border-color: rgba(148,164,184,.12); background: rgba(16,22,28,.76); }

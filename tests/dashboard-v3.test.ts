@@ -197,13 +197,19 @@ test("workspace navigation reflects query sections and returns to the overview",
 });
 
 test("Command Center branding uses the heartbeat mark and useful settings actions", async () => {
-  const [brand, source] = await Promise.all([
+  const [brand, source, styles] = await Promise.all([
     readFile(new URL("../src/components/brand/codex-mark.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/components/dashboard/topbar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(brand, /M14 7C/);
   assert.match(brand, /M10 25h7l3-7/);
   assert.match(source, /Refresh dashboard/);
   assert.match(source, /Open Codex Live/);
   assert.match(source, /useBrowserTimeZone/);
+  assert.match(styles, /\.command-secondary-action[^}]*rgba\(104,216,232,\.48\)/);
+  assert.match(styles, /\.command-secondary-action:hover[^}]*rgba\(104,216,232,\.16\)/);
+  assert.match(styles, /\.command-hero-modern[^}]*rgba\(104,216,232,\.22\)/);
+  assert.match(styles, /\.command-topbar \{ border-right-color: transparent/);
+  assert.match(styles, /\.command-hero-modern::after \{ background: transparent/);
 });
