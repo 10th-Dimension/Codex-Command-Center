@@ -170,12 +170,17 @@ test("Codex page gates raw forensics and keeps the overview bounded", async () =
   assert.match(source, /API-equivalent usage/);
   assert.match(source, /open Usage for the full ledger/);
   assert.match(source, /Dashboard writes/);
+  const overviewWorkspace = source.match(/function OverviewWorkspace[\s\S]*?function UsageWorkspace/)?.[0] ?? "";
+  const usageWorkspace = source.match(/function UsageWorkspace[\s\S]*?function ActivityWorkspace/)?.[0] ?? "";
+  assert.match(overviewWorkspace, /<TokenTrend compact interactive=\{false\} result=\{trend\} \/>/);
+  assert.doesNotMatch(overviewWorkspace, /ActivityHeatmap/);
+  assert.match(usageWorkspace, /<ActivityHeatmap result=\{trend\} \/>/);
   assert.match(analytics, /ActivityHeatmap/);
   assert.match(analytics, /TokenComposition/);
   assert.match(analytics, /data-tooltip/);
   assert.match(analytics, /chart-point/);
   assert.match(analytics, /chart-point-label/);
-  assert.match(analytics, /chart-x-label-compact/);
+  assert.match(analytics, /token-chart-visual/);
   assert.match(analytics, /token-chart-tooltip/);
   assert.match(analytics, /activity-cell-number/);
   assert.match(analytics, /activity-heatmap-tooltip/);
@@ -185,6 +190,8 @@ test("Codex page gates raw forensics and keeps the overview bounded", async () =
   assert.match(analytics, /exact returned time bucket/);
   assert.match(analytics, /formatTrendLabel/);
   assert.doesNotMatch(analytics, /<title>\{activityTooltip/);
+  assert.doesNotMatch(analytics, /Hover or focus a numbered point for the exact local-time bucket/);
+  assert.doesNotMatch(analytics, /Hover or focus a numbered bucket for exact local-time details/);
   assert.doesNotMatch(source, /subscription|plan limit|remaining credits/i);
 });
 
@@ -226,6 +233,6 @@ test("Command Center branding uses the heartbeat mark and useful settings action
   assert.match(styles, /\.command-hero-modern[^}]*rgba\(104,216,232,\.22\)/);
   assert.match(styles, /\.command-topbar \{ border-right-color: transparent/);
   assert.match(styles, /\.command-hero-modern::after \{ background: transparent/);
-  assert.match(styles, /\.token-chart-compact \.token-chart-tooltip/);
+  assert.match(styles, /\.token-chart-visual \.chart-point/);
   assert.match(styles, /overflow-wrap: anywhere/);
 });
