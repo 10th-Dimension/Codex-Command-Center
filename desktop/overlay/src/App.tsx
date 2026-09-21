@@ -12,6 +12,8 @@ import { isUsableOverlaySnapshot, shouldReplaceOverlaySnapshot } from "./lib/sna
 type RelayState = "checking" | "online" | "offline" | "upstream-error" | "paused";
 type HeaderMenu = "range" | "layout";
 const clickThroughNotice = "Click-through enabled · Ctrl+Shift+O to regain control";
+const MAX_OVERLAY_TREND_POINTS = 30;
+const OVERLAY_TREND_BUCKET_NOTE = "10-minute source buckets · local time";
 const overlayTokenSeries = [
   { key: "inputTokens", ...tokenVisualSeries[0] },
   { key: "outputTokens", ...tokenVisualSeries[1] },
@@ -248,7 +250,7 @@ function Expanded({ snapshot, now }: Readonly<{ snapshot: OverlaySnapshot; now: 
   return <div className="expanded-content">
     <ObservedOperations session={session} summary={snapshot.windowSummary} lastTelemetryAt={snapshot.lastTelemetryAt} />
     <AccountDetails account={snapshot.codexAccount} now={now} />
-    <section><SectionTitle title="Token trend" note={snapshot.range.toUpperCase()} /><TokenTrendChart points={snapshot.tokenTrend} /></section>
+    <section><SectionTitle title="Token trend" note={`${snapshot.range.toUpperCase()} · 10m`} /><TokenTrendChart points={snapshot.tokenTrend} /></section>
     <div className="split"><section><SectionTitle title="Token composition" /><Composition summary={snapshot.windowSummary} /></section><section><SectionTitle title="Model mix" /><Distribution items={snapshot.modelDistribution} /></section></div>
     <div className="split"><section><SectionTitle title="Reasoning mix" /><Distribution items={snapshot.reasoningDistribution} /></section><section><SectionTitle title="Latest session" note={session ? shortAge(session.lastSeenAt) : undefined} /><div className="session-line"><span>{session ? `${session.completedTools} tools` : "No session"}</span><span>{session ? `${session.toolFailures ?? 0} failed` : "—"}</span></div></section></div>
     <section><SectionTitle title="Delivery" note={snapshot.delivery?.repository} /><div className="delivery"><HealthChip label="GitHub" status={snapshot.health.github} /><HealthChip label={snapshot.delivery?.latestBuild?.name ?? "CI"} status={snapshot.health.ci} /><span>{snapshot.delivery?.latestBuild?.status ?? "Unavailable"}</span></div></section>
@@ -363,7 +365,7 @@ function SectionTitle({ title, note }: Readonly<{ title: string; note?: string }
 
 function TokenTrendChart({ points }: Readonly<{ points: OverlaySnapshot["tokenTrend"] }>) {
   const [activeIndex, setActiveIndex] = useState<number>();
-  const values = points.slice(-30);
+  const values = compactOverlayTrendPoints(points, MAX_OVERLAY_TREND_POINTS);
   const totals = values.map(tokenPointTotal);
   if (!totals.some((point) => point > 0)) return <div className="chart-empty">No samples</div>;
 
@@ -383,11 +385,28 @@ function TokenTrendChart({ points }: Readonly<{ points: OverlaySnapshot["tokenTr
       {stacked.map(({ definition, base, topValues }) => <path className="spark-series-area" d={stackedAreaPath(topValues, base, x, y)} fill={definition.color} fillOpacity={0.3} key={definition.id} stroke={definition.color} strokeOpacity={0.84} strokeWidth="0.8" vectorEffect="non-scaling-stroke" />)}
       <path aria-label="Total measured tokens" className="spark-total-line" d={linePath(totals, x, y)} />
       {activeIndex !== undefined ? <line className="spark-hover-line" x1={x(activeIndex)} x2={x(activeIndex)} y1={top} y2={bottom} /> : null}
-      {values.map((point, index) => <rect aria-label={tokenTrendTooltip(point)} className="spark-hit" height={height} key={`${point.label}-${index}`} tabIndex={0} width={hitWidth} x={x(index) - hitWidth / 2} y={0} onBlur={() => setActiveIndex(undefined)} onFocus={() => setActiveIndex(index)} onMouseEnter={() => setActiveIndex(index)} />)}
+      {values.map((point, index) => <rect aria-label={tokenTrendTooltip(point, index, values.length)} className="spark-hit" height={height} key={`${point.label}-${index}`} tabIndex={0} width={hitWidth} x={x(index) - hitWidth / 2} y={0} onBlur={() => setActiveIndex(undefined)} onFocus={() => setActiveIndex(index)} onMouseEnter={() => setActiveIndex(index)} />)}
     </svg>
-    <div aria-live="polite" className={`trend-tooltip ${activePoint ? "visible" : ""}`}>{activePoint ? tokenTrendTooltip(activePoint) : "Stacked fields · band thickness = actual tokens"}</div>
-    <div className="trend-legend">{overlayTokenSeries.map((series) => <span key={series.id}><i style={{ background: series.color }} />{series.label}</span>)}</div>
+    <div aria-live="polite" className={`trend-tooltip ${activePoint ? "visible" : ""}`}>{activePoint && activeIndex !== undefined ? tokenTrendTooltip(activePoint, activeIndex, values.length) : "Hover or focus a numbered bucket for local-time details"}</div>
+    <div className="trend-legend"><span className="trend-timeframe">{OVERLAY_TREND_BUCKET_NOTE}{values.length < points.length ? ` · ${values.length} display points` : ""}</span>{overlayTokenSeries.map((series) => <span key={series.id}><i style={{ background: series.color }} />{series.label}</span>)}</div>
   </div>;
+}
+
+function compactOverlayTrendPoints(points: OverlaySnapshot["tokenTrend"], maximumPoints: number) {
+  if (points.length <= maximumPoints) return points;
+  const bucketSize = Math.ceil(points.length / maximumPoints);
+  const buckets: OverlaySnapshot["tokenTrend"] = [];
+  for (let start = 0; start < points.length; start += bucketSize) {
+    const group = points.slice(start, start + bucketSize);
+    buckets.push({
+      label: group.length === 1 ? group[0].label : `${group[0].label} – ${group[group.length - 1].label}`,
+      ...Object.fromEntries(overlayTokenSeries.map((series) => {
+        const values = group.map((point) => point[series.key]).filter((value): value is number => typeof value === "number");
+        return [series.key, values.length ? values.reduce((sum, value) => sum + value, 0) : undefined];
+      })),
+    });
+  }
+  return buckets;
 }
 
 function linePath(values: number[], x: (index: number) => number, y: (value: number) => number) {
@@ -408,10 +427,24 @@ function tokenPointTotal(point: OverlaySnapshot["tokenTrend"][number]) {
   return overlayTokenSeries.reduce((sum, series) => sum + overlayTokenValue(point, series.key), 0);
 }
 
-function tokenTrendTooltip(point: OverlaySnapshot["tokenTrend"][number]) {
+function formatOverlayTrendLabel(label: string): string {
+  if (label.includes(" – ")) return label.split(" – ").map(formatOverlayTrendLabel).join(" – ");
+  if (/^\d{4}-\d{2}-\d{2}$/.test(label)) {
+    const date = new Date(`${label}T12:00:00.000Z`);
+    return Number.isNaN(date.getTime()) ? label : new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", timeZone: "UTC", year: "numeric" }).format(date);
+  }
+  const date = new Date(label);
+  if (Number.isNaN(date.getTime())) return label;
+  const dateLabel = new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric" }).format(date);
+  const timeLabel = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(date);
+  return `${dateLabel} · ${timeLabel}`;
+}
+
+function tokenTrendTooltip(point: OverlaySnapshot["tokenTrend"][number], index?: number, totalPoints?: number) {
   const total = tokenPointTotal(point);
   const fields = overlayTokenSeries.filter((series) => overlayTokenValue(point, series.key) > 0).map((series) => `${series.label} ${numberLabel(overlayTokenValue(point, series.key))}`);
-  return [point.label, `${numberLabel(total)} tokens`, ...fields].join(" · ");
+  const bucket = index === undefined || totalPoints === undefined ? undefined : `Bucket ${index + 1} of ${totalPoints}`;
+  return [bucket, formatOverlayTrendLabel(point.label), `${numberLabel(total)} tokens`, ...fields].filter(Boolean).join(" · ");
 }
 
 function Composition({ summary }: Readonly<{ summary: OverlaySnapshot["windowSummary"] }>) {

@@ -242,6 +242,14 @@ test("event identity uses event.kind, preserves genuine unknowns, and recognizes
   assert.equal(events[4].eventName, "new.safe.event");
 });
 
+test("replay preserves the explicit decision category", async () => {
+  const [event] = await normalizeOtlpRecords([{
+    attributes: { "codex.replay.category": "decision", "event.kind": "codex.policy_event" },
+    resourceAttributes: {},
+  }], now, { replay: true });
+  assert.equal(event.category, "decision");
+});
+
 test("blank OTLP event-name fields do not mask a safe event.name attribute", async () => {
   const [event] = await normalizeOtlpRecords([{ eventName: "", attributes: { "event.name": "codex.tool_result", tool_name: "exec", success: true }, resourceAttributes: {} }], now);
   assert.equal(event.eventName, "codex.tool_result");

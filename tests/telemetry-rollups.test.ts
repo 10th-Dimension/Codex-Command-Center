@@ -42,7 +42,7 @@ class SnapshotD1 implements D1DatabaseLike {
   }
 }
 
-test("rollups group a batch by hour, model, reasoning, and session", () => {
+test("rollups group scalar trends into ten-minute buckets while dimensions stay hourly", () => {
   const grouped = groupTelemetryRollups([
     event({ id: "1", fingerprint: "1", sessionId: "session-1", model: "gpt-a", reasoningEffort: "high", inputTokens: 10, outputTokens: 4, ttftMs: 100, durationMs: 300, toolExecutionState: "succeeded" }),
     event({ id: "2", fingerprint: "2", sessionId: "session-1", model: "gpt-a", reasoningEffort: "high", inputTokens: 8, cachedInputTokens: 5, reasoningTokens: 7, toolTokens: 3, ttftMs: 200, durationMs: 400, toolExecutionState: "failed", category: "error" }),
@@ -52,12 +52,22 @@ test("rollups group a batch by hour, model, reasoning, and session", () => {
   assert.equal(grouped.models.size, 1);
   assert.equal(grouped.reasoning.size, 1);
   assert.equal(grouped.sessions.size, 1);
-  const firstHour = grouped.hourly.get("2026-09-13T11:00:00.000Z");
-  assert.deepEqual({ events: firstHour?.eventCount, input: firstHour?.inputTokens, inputSamples: firstHour?.inputSamples, completed: firstHour?.completedTools, failed: firstHour?.failedTools, errors: firstHour?.errorCount, ttft: firstHour?.ttftSumMs, ttftSamples: firstHour?.ttftSampleCount }, { events: 2, input: 18, inputSamples: 2, completed: 2, failed: 1, errors: 1, ttft: 300, ttftSamples: 2 });
+  const firstBucket = grouped.hourly.get("2026-09-13T11:40:00.000Z");
+  assert.deepEqual({ events: firstBucket?.eventCount, input: firstBucket?.inputTokens, inputSamples: firstBucket?.inputSamples, completed: firstBucket?.completedTools, failed: firstBucket?.failedTools, errors: firstBucket?.errorCount, ttft: firstBucket?.ttftSumMs, ttftSamples: firstBucket?.ttftSampleCount }, { events: 2, input: 18, inputSamples: 2, completed: 2, failed: 1, errors: 1, ttft: 300, ttftSamples: 2 });
   const session = grouped.sessions.get("session-1");
   assert.equal(session?.eventCount, 3);
   assert.equal(session?.approvals, 1);
   assert.equal(session?.durationSumMs, 900);
+});
+
+test("ten-minute trend buckets preserve exact event boundaries without increasing dimension buckets", () => {
+  const grouped = groupTelemetryRollups([
+    event({ id: "early", fingerprint: "early", occurredAt: "2026-09-13T11:09:59.000Z", model: "gpt-a", reasoningEffort: "high" }),
+    event({ id: "next", fingerprint: "next", occurredAt: "2026-09-13T11:10:00.000Z", model: "gpt-a", reasoningEffort: "high" }),
+  ]);
+  assert.deepEqual([...grouped.hourly.keys()], ["2026-09-13T11:00:00.000Z", "2026-09-13T11:10:00.000Z"]);
+  assert.equal(grouped.models.size, 1);
+  assert.equal(grouped.reasoning.size, 1);
 });
 
 test("session latest dimensions follow telemetry time and never cross session boundaries", () => {
@@ -106,6 +116,11 @@ test("materialized snapshots preserve measured missingness, averages, bounds, an
   const write = database.statements.find((statement) => statement.sql.startsWith("INSERT INTO codex_dashboard_snapshot"));
   assert.ok(write);
   assert.ok(String(write.values[3]).length < 262_144);
+  const trendRead = database.statements.find((statement) => statement.sql.includes("FROM codex_rollup_hourly"));
+  assert.ok(trendRead);
+  assert.match(trendRead.sql, /WHERE hour_start>=\?/);
+  assert.match(trendRead.sql, /LIMIT 744/);
+  assert.doesNotMatch(trendRead.sql, /codex_telemetry_events/);
 });
 
 test("materialized snapshot keeps the newest observed model and reasoning first", async () => {

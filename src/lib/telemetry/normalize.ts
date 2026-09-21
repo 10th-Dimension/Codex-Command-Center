@@ -98,7 +98,7 @@ function replayHex(value: unknown) {
 }
 
 function replayCategory(value: unknown): CodexTelemetryCategory | undefined {
-  return typeof value === "string" && ["api-request", "tool", "model", "usage", "error", "warning", "approval", "mcp", "network", "startup", "session", "unknown"].includes(value)
+  return typeof value === "string" && ["api-request", "tool", "model", "usage", "error", "warning", "approval", "decision", "mcp", "network", "startup", "session", "unknown"].includes(value)
     ? value as CodexTelemetryCategory
     : undefined;
 }

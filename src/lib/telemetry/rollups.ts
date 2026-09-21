@@ -10,6 +10,7 @@ import { calculateCodexEquivalentPricing, type CodexEquivalentPricing, type Code
 
 export type TelemetryRange = "24h" | "7d" | "30d";
 export const TELEMETRY_RANGES: readonly TelemetryRange[] = ["24h", "7d", "30d"];
+export const TELEMETRY_TREND_BUCKET_MINUTES = 10;
 export const SNAPSHOT_TTL_MS: Record<TelemetryRange, number> = {
   "24h": 60_000,
   "7d": 15 * 60_000,
@@ -135,11 +136,19 @@ const zeroDimension = (): DimensionAggregate => ({
   ttftSampleCount: 0,
 });
 
-function hourStart(value: string) {
+function bucketStart(value: string, minutes: number) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) throw new Error("Telemetry event time is invalid.");
-  parsed.setUTCMinutes(0, 0, 0);
+  parsed.setUTCMinutes(Math.floor(parsed.getUTCMinutes() / minutes) * minutes, 0, 0);
   return parsed.toISOString();
+}
+
+function hourStart(value: string) {
+  return bucketStart(value, 60);
+}
+
+function trendBucketStart(value: string) {
+  return bucketStart(value, TELEMETRY_TREND_BUCKET_MINUTES);
 }
 
 function addOptional(target: ScalarAggregate, total: keyof ScalarAggregate, samples: keyof ScalarAggregate, value?: number) {
@@ -192,10 +201,14 @@ export function groupTelemetryRollups(events: NormalizedTelemetryEvent[]) {
   const sessions = new Map<string, SessionAggregate>();
 
   for (const event of events) {
+    const trendBucket = trendBucketStart(event.occurredAt);
+    const trendGroup = hourly.get(trendBucket) ?? zeroScalar();
+    addScalar(trendGroup, event);
+    hourly.set(trendBucket, trendGroup);
+
+    // Keep dimension writes hourly. Only the scalar trend needs the finer
+    // timeline, so model/reasoning write amplification remains unchanged.
     const hour = hourStart(event.occurredAt);
-    const hourGroup = hourly.get(hour) ?? zeroScalar();
-    addScalar(hourGroup, event);
-    hourly.set(hour, hourGroup);
 
     if (event.model) {
       const key = `${hour}\u0000${event.model}`;
