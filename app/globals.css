@@ -456,3 +456,60 @@ body { font-size: 14px; line-height: 1.5; }
   .account-activity-stat-grid,.account-activity-facts { grid-template-columns: minmax(0,1fr); }
   .account-section-header { align-items: stretch; }.account-header-meta { align-items: flex-start; flex-direction: column; }
 }
+
+/* Dashboard UX polish: keep the workspace nearly black, then let cyan and the
+   purple accent carry the important interaction states. */
+.command-topbar { border-right-color: rgba(104,216,232,.16); background: linear-gradient(180deg, rgba(8,14,18,.99), rgba(9,13,18,.98) 56%, rgba(12,8,20,.99)); }
+.command-topbar::after { right: -90px; height: 240px; background: radial-gradient(circle at 10% 0%, rgba(104,216,232,.13), transparent 52%), radial-gradient(circle at 54% 0%, rgba(194,126,229,.12), transparent 74%); }
+.command-brand-mark { width: 38px !important; height: 38px !important; border-color: rgba(104,216,232,.32) !important; border-radius: 11px !important; color: #d494f4 !important; background: linear-gradient(145deg, rgba(104,216,232,.12), rgba(194,126,229,.12)) !important; box-shadow: inset 0 0 0 1px rgba(255,255,255,.025), 0 0 20px rgba(104,216,232,.08); }
+.command-brand-mark svg { display: block; filter: drop-shadow(0 0 7px rgba(104,216,232,.3)); }
+.command-brand:hover .command-brand-mark { border-color: rgba(104,216,232,.58) !important; box-shadow: inset 0 0 0 1px rgba(255,255,255,.04), 0 0 24px rgba(104,216,232,.18); }
+.command-topbar nav a.active { color: #e8fbfd; background: linear-gradient(90deg, rgba(104,216,232,.13), rgba(194,126,229,.08)); box-shadow: inset 3px 0 0 #75e7f2, 0 0 24px rgba(104,216,232,.035); }
+.command-topbar nav a:hover { color: #e8fbfd; background: rgba(104,216,232,.07); }
+
+.settings-drawer { overflow-y: auto; scrollbar-color: rgba(104,216,232,.28) transparent; }
+.settings-drawer > header { position: sticky; top: 0; z-index: 1; background: rgba(12,18,23,.94); backdrop-filter: blur(18px); }
+.settings-drawer > header div > div { min-width: 0; }.settings-drawer > header small { display: block; margin-top: 3px; color: #71808b; font-size: 9px; font-weight: 500; }
+.settings-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.settings-section-heading h2 { margin: 0; }.settings-section-heading > svg { color: #68d8e8; }
+.settings-live-badge,.settings-section-caption { color: #68d8e8; font-size: 8px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }.settings-section-caption { color: #71808b; }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 10px 11px; border: 1px solid rgba(104,216,232,.12); border-radius: 8px; background: rgba(104,216,232,.035); color: #8898a3; font-size: 10px; }.settings-row b { color: #d7f7fa; font-size: 10px; font-weight: 650; text-align: right; }
+.settings-actions { display: grid; gap: 7px; margin-top: 12px; }.settings-action { width: 100%; display: flex; align-items: center; gap: 9px; min-height: 45px; padding: 8px 10px; border: 1px solid rgba(148,164,184,.11); border-radius: 8px; color: #8da1aa; background: rgba(255,255,255,.018); cursor: pointer; text-align: left; }.settings-action:hover { border-color: rgba(104,216,232,.24); color: #ddf9fb; background: rgba(104,216,232,.06); }.settings-action > svg:first-child { flex: 0 0 auto; color: #68d8e8; }.settings-action > svg:last-child { margin-left: auto; color: #607783; }.settings-action span { min-width: 0; }.settings-action b,.settings-action small { display: block; }.settings-action b { color: #c6d6db; font-size: 10px; font-weight: 650; }.settings-action small { margin-top: 2px; color: #70808b; font-size: 9px; }
+
+.token-chart-tooltip { max-width: min(370px, calc(100% - 16px)); padding: 10px 12px; color: #dff9fb; background: linear-gradient(145deg, rgba(13,29,34,.97), rgba(24,14,31,.97)); box-shadow: 0 16px 32px rgba(0,0,0,.38), 0 0 0 1px rgba(104,216,232,.04); font-size: 10px; line-height: 1.4; }
+.token-tooltip-content { display: grid; gap: 7px; }.token-tooltip-content > strong { color: #f0fdfe; font-size: 11px; font-weight: 700; letter-spacing: .01em; }.token-tooltip-stats,.token-tooltip-fields { display: flex; flex-wrap: wrap; gap: 5px 9px; }.token-tooltip-stats span { color: #8ca8ae; }.token-tooltip-stats b { color: #d8f8fa; font-variant-numeric: tabular-nums; }.token-tooltip-fields { padding-top: 6px; border-top: 1px solid rgba(104,216,232,.12); }.token-tooltip-fields span { display: inline-flex; align-items: center; gap: 4px; color: #b9c9ce; font-size: 9px; }.token-tooltip-fields i { width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 7px currentColor; }.token-tooltip-content > small { color: #f0b86b; font-size: 9px; }
+.activity-cell.edge-start[data-tooltip]::after { left: 0; transform: translate(0, 3px); }.activity-cell.edge-start[data-tooltip]:hover::after,.activity-cell.edge-start[data-tooltip]:focus-visible::after { transform: translate(0, 0); }.activity-cell.edge-end[data-tooltip]::after { right: 0; left: auto; transform: translate(0, 3px); }.activity-cell.edge-end[data-tooltip]:hover::after,.activity-cell.edge-end[data-tooltip]:focus-visible::after { transform: translate(0, 0); }
+.activity-cell[data-tooltip]::after { max-width: min(300px, calc(100vw - 32px)); }
+.detail-link { display: inline-flex; margin-left: 5px; color: #75dce7; font-weight: 650; }.detail-link:hover { color: #d9fbfd; text-decoration: underline; }
+
+/* Cyan is the primary dashboard accent. Purple is reserved for restrained trim,
+   so the interface reads as black + cyan first at every viewport size. */
+:root { --command-cyan: #68d8e8; --command-cyan-bright: #9af3fa; --command-purple-trim: #c27ee5; }
+.command-topbar { border-right-color: rgba(104,216,232,.24); background: linear-gradient(180deg, rgba(6,12,16,.995), rgba(8,14,18,.99) 58%, rgba(12,10,18,.995)); }
+.command-topbar::after { right: -70px; background: radial-gradient(circle at 10% 0%, rgba(104,216,232,.2), transparent 58%), radial-gradient(circle at 55% 0%, rgba(194,126,229,.07), transparent 72%); }
+.command-brand b { color: var(--command-cyan-bright); }.command-brand small { color: #78949c; }
+.command-brand-mark { border-color: rgba(104,216,232,.48) !important; color: var(--command-cyan-bright) !important; background: linear-gradient(145deg, rgba(104,216,232,.16), rgba(194,126,229,.06)) !important; box-shadow: inset 0 0 0 1px rgba(255,255,255,.025), 0 0 20px rgba(104,216,232,.13); }
+.command-topbar nav a { color: #8faab0; }.command-topbar nav a:hover { color: #e8fbfd; background: rgba(104,216,232,.09); }.command-topbar nav a.active { color: #effeff; background: linear-gradient(90deg, rgba(104,216,232,.19), rgba(104,216,232,.055) 78%, rgba(194,126,229,.045)); box-shadow: inset 3px 0 0 var(--command-cyan-bright), 0 0 24px rgba(104,216,232,.045); }
+.command-nav-label { color: #6fa2aa; }.settings-gear { border-color: rgba(104,216,232,.2) !important; color: #8db1b7 !important; background: rgba(104,216,232,.055) !important; }.settings-gear:hover { border-color: rgba(104,216,232,.44) !important; color: #e8fbfd !important; background: rgba(104,216,232,.12) !important; }
+.command-kicker { color: #86b7bd; }.command-kicker-mark { border-color: rgba(104,216,232,.34); color: var(--command-cyan-bright); background: rgba(104,216,232,.09); }.command-secondary-action { border-color: rgba(104,216,232,.22); color: #9adbe2; background: rgba(104,216,232,.055); }.command-secondary-action:hover { border-color: rgba(104,216,232,.44); color: #effeff; background: rgba(104,216,232,.11); }.command-health-strip-modern { border-color: rgba(104,216,232,.18); background: linear-gradient(90deg, rgba(28,83,91,.28), rgba(16,22,28,.72) 78%, rgba(194,126,229,.045)); }
+.command-metric-link:hover,.command-metric-link:focus-visible { border-color: rgba(104,216,232,.42); background: linear-gradient(145deg, rgba(20,57,63,.88), rgba(12,20,25,.94)); box-shadow: 0 12px 24px rgba(0,0,0,.2), 0 0 0 1px rgba(104,216,232,.1); }.command-metric[data-tooltip]::after { border-color: rgba(104,216,232,.34); color: #e7fbfd; background: rgba(7,19,23,.98); box-shadow: 0 14px 28px rgba(0,0,0,.34), 0 0 0 1px rgba(194,126,229,.06); }.command-metric[data-tooltip]::before { border-color: rgba(104,216,232,.34); background: rgba(7,19,23,.98); }
+.activity-cell:hover,.activity-cell:focus-visible { box-shadow: 0 0 0 2px rgba(104,216,232,.82), 0 0 14px rgba(104,216,232,.42); }.activity-cell[data-tooltip]::after,.distribution-row[data-tooltip]::after { border-color: rgba(104,216,232,.34); color: #e7fbfd; background: rgba(7,19,23,.98); box-shadow: 0 14px 28px rgba(0,0,0,.34), 0 0 0 1px rgba(194,126,229,.06); }
+.token-chart-tooltip { border-color: rgba(104,216,232,.42); background: linear-gradient(145deg, rgba(7,24,29,.985), rgba(10,18,23,.985) 78%, rgba(28,15,34,.985)); box-shadow: 0 16px 32px rgba(0,0,0,.38), 0 0 0 1px rgba(104,216,232,.08); }.token-tooltip-content > strong { color: var(--command-cyan-bright); }.token-tooltip-fields { border-top-color: rgba(104,216,232,.18); }
+
+/* Primary controls stay cyan. Purple is only a quiet edge accent, never the
+   apparent fill, border, or glow of an actionable control. */
+.command-hero-modern { border-color: rgba(104,216,232,.22); background: linear-gradient(120deg, rgba(13,34,40,.84), rgba(10,17,22,.94) 52%, rgba(12,15,20,.96)); box-shadow: inset 0 1px rgba(104,216,232,.08), 0 20px 45px rgba(0,0,0,.18); }
+.command-hero-modern::after { background: rgba(104,216,232,.12); }
+.command-secondary-action,.command-secondary-action:hover,.command-secondary-action:focus-visible { border-color: rgba(104,216,232,.48) !important; color: #f4feff !important; background: rgba(104,216,232,.1) !important; box-shadow: 0 0 16px rgba(104,216,232,.14) !important; }
+.command-secondary-action:hover,.command-secondary-action:focus-visible { border-color: rgba(154,243,250,.72) !important; background: rgba(104,216,232,.16) !important; box-shadow: 0 0 20px rgba(104,216,232,.2) !important; }
+.command-health-strip-modern { border-color: rgba(104,216,232,.24); background: linear-gradient(90deg, rgba(25,76,84,.32), rgba(10,18,23,.84)); }
+.command-range a.active,.command-subnav a.active { color: #f4feff; background: rgba(104,216,232,.16); box-shadow: inset 0 0 0 1px rgba(104,216,232,.3), 0 0 14px rgba(104,216,232,.08); }
+.command-refresh:hover,.command-refresh:focus-visible { border-color: rgba(104,216,232,.45); color: #f4feff; background: rgba(104,216,232,.1); box-shadow: 0 0 16px rgba(104,216,232,.12); }
+.command-topbar { border-right-color: transparent; background: linear-gradient(180deg, rgba(6,12,16,.995), rgba(8,14,18,.99) 58%, rgba(9,13,18,.995)); }
+.command-topbar::after { right: 0; background: radial-gradient(circle at 10% 0%, rgba(104,216,232,.16), transparent 62%); }
+
+/* Keep large page surfaces neutral; cyan is reserved for information and
+   interaction rather than decorative color washes. */
+.command-hero-modern { background: linear-gradient(120deg, rgba(18,24,30,.97), rgba(11,16,21,.99) 54%, rgba(10,14,19,.99)); }
+.command-hero-modern::after { background: transparent; }
+.command-health-strip-modern { border-color: rgba(148,164,184,.12); background: rgba(16,22,28,.76); }

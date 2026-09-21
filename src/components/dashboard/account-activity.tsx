@@ -35,7 +35,7 @@ export function AccountActivityPanel({ activity, observedAt }: Readonly<{ activi
         <div className="account-bar-grid" aria-hidden="true"><i /><i /><i /><i /></div>
         <div className="account-bars" style={{ "--bar-count": buckets.length } as CSSProperties}>{buckets.map((bucket, index) => {
           const height = bucket.tokens > 0 ? Math.max(5, bucket.tokens / maximum * 100) : 0;
-          const label = `${bucket.startDate} · ${bucket.tokens.toLocaleString()} tokens${bucket.tokens === 0 ? " · no reported usage" : ""}`;
+          const label = `${formatBackendDate(bucket.startDate)} · ${bucket.tokens.toLocaleString()} tokens${bucket.tokens === 0 ? " · no reported usage" : ""}`;
           const showDate = range === 7 || index % 5 === 0 || index === buckets.length - 1;
           const edge = index === 0 ? "edge-start" : index === buckets.length - 1 ? "edge-end" : "";
           return <button aria-label={label} className={`account-bar ${bucket.tokens ? "has-value" : "empty"} ${edge}`} data-tooltip={label} key={bucket.startDate} style={{ "--bar-height": `${height}%` } as CSSProperties} title={label} type="button"><i />{showDate ? <span aria-hidden="true">{formatBackendDate(bucket.startDate)}</span> : null}</button>;
@@ -43,7 +43,7 @@ export function AccountActivityPanel({ activity, observedAt }: Readonly<{ activi
       </div>
       <details className="account-daily-ledger" open>
         <summary><span>Exact daily ledger</span><small>Returned buckets · newest first</small></summary>
-        <div className="account-daily-table-wrap"><table><thead><tr><th scope="col">Day</th><th scope="col">Tokens</th><th scope="col">State</th></tr></thead><tbody>{[...buckets].reverse().map((bucket) => <tr key={`row-${bucket.startDate}`}><th scope="row" title={bucket.startDate}>{formatBackendDate(bucket.startDate)}</th><td>{bucket.tokens.toLocaleString()}</td><td>{bucket.tokens > 0 ? "Observed usage" : "No reported usage"}</td></tr>)}</tbody></table></div>
+        <div className="account-daily-table-wrap"><table><thead><tr><th scope="col">Day</th><th scope="col">Tokens</th><th scope="col">State</th></tr></thead><tbody>{[...buckets].reverse().map((bucket) => <tr key={`row-${bucket.startDate}`}><th scope="row" title={formatBackendDate(bucket.startDate)}>{formatBackendDate(bucket.startDate)}</th><td>{bucket.tokens.toLocaleString()}</td><td>{bucket.tokens > 0 ? "Observed usage" : "No reported usage"}</td></tr>)}</tbody></table></div>
       </details>
     </> : <div className="account-activity-empty"><CalendarDays size={16} /><div><strong>No daily buckets in the selected range</strong><p>The source returned account activity, but no daily token buckets for this range. This is an honest empty state.</p></div></div>}
     <div className="account-activity-facts"><AccountFact icon={Activity} label="Lifetime tokens" value={activity.lifetimeTokens?.toLocaleString() ?? "Unavailable"} /><AccountFact icon={TrendingUp} label="Reported peak day" value={activity.peakDailyTokens?.toLocaleString() ?? "Unavailable"} /><AccountFact icon={CalendarDays} label="Longest streak" value={activity.longestStreakDays === undefined ? "Unavailable" : `${activity.longestStreakDays} days`} /><AccountFact icon={Clock3} label="Longest running turn" value={formatAccountSeconds(activity.longestRunningTurnSec)} /></div>
