@@ -196,7 +196,7 @@ Usage reports only token counts legitimately emitted by telemetry: input, output
 
 ### API-equivalent credits and USD
 
-The pricing card uses the published [token-based Work/Codex USD rates](https://help.openai.com/en/articles/20001415) and [token-based Codex credit rates](https://help.openai.com/en/articles/11481834-cha) for every model that has a current input, cached-input, and output rate in the checked-in catalog. The calculation is performed once while materialized snapshots are built, not when the browser or overlay refreshes:
+The pricing card uses published [Work/Codex credit rates](https://help.openai.com/en/articles/11481834-chatgpt-rate-card) where listed, plus the official [GPT-6 API standard rates](https://developers.openai.com/api/docs/pricing). GPT-6 Sol and Luna USD equivalents use the official standard API prices; the current credit rate card does not list these two models, so their credit equivalents use the catalog's existing 25-credit-per-USD conversion and are identified as estimates in the UI. The calculation is performed once while materialized snapshots are built, not when the browser or overlay refreshes:
 
 ```text
 credits = input tokens / 1M × input credit rate

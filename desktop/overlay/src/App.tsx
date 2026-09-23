@@ -288,11 +288,14 @@ function QuotaPanel({ account, now }: Readonly<{ account?: OverlaySnapshot["code
 
 function PricingPanel({ pricing }: Readonly<{ pricing?: OverlaySnapshot["pricing"] }>) {
   const available = pricing?.status === "available" || pricing?.status === "partial";
+  const estimatedCreditModels = pricing?.byModel.some((model) =>
+    ["gpt-6-sol", "gpt-6-luna"].includes(model.model.toLowerCase()) && model.status === "priced",
+  ) ?? false;
   return <section className={`pricing-panel ${pricing?.status ?? "unavailable"}`} title={pricing?.note ?? "API-equivalent pricing is unavailable for this window."}>
     <div className="section-title"><b>API-equivalent usage</b><span>{pricing?.status === "partial" ? "Partial coverage" : pricing?.status === "available" ? "All observed models" : "Unavailable"}</span></div>
     <div className="pricing-main"><div><small>USD equivalent</small><strong>{available && pricing?.usdEquivalent !== undefined ? `$${pricing.usdEquivalent}` : "Unavailable"}</strong></div><div><small>Codex credits</small><strong>{available && pricing?.apiCredits !== undefined ? pricing.apiCredits : "—"}</strong></div><div><small>Coverage</small><strong>{pricing?.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}%`}</strong></div></div>
     {pricing?.byModel.length ? <details className="pricing-details"><summary>Model math <span>+</span></summary><div>{pricing.byModel.map((model) => <div key={model.model}><span><b>{model.displayName}</b><small>{model.model} · {model.eventCount.toLocaleString()} events</small></span><strong>{model.status === "priced" ? `$${model.usdEquivalent}` : "Unpriced"}</strong></div>)}</div></details> : null}
-    <p>Standard token rates · feature charges excluded · reasoning is not double-counted.</p>
+    <p>{estimatedCreditModels ? "GPT-6 Sol/Luna credit amounts are estimates, not official Work/Codex rates." : "Standard token rates · feature charges excluded · reasoning is not double-counted."}</p>
   </section>;
 }
 
