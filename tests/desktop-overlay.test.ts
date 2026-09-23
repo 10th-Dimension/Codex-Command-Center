@@ -164,6 +164,7 @@ test("quota presentation uses remaining percentages, local countdowns, and expli
   assert.match(app, /Projected/);
   assert.match(app, /Banked resets/);
   assert.match(app, /Account Activity/);
+  assert.match(app, /GPT-6 Sol\/Luna credit amounts are estimates, not official Work\/Codex rates/);
 });
 
 test("native standard overlay reserves enough room for its operational surface", async () => {
