@@ -4,9 +4,9 @@
  * cost at the published token rates?" without pretending to know the user's
  * remaining balance or plan entitlements.
  */
-export const CODEX_PRICING_CARD_ID = "openai-work-codex-token-rates-2026-09";
+export const CODEX_PRICING_CARD_ID = "openai-work-codex-token-rates-2026-09-22";
 export const CODEX_PRICING_BASIS = "codex-token-credit-rates" as const;
-export const CODEX_PRICING_NOTE = "Standard token rates only. Reasoning is an output-token breakdown; cache writes and separately metered feature charges are excluded.";
+export const CODEX_PRICING_NOTE = "Standard token rates only. GPT-6 Sol/Luna Codex credits are API-equivalent estimates at the catalog's 25 credits per USD conversion; official credit rates are not published yet. Reasoning is an output-token breakdown; cache writes and separately metered feature charges are excluded.";
 
 export interface CodexModelPricingRate {
   model: string;
@@ -23,6 +23,8 @@ export interface CodexModelPricingRate {
 /** Published token-based Work/Codex rates as of the current rate-card revision. */
 export const CODEX_MODEL_PRICING: readonly CodexModelPricingRate[] = [
   rate("gpt-6-astra", "GPT-6 Astra", ["gpt-6-astra", "6-astra", "astra", "gpt-6-pro"], 250, 25, 1250, 10, 1, 50),
+  rate("gpt-6-sol", "GPT-6 Sol", ["gpt-6-sol", "6-sol"], 50, 5, 250, 2, 0.2, 10),
+  rate("gpt-6-luna", "GPT-6 Luna", ["gpt-6-luna", "6-luna"], 2.5, 0.25, 12.5, 0.1, 0.01, 0.5),
   rate("gpt-5.6-sol", "GPT-5.6 Sol", ["gpt-5.6-sol", "5.6-sol", "sol"], 100, 10, 500, 4, 0.4, 20),
   rate("gpt-5.6-terra", "GPT-5.6 Terra", ["gpt-5.6-terra", "5.6-terra", "terra"], 50, 5, 300, 2, 0.2, 12),
   rate("gpt-5.6-luna", "GPT-5.6 Luna", ["gpt-5.6-luna", "5.6-luna", "luna"], 5, 0.5, 30, 0.2, 0.02, 1.2),
