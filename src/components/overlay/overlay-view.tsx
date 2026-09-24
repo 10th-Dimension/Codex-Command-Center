@@ -5,7 +5,7 @@ import { Activity, Bot, CheckCircle2, ChevronDown, CircleAlert, Settings2, Shiel
 import { compactNumber, formatDuration } from "@/lib/dashboard/analytics";
 import { defaultOverlaySettings, parseOverlaySettings, resolveOverlayLayout, type OverlayLayout, type OverlaySettings } from "@/lib/overlay/settings";
 import type { OverlaySnapshot } from "@/lib/overlay/view-model";
-import type { CodexEquivalentPricing } from "@/lib/telemetry/pricing";
+import { codexPricingCoverageReasons, type CodexEquivalentPricing } from "@/lib/telemetry/pricing";
 
 const storageKey = "codex-command-center.overlay-settings.v1";
 
@@ -47,11 +47,13 @@ function OverlayMetric({ label, value, duration, stripOptional }: Readonly<{ lab
 
 function OverlayPricing({ pricing }: Readonly<{ pricing?: CodexEquivalentPricing }>) {
   const available = pricing?.status === "available" || pricing?.status === "partial";
-  return <section className={`overlay-pricing ${pricing?.status ?? "unavailable"}`} title={pricing?.note ?? "API-equivalent pricing is unavailable for this window."}>
+  const coverageReasons = pricing ? codexPricingCoverageReasons(pricing) : [];
+  return <section className={`overlay-pricing ${pricing?.status ?? "unavailable"}`}>
     <div><span>API-equivalent usage</span><small>{pricing?.status === "partial" ? "Partial coverage" : pricing?.status === "available" ? "All observed models" : "Unavailable"}</small></div>
     <strong>{available && pricing?.usdEquivalent !== undefined ? `$${pricing.usdEquivalent}` : "Unavailable"}</strong>
     <b>{available && pricing?.apiCredits !== undefined ? `${pricing.apiCredits} credits` : "No priced token samples"}</b>
-    <em>{pricing?.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}% covered`}</em>
+    <em>{pricing?.coveragePercent === undefined ? "Priced token coverage —" : `Priced token coverage ${pricing.coveragePercent}%`}</em>
+    {pricing?.status === "partial" && coverageReasons.length ? <small className="pricing-coverage-reasons">{coverageReasons.join(" · ")}</small> : null}
   </section>;
 }
 

@@ -74,6 +74,7 @@ console.log(rebuild ? "Existing rollup and snapshot rows will be rebuilt; raw te
 
 const TREND_BUCKET_MINUTES = 10;
 const trendBucketSql = `strftime('%Y-%m-%dT%H:', occurred_at) || printf('%02d:00.000Z', CAST(strftime('%M', occurred_at) AS INTEGER) / ${TREND_BUCKET_MINUTES} * ${TREND_BUCKET_MINUTES})`;
+const hourlyBucketSql = "strftime('%Y-%m-%dT%H:00:00.000Z', occurred_at)";
 const tempDirectory = await mkdtemp(join(tmpdir(), "codex-rollup-backfill-"));
 const sqlPath = join(tempDirectory, "backfill.sql");
 const rebuildPrefix = rebuild ? `
@@ -97,17 +98,32 @@ SELECT ${trendBucketSql},COUNT(*),COALESCE(SUM(input_tokens),0),COUNT(input_toke
   COALESCE(SUM(ttft_ms),0),COUNT(ttft_ms),COALESCE(SUM(duration_ms),0),COUNT(duration_ms),MAX(received_at)
 FROM codex_telemetry_events GROUP BY ${trendBucketSql};
 
-INSERT INTO codex_rollup_model_hourly
-SELECT substr(occurred_at,1,13) || ':00:00.000Z',model,COUNT(*),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),
+INSERT INTO codex_rollup_model_hourly (
+  hour_start,model,event_count,input_tokens,output_tokens,cached_tokens,reasoning_tokens,tool_tokens,ttft_sum_ms,ttft_sample_count,
+  pricing_input_tokens,pricing_cached_tokens,pricing_cache_write_tokens,pricing_output_tokens,pricing_sample_count,pricing_category_overlap_tokens
+)
+SELECT ${hourlyBucketSql},model,COUNT(*),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),
   COALESCE(SUM(cached_input_tokens),0),COALESCE(SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)),0),COALESCE(SUM(tool_tokens),0),
-  COALESCE(SUM(ttft_ms),0),COUNT(ttft_ms)
-FROM codex_telemetry_events WHERE model IS NOT NULL GROUP BY substr(occurred_at,1,13),model;
+  COALESCE(SUM(ttft_ms),0),COUNT(ttft_ms),
+  COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND cached_input_tokens IS NOT NULL AND cache_write_tokens IS NOT NULL AND output_tokens IS NOT NULL
+    AND cached_input_tokens+cache_write_tokens<=input_tokens THEN input_tokens ELSE 0 END),0),
+  COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND cached_input_tokens IS NOT NULL AND cache_write_tokens IS NOT NULL AND output_tokens IS NOT NULL
+    AND cached_input_tokens+cache_write_tokens<=input_tokens THEN cached_input_tokens ELSE 0 END),0),
+  COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND cached_input_tokens IS NOT NULL AND cache_write_tokens IS NOT NULL AND output_tokens IS NOT NULL
+    AND cached_input_tokens+cache_write_tokens<=input_tokens THEN cache_write_tokens ELSE 0 END),0),
+  COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND cached_input_tokens IS NOT NULL AND cache_write_tokens IS NOT NULL AND output_tokens IS NOT NULL
+    AND cached_input_tokens+cache_write_tokens<=input_tokens THEN output_tokens ELSE 0 END),0),
+  SUM(CASE WHEN input_tokens IS NOT NULL AND cached_input_tokens IS NOT NULL AND cache_write_tokens IS NOT NULL AND output_tokens IS NOT NULL
+    AND cached_input_tokens+cache_write_tokens<=input_tokens THEN 1 ELSE 0 END),
+  COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND cached_input_tokens IS NOT NULL AND cache_write_tokens IS NOT NULL AND output_tokens IS NOT NULL
+    AND cached_input_tokens+cache_write_tokens>input_tokens THEN cached_input_tokens+cache_write_tokens-input_tokens ELSE 0 END),0)
+FROM codex_telemetry_events WHERE model IS NOT NULL GROUP BY ${hourlyBucketSql},model;
 
 INSERT INTO codex_rollup_reasoning_hourly
-SELECT substr(occurred_at,1,13) || ':00:00.000Z',reasoning_effort,COUNT(*),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),
+SELECT ${hourlyBucketSql},reasoning_effort,COUNT(*),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),
   COALESCE(SUM(cached_input_tokens),0),COALESCE(SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)),0),COALESCE(SUM(tool_tokens),0),
   COALESCE(SUM(ttft_ms),0),COUNT(ttft_ms)
-FROM codex_telemetry_events WHERE reasoning_effort IS NOT NULL GROUP BY substr(occurred_at,1,13),reasoning_effort;
+FROM codex_telemetry_events WHERE reasoning_effort IS NOT NULL GROUP BY ${hourlyBucketSql},reasoning_effort;
 
 INSERT INTO codex_session_summary
 WITH ranked AS (
@@ -146,22 +162,50 @@ const sqlQuote = (value) => `'${String(value).replaceAll("'", "''")}'`;
 
 for (const [range, hours] of Object.entries(ranges)) {
   const cutoff = new Date(now.getTime() - hours * 3_600_000).toISOString();
+  const pricingCutoff = new Date(Math.ceil(Date.parse(cutoff) / 3_600_000) * 3_600_000).toISOString();
   const label = range === "24h" ? "hour_start" : "substr(hour_start,1,10)";
-  const hourly = await query(`SELECT ${label} AS label,SUM(event_count) AS event_count,SUM(input_tokens) AS input_tokens,SUM(input_samples) AS input_samples,SUM(output_tokens) AS output_tokens,SUM(output_samples) AS output_samples,SUM(cached_tokens) AS cached_tokens,SUM(cached_samples) AS cached_samples,SUM(cache_write_tokens) AS cache_write_tokens,SUM(cache_write_samples) AS cache_write_samples,SUM(reasoning_tokens) AS reasoning_tokens,SUM(reasoning_samples) AS reasoning_samples,SUM(tool_tokens) AS tool_tokens,SUM(tool_token_samples) AS tool_token_samples,SUM(error_count) AS error_count,SUM(warning_count) AS warning_count,SUM(completed_tools) AS completed_tools,SUM(failed_tools) AS failed_tools,SUM(approvals) AS approvals,SUM(ttft_sum_ms) AS ttft_sum_ms,SUM(ttft_sample_count) AS ttft_sample_count,SUM(duration_sum_ms) AS duration_sum_ms,SUM(duration_sample_count) AS duration_sample_count,MAX(last_received_at) AS last_received_at FROM codex_rollup_hourly WHERE hour_start>=${sqlQuote(cutoff)} GROUP BY label ORDER BY label LIMIT 744`);
-  const models = await query(`SELECT model AS label,SUM(event_count) AS count,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,SUM(cached_tokens) AS cached_tokens,SUM(reasoning_tokens) AS reasoning_tokens,SUM(tool_tokens) AS tool_tokens,COUNT(*) OVER() AS model_count FROM codex_rollup_model_hourly WHERE hour_start>=${sqlQuote(cutoff)} GROUP BY model ORDER BY count DESC LIMIT 64`);
+  const hourly = await query(`WITH windowed AS (
+    SELECT *,
+      SUM(CASE WHEN hour_start>=${sqlQuote(pricingCutoff)} THEN input_tokens ELSE 0 END) OVER() AS pricing_input_tokens,
+      SUM(CASE WHEN hour_start>=${sqlQuote(pricingCutoff)} THEN input_samples ELSE 0 END) OVER() AS pricing_input_samples,
+      SUM(CASE WHEN hour_start>=${sqlQuote(pricingCutoff)} THEN cached_tokens ELSE 0 END) OVER() AS pricing_cached_tokens,
+      SUM(CASE WHEN hour_start>=${sqlQuote(pricingCutoff)} THEN cached_samples ELSE 0 END) OVER() AS pricing_cached_samples,
+      SUM(CASE WHEN hour_start>=${sqlQuote(pricingCutoff)} THEN cache_write_tokens ELSE 0 END) OVER() AS pricing_cache_write_tokens,
+      SUM(CASE WHEN hour_start>=${sqlQuote(pricingCutoff)} THEN cache_write_samples ELSE 0 END) OVER() AS pricing_cache_write_samples,
+      SUM(CASE WHEN hour_start>=${sqlQuote(pricingCutoff)} THEN output_tokens ELSE 0 END) OVER() AS pricing_output_tokens,
+      SUM(CASE WHEN hour_start>=${sqlQuote(pricingCutoff)} THEN output_samples ELSE 0 END) OVER() AS pricing_output_samples
+    FROM codex_rollup_hourly WHERE hour_start>=${sqlQuote(cutoff)}
+  )
+  SELECT ${label} AS label,SUM(event_count) AS event_count,SUM(input_tokens) AS input_tokens,SUM(input_samples) AS input_samples,SUM(output_tokens) AS output_tokens,SUM(output_samples) AS output_samples,SUM(cached_tokens) AS cached_tokens,SUM(cached_samples) AS cached_samples,SUM(cache_write_tokens) AS cache_write_tokens,SUM(cache_write_samples) AS cache_write_samples,SUM(reasoning_tokens) AS reasoning_tokens,SUM(reasoning_samples) AS reasoning_samples,SUM(tool_tokens) AS tool_tokens,SUM(tool_token_samples) AS tool_token_samples,SUM(error_count) AS error_count,SUM(warning_count) AS warning_count,SUM(completed_tools) AS completed_tools,SUM(failed_tools) AS failed_tools,SUM(approvals) AS approvals,SUM(ttft_sum_ms) AS ttft_sum_ms,SUM(ttft_sample_count) AS ttft_sample_count,SUM(duration_sum_ms) AS duration_sum_ms,SUM(duration_sample_count) AS duration_sample_count,MAX(last_received_at) AS last_received_at,
+    MAX(pricing_input_tokens) AS pricing_input_tokens,MAX(pricing_input_samples) AS pricing_input_samples,MAX(pricing_cached_tokens) AS pricing_cached_tokens,MAX(pricing_cached_samples) AS pricing_cached_samples,MAX(pricing_cache_write_tokens) AS pricing_cache_write_tokens,MAX(pricing_cache_write_samples) AS pricing_cache_write_samples,MAX(pricing_output_tokens) AS pricing_output_tokens,MAX(pricing_output_samples) AS pricing_output_samples
+  FROM windowed GROUP BY label ORDER BY label LIMIT 744`);
+  const models = await query(`WITH grouped AS (
+    SELECT model AS label,SUM(event_count) AS count,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,
+      SUM(cached_tokens) AS cached_tokens,SUM(reasoning_tokens) AS reasoning_tokens,SUM(tool_tokens) AS tool_tokens,
+      SUM(pricing_input_tokens) AS pricing_input_tokens,SUM(pricing_cached_tokens) AS pricing_cached_tokens,
+      SUM(pricing_cache_write_tokens) AS pricing_cache_write_tokens,SUM(pricing_output_tokens) AS pricing_output_tokens,
+      SUM(pricing_sample_count) AS pricing_sample_count,SUM(pricing_category_overlap_tokens) AS pricing_category_overlap_tokens
+    FROM codex_rollup_model_hourly WHERE hour_start>=${sqlQuote(pricingCutoff)} GROUP BY model
+  )
+  SELECT *,COUNT(*) OVER() AS model_count,SUM(input_tokens+output_tokens) OVER() AS model_token_count
+  FROM grouped ORDER BY count DESC LIMIT 64`);
   const reasoning = await query(`SELECT reasoning_effort AS label,SUM(event_count) AS count FROM codex_rollup_reasoning_hourly WHERE hour_start>=${sqlQuote(cutoff)} GROUP BY reasoning_effort ORDER BY count DESC LIMIT 8`);
   const sessions = await query(`SELECT *,COUNT(*) OVER() AS range_session_count FROM codex_session_summary WHERE last_seen_at>=${sqlQuote(cutoff)} ORDER BY last_seen_at DESC LIMIT 20`);
   const total = (key) => hourly.reduce((sum, row) => sum + Number(row[key] ?? 0), 0);
   const observed = hourly.length > 0;
   const pricing = calculateCodexEquivalentPricing({
     metrics: {
-      inputTokens: measured(total("input_tokens"), total("input_samples"), observed),
-      cachedTokens: measured(total("cached_tokens"), total("cached_samples"), observed),
-      outputTokens: measured(total("output_tokens"), total("output_samples"), observed),
+      inputTokens: measured(Number(hourly[0]?.pricing_input_tokens ?? 0), Number(hourly[0]?.pricing_input_samples ?? 0), observed),
+      cachedTokens: measured(Number(hourly[0]?.pricing_cached_tokens ?? 0), Number(hourly[0]?.pricing_cached_samples ?? 0), observed),
+      cacheWriteTokens: measured(Number(hourly[0]?.pricing_cache_write_tokens ?? 0), Number(hourly[0]?.pricing_cache_write_samples ?? 0), observed),
+      outputTokens: measured(Number(hourly[0]?.pricing_output_tokens ?? 0), Number(hourly[0]?.pricing_output_samples ?? 0), observed),
     },
-    models: models.map((row) => ({ model: row.label, eventCount: Number(row.count), inputTokens: row.input_tokens, cachedInputTokens: row.cached_tokens, outputTokens: row.output_tokens, reasoningTokens: row.reasoning_tokens, toolTokens: row.tool_tokens })),
+    models: models.map((row) => ({ model: row.label, eventCount: Number(row.count), inputTokens: row.input_tokens, cachedInputTokens: row.cached_tokens, outputTokens: row.output_tokens, reasoningTokens: row.reasoning_tokens, toolTokens: row.tool_tokens,
+      priceableInputTokens: row.pricing_input_tokens, priceableCachedInputTokens: row.pricing_cached_tokens, priceableCacheWriteInputTokens: row.pricing_cache_write_tokens,
+      priceableOutputTokens: row.pricing_output_tokens, priceableSampleCount: row.pricing_sample_count, categoryOverlapTokenCount: row.pricing_category_overlap_tokens })),
     modelCount: Number(models[0]?.model_count ?? models.length),
     modelsTruncated: Number(models[0]?.model_count ?? models.length) > models.length,
+    totalModelTokenCount: Number(models[0]?.model_token_count ?? 0),
   });
   const snapshot = {
     schemaVersion: 1, range, generatedAt: now.toISOString(),

@@ -10,11 +10,11 @@ const SECRET_VALUE = /^(?:bearer\s+|github_pat_|gh[pousr]_|sk-[a-z0-9]|eyJ[^.]+\
 const KNOWN_KEYS = new Set([
   "event.name", "event_name", "event.kind", "event.timestamp", "conversation.id", "conversation_id", "session.id", "session_id", "thread.id", "thread_id", "task.id", "task_id",
   "project.id", "project_id", "project.name", "project_name", "repository.id", "repository_id", "workspace.id", "workspace_id", "environment", "deployment.environment.name", "env",
-  "model", "gen_ai.request.model", "tool", "tool.name", "tool_name", "tool_names", "tool.type", "tool_type", "tool.status", "tool_status", "tool_namespace", "call_id",
+  "model", "gen_ai.request.model", "slug", "tool", "tool.name", "tool_name", "tool_names", "tool.type", "tool_type", "tool.status", "tool_status", "tool_namespace", "call_id",
   "decision", "approval.decision", "approval_decision", "approval_policy", "sandbox_policy", "mcp.server", "mcp_server", "mcp_servers", "mcp.tool", "mcp_tool", "mcp_server_origin",
   "network.host", "network.domain", "server.address", "network.decision", "network_decision", "success", "status", "error.type", "error_type", "error.code", "duration_ms", "duration.ms", "ttft_ms",
-  "input_token_count", "input_tokens", "gen_ai.usage.input_tokens", "output_token_count", "output_tokens", "gen_ai.usage.output_tokens", "cached_input_token_count", "cached_input_tokens", "cached_token_count",
-  "cache_write_token_count", "reasoning_output_token_count", "reasoning_output_tokens", "reasoning_token_count", "tool_token_count", "reasoning_effort", "model_reasoning_effort",
+  "input_token_count", "input_tokens", "gen_ai.usage.input_tokens", "output_token_count", "output_tokens", "gen_ai.usage.output_tokens", "cached_input_token_count", "cached_input_tokens", "cached_token_count", "gen_ai.usage.cache_read.input_tokens",
+  "cache_write_token_count", "gen_ai.usage.cache_write.input_tokens", "reasoning_output_token_count", "reasoning_output_tokens", "codex.usage.reasoning_output_tokens", "reasoning_token_count", "tool_token_count", "reasoning_effort", "model_reasoning_effort",
   "agent_name", "provider_name", "originator", "app.version", "service.name", "service.version", "startup.phase", "startup.status", "terminal.type",
 ]);
 
@@ -121,7 +121,9 @@ export async function normalizeOtlpRecords(records: OtlpLogRecord[], receivedAt:
     const eventName = candidate && /^[a-zA-Z0-9_.:/-]+$/.test(candidate) ? candidate : "unknown";
     const sessionId = identifier(first(a, ["conversation.id", "conversation_id", "session.id", "session_id"]));
     const threadId = identifier(first(a, ["thread.id", "thread_id"]));
-    const model = identifier(first(a, ["model", "gen_ai.request.model"]));
+    // Codex emits both model and slug as common model metadata; slug is only
+    // a fallback when an event has no stronger model field.
+    const model = identifier(first(a, ["model", "gen_ai.request.model", "slug"]));
     const reasoningEffort = dimension(first(a, ["reasoning_effort", "model_reasoning_effort"]), 40)?.toLowerCase();
     const toolName = dimension(first(a, ["tool.name", "tool_name", "tool"])) ?? (eventName.toLowerCase().includes("tool") || a.call_id != null ? singleton(a.tool_names) : undefined);
     const toolStatus = dimension(first(a, ["tool.status", "tool_status"]), 80)?.toLowerCase();
@@ -132,8 +134,8 @@ export async function normalizeOtlpRecords(records: OtlpLogRecord[], receivedAt:
     const mcpServer = dimension(first(a, ["mcp.server", "mcp_server"])) ?? singleton(a.mcp_servers); const mcpTool = dimension(first(a, ["mcp.tool", "mcp_tool"]));
     const inputTokens = numberValue(first(a, ["input_token_count", "input_tokens", "gen_ai.usage.input_tokens"]));
     const outputTokens = numberValue(first(a, ["output_token_count", "output_tokens", "gen_ai.usage.output_tokens"]));
-    const cachedInputTokens = numberValue(first(a, ["cached_input_token_count", "cached_input_tokens", "cached_token_count"]));
-    const cacheWriteTokens = numberValue(a.cache_write_token_count); const reasoningTokens = numberValue(first(a, ["reasoning_output_token_count", "reasoning_output_tokens", "reasoning_token_count"])); const toolTokens = numberValue(a.tool_token_count);
+    const cachedInputTokens = numberValue(first(a, ["cached_input_token_count", "cached_input_tokens", "cached_token_count", "gen_ai.usage.cache_read.input_tokens"]));
+    const cacheWriteTokens = numberValue(first(a, ["cache_write_token_count", "gen_ai.usage.cache_write.input_tokens"])); const reasoningTokens = numberValue(first(a, ["reasoning_output_token_count", "reasoning_output_tokens", "reasoning_token_count", "codex.usage.reasoning_output_tokens"])); const toolTokens = numberValue(a.tool_token_count);
     const startupPhase = dimension(a["startup.phase"], 80); const startupStatus = dimension(a["startup.status"], 80);
     const identity = `${eventName} ${eventKind ?? ""}`;
     const inferredCategory = classify({ identity, severity: record.severityText, severityNumber: record.severityNumber, error: errorType, startup: startupPhase ?? startupStatus, approval: approvalDecision ?? approvalPolicy, mcp: mcpServer ?? mcpTool, tool: toolName ?? toolStatus, hasUsage: [inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, toolTokens].some((v) => v !== undefined), model });

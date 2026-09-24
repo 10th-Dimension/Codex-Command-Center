@@ -29,12 +29,14 @@ class Statement implements D1PreparedStatementLike {
 class SnapshotD1 implements D1DatabaseLike {
   statements: Statement[] = [];
   existingSnapshots: Record<string, unknown>[] = [];
+  hourlyRows: Record<string, unknown>[] = [{ label: "2026-09-13T11:00:00.000Z", event_count: 3, input_tokens: 18, input_samples: 2, output_tokens: 4, output_samples: 1, cached_tokens: 5, cached_samples: 1, cache_write_tokens: 0, cache_write_samples: 0, reasoning_tokens: 7, reasoning_samples: 1, tool_tokens: 3, tool_token_samples: 1, error_count: 1, warning_count: 0, completed_tools: 2, failed_tools: 1, approvals: 1, ttft_sum_ms: 300, ttft_sample_count: 2, duration_sum_ms: 900, duration_sample_count: 3, last_received_at: "2026-09-13T11:50:00.000Z", pricing_input_tokens: 18, pricing_input_samples: 2, pricing_cached_tokens: 5, pricing_cached_samples: 1, pricing_cache_write_tokens: 0, pricing_cache_write_samples: 0, pricing_output_tokens: 4, pricing_output_samples: 1 }];
+  modelRows: Record<string, unknown>[] = Array.from({ length: 12 }, (_, index) => ({ label: `model-${index}`, count: 12 - index, input_tokens: 0, output_tokens: 0, cached_tokens: 0, reasoning_tokens: 0, tool_tokens: 0, pricing_input_tokens: 0, pricing_cached_tokens: 0, pricing_cache_write_tokens: 0, pricing_output_tokens: 0, pricing_sample_count: 0, pricing_category_overlap_tokens: 0, model_count: 12, model_token_count: 0 }));
   sessionRows: Record<string, unknown>[] = [{ session_id: "session-1", project_name: "Command Center", first_seen_at: "2026-09-13T11:00:00.000Z", last_seen_at: "2026-09-13T11:50:00.000Z", latest_model: "model-0", latest_reasoning_effort: "xhigh", event_count: 3, input_tokens: 18, output_tokens: 4, cached_tokens: 5, cache_write_tokens: 0, reasoning_tokens: 7, tool_tokens: 3, completed_tools: 2, failed_tools: 1, error_count: 1, warning_count: 0, approvals: 1, ttft_sum_ms: 300, ttft_sample_count: 2, range_session_count: 1 }];
   prepare(sql: string) { const statement = new Statement(this, sql); this.statements.push(statement); return statement; }
   async batch<T>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> { return statements.map((statement) => this.execute(statement as Statement) as D1ResultLike<T>); }
   execute(statement: Statement): D1ResultLike {
-    if (statement.sql.includes("FROM codex_rollup_hourly")) return { success: true, results: [{ label: "2026-09-13T11:00:00.000Z", event_count: 3, input_tokens: 18, input_samples: 2, output_tokens: 4, output_samples: 1, cached_tokens: 5, cached_samples: 1, cache_write_tokens: 0, cache_write_samples: 0, reasoning_tokens: 7, reasoning_samples: 1, tool_tokens: 3, tool_token_samples: 1, error_count: 1, warning_count: 0, completed_tools: 2, failed_tools: 1, approvals: 1, ttft_sum_ms: 300, ttft_sample_count: 2, duration_sum_ms: 900, duration_sample_count: 3, last_received_at: "2026-09-13T11:50:00.000Z" }] };
-    if (statement.sql.includes("FROM codex_rollup_model_hourly")) return { success: true, results: Array.from({ length: 12 }, (_, index) => ({ label: `model-${index}`, count: 12 - index })).slice(0, 8) };
+    if (statement.sql.includes("FROM codex_rollup_hourly")) return { success: true, results: this.hourlyRows };
+    if (statement.sql.includes("FROM codex_rollup_model_hourly")) return { success: true, results: this.modelRows.slice(0, 8) };
     if (statement.sql.includes("FROM codex_rollup_reasoning_hourly")) return { success: true, results: [{ label: "xhigh", count: 2 }] };
     if (statement.sql.includes("FROM codex_session_summary")) return { success: true, results: this.sessionRows };
     if (statement.sql.includes("FROM codex_dashboard_snapshot")) return { success: true, results: this.existingSnapshots };
@@ -58,6 +60,22 @@ test("rollups group scalar trends into ten-minute buckets while dimensions stay 
   assert.equal(session?.eventCount, 3);
   assert.equal(session?.approvals, 1);
   assert.equal(session?.durationSumMs, 900);
+});
+
+test("model rollups retain exact disjoint pricing categories only for complete non-overlapping samples", () => {
+  const grouped = groupTelemetryRollups([
+    event({ id: "complete", fingerprint: "complete", model: "gpt-6-sol", inputTokens: 100, cachedInputTokens: 20, cacheWriteTokens: 10, outputTokens: 30 }),
+    event({ id: "incomplete", fingerprint: "incomplete", model: "gpt-6-sol", inputTokens: 50, outputTokens: 10 }),
+    event({ id: "overlap", fingerprint: "overlap", model: "gpt-6-sol", inputTokens: 20, cachedInputTokens: 15, cacheWriteTokens: 10, outputTokens: 5 }),
+  ]);
+  const model = grouped.models.get("2026-09-13T11:00:00.000Z\u0000gpt-6-sol");
+  assert.ok(model);
+  assert.equal(model.pricingInputTokens, 100);
+  assert.equal(model.pricingCachedTokens, 20);
+  assert.equal(model.pricingCacheWriteTokens, 10);
+  assert.equal(model.pricingOutputTokens, 30);
+  assert.equal(model.pricingSampleCount, 1);
+  assert.equal(model.pricingCategoryOverlapTokens, 5);
 });
 
 test("ten-minute trend buckets preserve exact event boundaries without increasing dimension buckets", () => {
@@ -135,6 +153,61 @@ test("materialized snapshot keeps the newest observed model and reasoning first"
   assert.equal(snapshot.sessions[0].reasoningEfforts[0], "medium");
 });
 
+test("pricing snapshot aligns scalar and model rollups to the same complete-hour cutoff", async () => {
+  const database = new SnapshotD1();
+  database.hourlyRows = [{
+    label: "2026-09-13T12:00:00.000Z", event_count: 1, input_tokens: 100, input_samples: 1, output_tokens: 20, output_samples: 1,
+    cached_tokens: 20, cached_samples: 1, cache_write_tokens: 10, cache_write_samples: 1, reasoning_tokens: 5, reasoning_samples: 1,
+    tool_tokens: 0, tool_token_samples: 0, error_count: 0, warning_count: 0, completed_tools: 0, failed_tools: 0, approvals: 0,
+    ttft_sum_ms: 0, ttft_sample_count: 0, duration_sum_ms: 0, duration_sample_count: 0, last_received_at: "2026-09-13T12:43:00.000Z",
+    pricing_input_tokens: 100, pricing_input_samples: 1, pricing_cached_tokens: 20, pricing_cached_samples: 1,
+    pricing_cache_write_tokens: 10, pricing_cache_write_samples: 1, pricing_output_tokens: 20, pricing_output_samples: 1,
+  }];
+  database.modelRows = [{
+    label: "gpt-6-sol", count: 1, input_tokens: 100, output_tokens: 20, cached_tokens: 20, reasoning_tokens: 5, tool_tokens: 0,
+    pricing_input_tokens: 100, pricing_cached_tokens: 20, pricing_cache_write_tokens: 10, pricing_output_tokens: 20,
+    pricing_sample_count: 1, pricing_category_overlap_tokens: 0, model_count: 1, model_token_count: 120,
+  }];
+
+  const snapshot = await buildMaterializedSnapshot(database, "24h", new Date("2026-09-13T12:43:00.000Z"));
+  const cutoff = "2026-09-12T12:43:00.000Z";
+  const completeHourCutoff = "2026-09-12T13:00:00.000Z";
+  const hourlyRead = database.statements.find((statement) => statement.sql.includes("FROM codex_rollup_hourly"));
+  const modelRead = database.statements.find((statement) => statement.sql.includes("FROM codex_rollup_model_hourly"));
+  assert.ok(hourlyRead && modelRead);
+  assert.deepEqual(hourlyRead.values.slice(0, 8), Array(8).fill(completeHourCutoff));
+  assert.equal(hourlyRead.values[8], cutoff);
+  assert.deepEqual(modelRead.values, [completeHourCutoff]);
+  assert.equal(snapshot.pricing?.observedTokenCount, 120);
+  assert.equal(snapshot.pricing?.modelAttributedTokenCount, 120);
+  assert.equal(snapshot.pricing?.pricedTokenCount, 120);
+  assert.equal(snapshot.pricing?.coveragePercent, 100);
+});
+
+test("legacy model rollups with no exact pricing samples remain incomplete, not zero-cost or fully covered", async () => {
+  const database = new SnapshotD1();
+  database.hourlyRows = [{
+    label: "2026-09-13T11:00:00.000Z", event_count: 1, input_tokens: 100, input_samples: 1, output_tokens: 20, output_samples: 1,
+    cached_tokens: 0, cached_samples: 0, cache_write_tokens: 0, cache_write_samples: 0, reasoning_tokens: 0, reasoning_samples: 0,
+    tool_tokens: 0, tool_token_samples: 0, error_count: 0, warning_count: 0, completed_tools: 0, failed_tools: 0, approvals: 0,
+    ttft_sum_ms: 0, ttft_sample_count: 0, duration_sum_ms: 0, duration_sample_count: 0, last_received_at: "2026-09-13T11:30:00.000Z",
+    pricing_input_tokens: 100, pricing_input_samples: 1, pricing_cached_tokens: 0, pricing_cached_samples: 0,
+    pricing_cache_write_tokens: 0, pricing_cache_write_samples: 0, pricing_output_tokens: 20, pricing_output_samples: 1,
+  }];
+  database.modelRows = [{
+    label: "gpt-6-sol", count: 1, input_tokens: 100, output_tokens: 20, cached_tokens: 0, reasoning_tokens: 0, tool_tokens: 0,
+    pricing_input_tokens: 0, pricing_cached_tokens: 0, pricing_cache_write_tokens: 0, pricing_output_tokens: 0,
+    pricing_sample_count: 0, pricing_category_overlap_tokens: 0, model_count: 1, model_token_count: 120,
+  }];
+
+  const snapshot = await buildMaterializedSnapshot(database, "24h", now);
+  assert.equal(snapshot.pricing?.observedTokenCount, 120);
+  assert.equal(snapshot.pricing?.pricedTokenCount, 0);
+  assert.equal(snapshot.pricing?.coveragePercent, 0);
+  assert.equal(snapshot.pricing?.tokenFieldsUnavailableTokenCount, 120);
+  assert.equal(snapshot.pricing?.byModel[0]?.status, "incomplete");
+});
+
 test("snapshot freshness refreshes only stale ranges", async () => {
   const database = new SnapshotD1();
   database.existingSnapshots = [
@@ -156,6 +229,14 @@ test("migration 0003 is additive, bounded, and contains no private-content colum
   for (const table of ["codex_rollup_hourly", "codex_rollup_model_hourly", "codex_rollup_reasoning_hourly", "codex_session_summary", "codex_dashboard_snapshot"]) assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
   assert.match(migration, /length\(payload_json\) <= 262144/);
   assert.doesNotMatch(migration, /DROP\s|DELETE\s|prompt|command|arguments|stdout|stderr|reasoning_text|credential|secret/i);
+});
+
+test("migration 0004 adds only forward-looking model pricing-attribution counters", async () => {
+  const migration = await readFile(new URL("../migrations/0004_pricing_attribution.sql", import.meta.url), "utf8");
+  for (const column of ["pricing_input_tokens", "pricing_cached_tokens", "pricing_cache_write_tokens", "pricing_output_tokens", "pricing_sample_count", "pricing_category_overlap_tokens"]) {
+    assert.match(migration, new RegExp(`ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`));
+  }
+  assert.doesNotMatch(migration, /DROP\s|DELETE\s|UPDATE\s|INSERT\s|codex_telemetry_events|prompt|command|arguments|stdout|stderr|credential|secret/i);
 });
 
 test("normal dashboard and overlay sources cannot reference the raw telemetry table", async () => {

@@ -50,6 +50,12 @@ interface DimensionAggregate {
   cachedTokens: number;
   reasoningTokens: number;
   toolTokens: number;
+  pricingInputTokens: number;
+  pricingCachedTokens: number;
+  pricingCacheWriteTokens: number;
+  pricingOutputTokens: number;
+  pricingSampleCount: number;
+  pricingCategoryOverlapTokens: number;
   ttftSumMs: number;
   ttftSampleCount: number;
 }
@@ -132,6 +138,12 @@ const zeroDimension = (): DimensionAggregate => ({
   cachedTokens: 0,
   reasoningTokens: 0,
   toolTokens: 0,
+  pricingInputTokens: 0,
+  pricingCachedTokens: 0,
+  pricingCacheWriteTokens: 0,
+  pricingOutputTokens: 0,
+  pricingSampleCount: 0,
+  pricingCategoryOverlapTokens: 0,
   ttftSumMs: 0,
   ttftSampleCount: 0,
 });
@@ -164,6 +176,18 @@ function addDimension(target: DimensionAggregate, event: NormalizedTelemetryEven
   target.cachedTokens += event.cachedInputTokens ?? 0;
   target.reasoningTokens += event.reasoningTokens ?? 0;
   target.toolTokens += event.toolTokens ?? 0;
+  if (event.inputTokens !== undefined && event.cachedInputTokens !== undefined && event.cacheWriteTokens !== undefined && event.outputTokens !== undefined) {
+    const inputSubsets = event.cachedInputTokens + event.cacheWriteTokens;
+    if (inputSubsets > event.inputTokens) {
+      target.pricingCategoryOverlapTokens += inputSubsets - event.inputTokens;
+    } else {
+      target.pricingInputTokens += event.inputTokens;
+      target.pricingCachedTokens += event.cachedInputTokens;
+      target.pricingCacheWriteTokens += event.cacheWriteTokens;
+      target.pricingOutputTokens += event.outputTokens;
+      target.pricingSampleCount += 1;
+    }
+  }
   if (event.ttftMs !== undefined) {
     target.ttftSumMs += event.ttftMs;
     target.ttftSampleCount += 1;
@@ -265,14 +289,16 @@ ON CONFLICT(hour_start) DO UPDATE SET
   duration_sum_ms=duration_sum_ms+excluded.duration_sum_ms,duration_sample_count=duration_sample_count+excluded.duration_sample_count,
   last_received_at=MAX(COALESCE(last_received_at,''),COALESCE(excluded.last_received_at,''))`;
 
-const dimensionUpsert = (table: string, dimension: string) => `INSERT INTO ${table} (
-  hour_start,${dimension},event_count,input_tokens,output_tokens,cached_tokens,reasoning_tokens,tool_tokens,ttft_sum_ms,ttft_sample_count
-) VALUES (${Array.from({ length: 10 }, () => "?").join(",")})
-ON CONFLICT(hour_start,${dimension}) DO UPDATE SET
-  event_count=event_count+excluded.event_count,input_tokens=input_tokens+excluded.input_tokens,
-  output_tokens=output_tokens+excluded.output_tokens,cached_tokens=cached_tokens+excluded.cached_tokens,
-  reasoning_tokens=reasoning_tokens+excluded.reasoning_tokens,tool_tokens=tool_tokens+excluded.tool_tokens,
-  ttft_sum_ms=ttft_sum_ms+excluded.ttft_sum_ms,ttft_sample_count=ttft_sample_count+excluded.ttft_sample_count`;
+const dimensionUpsert = (table: string, dimension: string, includePricing = false) => {
+  const baseColumns = ["event_count", "input_tokens", "output_tokens", "cached_tokens", "reasoning_tokens", "tool_tokens", "ttft_sum_ms", "ttft_sample_count"];
+  const pricingColumns = includePricing
+    ? ["pricing_input_tokens", "pricing_cached_tokens", "pricing_cache_write_tokens", "pricing_output_tokens", "pricing_sample_count", "pricing_category_overlap_tokens"]
+    : [];
+  const columns = ["hour_start", dimension, ...baseColumns, ...pricingColumns];
+  const updates = [...baseColumns, ...pricingColumns].map((column) => `${column}=${column}+excluded.${column}`).join(",");
+  return `INSERT INTO ${table} (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})
+ON CONFLICT(hour_start,${dimension}) DO UPDATE SET ${updates}`;
+};
 
 const sessionUpsert = `INSERT INTO codex_session_summary (
   session_id,project_name,first_seen_at,last_seen_at,latest_model,latest_reasoning_effort,event_count,
@@ -293,10 +319,14 @@ ON CONFLICT(session_id) DO UPDATE SET
   approvals=approvals+excluded.approvals,ttft_sum_ms=ttft_sum_ms+excluded.ttft_sum_ms,
   ttft_sample_count=ttft_sample_count+excluded.ttft_sample_count`;
 
-function dimensionValues(key: string, value: DimensionAggregate) {
+function dimensionValues(key: string, value: DimensionAggregate, includePricing = false) {
   const [hour, dimension] = key.split("\u0000");
-  return [hour, dimension, value.eventCount, value.inputTokens, value.outputTokens, value.cachedTokens,
+  const base = [hour, dimension, value.eventCount, value.inputTokens, value.outputTokens, value.cachedTokens,
     value.reasoningTokens, value.toolTokens, value.ttftSumMs, value.ttftSampleCount];
+  return includePricing
+    ? [...base, value.pricingInputTokens, value.pricingCachedTokens, value.pricingCacheWriteTokens, value.pricingOutputTokens,
+      value.pricingSampleCount, value.pricingCategoryOverlapTokens]
+    : base;
 }
 
 export async function applyTelemetryRollups(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]): Promise<RollupWriteResult> {
@@ -312,7 +342,7 @@ export async function applyTelemetryRollups(database: D1DatabaseLike, events: No
       value.errorCount, value.warningCount, value.completedTools, value.failedTools, value.approvals, value.ttftSumMs,
       value.ttftSampleCount, value.durationSumMs, value.durationSampleCount, value.lastReceivedAt ?? null));
   }
-  for (const [key, value] of grouped.models) statements.push(database.prepare(dimensionUpsert("codex_rollup_model_hourly", "model")).bind(...dimensionValues(key, value)));
+  for (const [key, value] of grouped.models) statements.push(database.prepare(dimensionUpsert("codex_rollup_model_hourly", "model", true)).bind(...dimensionValues(key, value, true)));
   for (const [key, value] of grouped.reasoning) statements.push(database.prepare(dimensionUpsert("codex_rollup_reasoning_hourly", "reasoning_effort")).bind(...dimensionValues(key, value)));
   for (const value of grouped.sessions.values()) {
     statements.push(database.prepare(sessionUpsert).bind(value.sessionId, value.projectName ?? null, value.firstSeenAt,
@@ -349,6 +379,14 @@ interface HourlyRow {
   cached_samples: number;
   cache_write_tokens: number;
   cache_write_samples: number;
+  pricing_input_tokens: number;
+  pricing_input_samples: number;
+  pricing_cached_tokens: number;
+  pricing_cached_samples: number;
+  pricing_cache_write_tokens: number;
+  pricing_cache_write_samples: number;
+  pricing_output_tokens: number;
+  pricing_output_samples: number;
   reasoning_tokens: number;
   reasoning_samples: number;
   tool_tokens: number;
@@ -373,7 +411,14 @@ interface ModelPricingRow {
   cached_tokens: number | null;
   reasoning_tokens: number | null;
   tool_tokens: number | null;
+  pricing_input_tokens: number | null;
+  pricing_cached_tokens: number | null;
+  pricing_cache_write_tokens: number | null;
+  pricing_output_tokens: number | null;
+  pricing_sample_count: number | null;
+  pricing_category_overlap_tokens: number | null;
   model_count: number;
+  model_token_count: number;
 }
 interface CountRow { label: string; count: number }
 interface SnapshotRow { range: TelemetryRange; generated_at: string; payload_json: string }
@@ -396,6 +441,12 @@ function cutoffFor(range: TelemetryRange, now: Date) {
   return new Date(now.getTime() - hours * 3_600_000).toISOString();
 }
 
+function cutoffForCompleteModelHour(cutoff: string) {
+  const timestamp = Date.parse(cutoff);
+  if (!Number.isFinite(timestamp)) throw new Error("Telemetry pricing cutoff is invalid.");
+  return new Date(Math.ceil(timestamp / 3_600_000) * 3_600_000).toISOString();
+}
+
 function measured(total: number, samples: number, observed: boolean): CodexMeasuredValue {
   if (!observed) return { availability: "unavailable", sampleCount: 0 };
   if (!samples) return { availability: "no-samples", sampleCount: 0 };
@@ -415,7 +466,19 @@ function parseSnapshot(row: SnapshotRow): CodexMaterializedSnapshot | undefined 
   }
 }
 
-const hourlyQuery = (range: TelemetryRange) => `SELECT ${range === "24h" ? "hour_start" : "substr(hour_start,1,10)"} AS label,
+const hourlyQuery = (range: TelemetryRange) => `WITH windowed AS (
+  SELECT *,
+    SUM(CASE WHEN hour_start>=? THEN input_tokens ELSE 0 END) OVER() AS pricing_input_tokens,
+    SUM(CASE WHEN hour_start>=? THEN input_samples ELSE 0 END) OVER() AS pricing_input_samples,
+    SUM(CASE WHEN hour_start>=? THEN cached_tokens ELSE 0 END) OVER() AS pricing_cached_tokens,
+    SUM(CASE WHEN hour_start>=? THEN cached_samples ELSE 0 END) OVER() AS pricing_cached_samples,
+    SUM(CASE WHEN hour_start>=? THEN cache_write_tokens ELSE 0 END) OVER() AS pricing_cache_write_tokens,
+    SUM(CASE WHEN hour_start>=? THEN cache_write_samples ELSE 0 END) OVER() AS pricing_cache_write_samples,
+    SUM(CASE WHEN hour_start>=? THEN output_tokens ELSE 0 END) OVER() AS pricing_output_tokens,
+    SUM(CASE WHEN hour_start>=? THEN output_samples ELSE 0 END) OVER() AS pricing_output_samples
+  FROM codex_rollup_hourly WHERE hour_start>=?
+)
+SELECT ${range === "24h" ? "hour_start" : "substr(hour_start,1,10)"} AS label,
   SUM(event_count) AS event_count,SUM(input_tokens) AS input_tokens,SUM(input_samples) AS input_samples,
   SUM(output_tokens) AS output_tokens,SUM(output_samples) AS output_samples,SUM(cached_tokens) AS cached_tokens,
   SUM(cached_samples) AS cached_samples,SUM(cache_write_tokens) AS cache_write_tokens,
@@ -424,14 +487,28 @@ const hourlyQuery = (range: TelemetryRange) => `SELECT ${range === "24h" ? "hour
   SUM(error_count) AS error_count,SUM(warning_count) AS warning_count,SUM(completed_tools) AS completed_tools,
   SUM(failed_tools) AS failed_tools,SUM(approvals) AS approvals,SUM(ttft_sum_ms) AS ttft_sum_ms,
   SUM(ttft_sample_count) AS ttft_sample_count,SUM(duration_sum_ms) AS duration_sum_ms,
-  SUM(duration_sample_count) AS duration_sample_count,MAX(last_received_at) AS last_received_at
-  FROM codex_rollup_hourly WHERE hour_start>=? GROUP BY label ORDER BY label LIMIT 744`;
+  SUM(duration_sample_count) AS duration_sample_count,MAX(last_received_at) AS last_received_at,
+  MAX(pricing_input_tokens) AS pricing_input_tokens,MAX(pricing_input_samples) AS pricing_input_samples,
+  MAX(pricing_cached_tokens) AS pricing_cached_tokens,MAX(pricing_cached_samples) AS pricing_cached_samples,
+  MAX(pricing_cache_write_tokens) AS pricing_cache_write_tokens,MAX(pricing_cache_write_samples) AS pricing_cache_write_samples,
+  MAX(pricing_output_tokens) AS pricing_output_tokens,MAX(pricing_output_samples) AS pricing_output_samples
+  FROM windowed GROUP BY label ORDER BY label LIMIT 744`;
 
 export async function buildMaterializedSnapshot(database: D1DatabaseLike, range: TelemetryRange, now: Date): Promise<CodexMaterializedSnapshot> {
   const cutoff = cutoffFor(range, now);
+  const pricingCutoff = cutoffForCompleteModelHour(cutoff);
   const results = await database.batch([
-    database.prepare(hourlyQuery(range)).bind(cutoff),
-    database.prepare("SELECT model AS label,SUM(event_count) AS count,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,SUM(cached_tokens) AS cached_tokens,SUM(reasoning_tokens) AS reasoning_tokens,SUM(tool_tokens) AS tool_tokens,COUNT(*) OVER() AS model_count FROM codex_rollup_model_hourly WHERE hour_start>=? GROUP BY model ORDER BY count DESC LIMIT 64").bind(cutoff),
+    database.prepare(hourlyQuery(range)).bind(pricingCutoff, pricingCutoff, pricingCutoff, pricingCutoff, pricingCutoff, pricingCutoff, pricingCutoff, pricingCutoff, cutoff),
+    database.prepare(`WITH grouped AS (
+      SELECT model AS label,SUM(event_count) AS count,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,
+        SUM(cached_tokens) AS cached_tokens,SUM(reasoning_tokens) AS reasoning_tokens,SUM(tool_tokens) AS tool_tokens,
+        SUM(pricing_input_tokens) AS pricing_input_tokens,SUM(pricing_cached_tokens) AS pricing_cached_tokens,
+        SUM(pricing_cache_write_tokens) AS pricing_cache_write_tokens,SUM(pricing_output_tokens) AS pricing_output_tokens,
+        SUM(pricing_sample_count) AS pricing_sample_count,SUM(pricing_category_overlap_tokens) AS pricing_category_overlap_tokens
+      FROM codex_rollup_model_hourly WHERE hour_start>=? GROUP BY model
+    )
+    SELECT *,COUNT(*) OVER() AS model_count,SUM(input_tokens+output_tokens) OVER() AS model_token_count
+    FROM grouped ORDER BY count DESC LIMIT 64`).bind(pricingCutoff),
     database.prepare("SELECT reasoning_effort AS label,SUM(event_count) AS count FROM codex_rollup_reasoning_hourly WHERE hour_start>=? GROUP BY reasoning_effort ORDER BY count DESC LIMIT 8").bind(cutoff),
     database.prepare("SELECT *,COUNT(*) OVER() AS range_session_count FROM codex_session_summary WHERE last_seen_at>=? ORDER BY last_seen_at DESC LIMIT 20").bind(cutoff),
   ]);
@@ -450,12 +527,25 @@ export async function buildMaterializedSnapshot(database: D1DatabaseLike, range:
     outputTokens: row.output_tokens,
     reasoningTokens: row.reasoning_tokens,
     toolTokens: row.tool_tokens,
+    priceableInputTokens: row.pricing_input_tokens,
+    priceableCachedInputTokens: row.pricing_cached_tokens,
+    priceableCacheWriteInputTokens: row.pricing_cache_write_tokens,
+    priceableOutputTokens: row.pricing_output_tokens,
+    priceableSampleCount: row.pricing_sample_count,
+    categoryOverlapTokenCount: row.pricing_category_overlap_tokens,
   }));
+  const pricingTotal = hourly[0];
   const pricing = calculateCodexEquivalentPricing({
-    metrics: { inputTokens: measured(sum(hourly, "input_tokens"), sum(hourly, "input_samples"), observed), cachedTokens: measured(sum(hourly, "cached_tokens"), sum(hourly, "cached_samples"), observed), outputTokens: measured(sum(hourly, "output_tokens"), sum(hourly, "output_samples"), observed) },
+    metrics: {
+      inputTokens: measured(Number(pricingTotal?.pricing_input_tokens ?? 0), Number(pricingTotal?.pricing_input_samples ?? 0), Boolean(pricingTotal)),
+      cachedTokens: measured(Number(pricingTotal?.pricing_cached_tokens ?? 0), Number(pricingTotal?.pricing_cached_samples ?? 0), Boolean(pricingTotal)),
+      cacheWriteTokens: measured(Number(pricingTotal?.pricing_cache_write_tokens ?? 0), Number(pricingTotal?.pricing_cache_write_samples ?? 0), Boolean(pricingTotal)),
+      outputTokens: measured(Number(pricingTotal?.pricing_output_tokens ?? 0), Number(pricingTotal?.pricing_output_samples ?? 0), Boolean(pricingTotal)),
+    },
     models: pricingModels,
     modelCount: Number(modelRows[0]?.model_count ?? modelRows.length),
     modelsTruncated: Number(modelRows[0]?.model_count ?? modelRows.length) > modelRows.length,
+    totalModelTokenCount: Number(modelRows[0]?.model_token_count ?? 0),
   });
   const snapshot: CodexMaterializedSnapshot = {
     schemaVersion: 1,

@@ -230,6 +230,36 @@ test("observed Codex v2 attributes normalize into privacy-safe analytics fields"
   assert.equal(event.schemaVersion, 2);
 });
 
+test("Codex OTel pricing token aliases and slug preserve the emitted model and disjoint input fields", async () => {
+  const [event] = await normalizeOtlpRecords([{
+    attributes: {
+      slug: "gpt-6-sol",
+      "gen_ai.usage.input_tokens": 100,
+      "gen_ai.usage.cache_read.input_tokens": 20,
+      "gen_ai.usage.cache_write.input_tokens": 10,
+      "gen_ai.usage.output_tokens": 30,
+      "codex.usage.reasoning_output_tokens": 12,
+    },
+    resourceAttributes: {},
+  }], now);
+  assert.equal(event.model, "gpt-6-sol");
+  assert.equal(event.inputTokens, 100);
+  assert.equal(event.cachedInputTokens, 20);
+  assert.equal(event.cacheWriteTokens, 10);
+  assert.equal(event.outputTokens, 30);
+  assert.equal(event.reasoningTokens, 12);
+  assert.deepEqual(event.unknownAttributeKeys, []);
+});
+
+test("model and gen_ai.request.model take precedence over the Codex slug fallback", async () => {
+  const events = await normalizeOtlpRecords([
+    { attributes: { model: "gpt-6-sol", "gen_ai.request.model": "gpt-6-luna", slug: "gpt-5.6-sol" }, resourceAttributes: {} },
+    { attributes: { "gen_ai.request.model": "gpt-6-luna", slug: "gpt-5.6-sol" }, resourceAttributes: {} },
+    { attributes: { slug: "gpt-5.6-sol" }, resourceAttributes: {} },
+  ], now);
+  assert.deepEqual(events.map((event) => event.model), ["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"]);
+});
+
 test("event identity uses event.kind, preserves genuine unknowns, and recognizes evidence-backed categories", async () => {
   const events = await normalizeOtlpRecords([
     { attributes: { "event.kind": "codex.startup", "startup.phase": "boot" }, resourceAttributes: {} },

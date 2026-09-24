@@ -44,7 +44,7 @@ function rowsFromJson(output: string): Record<string, unknown>[] {
   return [];
 }
 
-test("historical backfill writes zeroes for absent count dimensions without changing raw telemetry", { timeout: 120_000 }, async () => {
+test("historical backfill writes zeroes for absent count dimensions without changing raw telemetry", { timeout: 180_000 }, async () => {
   const persistence = await mkdtemp(join(tmpdir(), "codex-backfill-null-test-"));
   const locationArguments = ["--local", "--persist-to", persistence];
   const wrangler = (...argumentsList: string[]) => run(process.execPath, [wranglerCli, ...argumentsList]);
@@ -56,11 +56,11 @@ test("historical backfill writes zeroes for absent count dimensions without chan
   try {
     await wrangler("d1", "migrations", "apply", databaseName, ...locationArguments);
     await query(`INSERT INTO codex_telemetry_events (
-      id,event_fingerprint,occurred_at,received_at,event_name,event_category,session_id,
+      id,event_fingerprint,occurred_at,received_at,event_name,event_category,session_id,model,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,
       safe_attribute_keys_json,unknown_attribute_keys_json
     ) VALUES (
       'backfill-null-event','backfill-null-fingerprint',datetime('now','-1 hour'),datetime('now'),
-      'codex.api_request','api-request','backfill-null-session','[]','[]'
+      'codex.api_request','api-request','backfill-null-session','gpt-6-sol',100,20,10,30,'[]','[]'
     )`);
 
     const rawBefore = await query("SELECT * FROM codex_telemetry_events ORDER BY id");
@@ -68,6 +68,7 @@ test("historical backfill writes zeroes for absent count dimensions without chan
     assert.match(backfill.stdout, /Backfill complete/);
 
     const hourlyRows = await query("SELECT hour_start,completed_tools,failed_tools,error_count,warning_count,approvals FROM codex_rollup_hourly ORDER BY hour_start");
+    const modelRows = await query("SELECT hour_start,model,pricing_input_tokens,pricing_cached_tokens,pricing_cache_write_tokens,pricing_output_tokens,pricing_sample_count,pricing_category_overlap_tokens FROM codex_rollup_model_hourly");
     const sessionRows = await query("SELECT completed_tools,failed_tools,error_count,warning_count,approvals FROM codex_session_summary");
     const snapshots = await query("SELECT range,payload_json FROM codex_dashboard_snapshot ORDER BY range");
     const rawAfter = await query("SELECT * FROM codex_telemetry_events ORDER BY id");
@@ -89,8 +90,26 @@ test("historical backfill writes zeroes for absent count dimensions without chan
     }, expectedCounters);
     assert.match(String(hourlyRows[0]?.hour_start), /T\d{2}:(00|10|20|30|40|50):00\.000Z$/);
     const overviewSnapshot = snapshots.find((row) => row.range === "24h");
-    const overviewPayload = JSON.parse(String(overviewSnapshot?.payload_json)) as { trend?: Array<{ label?: string }> };
+    const overviewPayload = JSON.parse(String(overviewSnapshot?.payload_json)) as { trend?: Array<{ label?: string }>; pricing?: { observedTokenCount?: number; pricedTokenCount?: number; coveragePercent?: number } };
     assert.equal(overviewPayload.trend?.[0]?.label, hourlyRows[0]?.hour_start);
+    assert.equal(modelRows.length, 1);
+    assert.deepEqual({
+      model: modelRows[0]?.model,
+      pricing_input_tokens: modelRows[0]?.pricing_input_tokens,
+      pricing_cached_tokens: modelRows[0]?.pricing_cached_tokens,
+      pricing_cache_write_tokens: modelRows[0]?.pricing_cache_write_tokens,
+      pricing_output_tokens: modelRows[0]?.pricing_output_tokens,
+      pricing_sample_count: modelRows[0]?.pricing_sample_count,
+      pricing_category_overlap_tokens: modelRows[0]?.pricing_category_overlap_tokens,
+    }, {
+      model: "gpt-6-sol", pricing_input_tokens: 100, pricing_cached_tokens: 20, pricing_cache_write_tokens: 10,
+      pricing_output_tokens: 30, pricing_sample_count: 1, pricing_category_overlap_tokens: 0,
+    });
+    assert.deepEqual({
+      observed: overviewPayload.pricing?.observedTokenCount,
+      priced: overviewPayload.pricing?.pricedTokenCount,
+      coverage: overviewPayload.pricing?.coveragePercent,
+    }, { observed: 130, priced: 130, coverage: 100 });
     assert.equal(sessionRows.length, 1);
     assert.deepEqual(sessionRows[0], expectedCounters);
     assert.deepEqual(snapshots.map((row) => row.range).sort(), ["24h", "30d", "7d"]);
