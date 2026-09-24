@@ -48,7 +48,7 @@ function OverlayMetric({ label, value, duration, stripOptional }: Readonly<{ lab
 function OverlayPricing({ pricing }: Readonly<{ pricing?: CodexEquivalentPricing }>) {
   const available = pricing?.status === "available" || pricing?.status === "partial";
   const coverageReasons = pricing ? codexPricingCoverageReasons(pricing) : [];
-  return <section className={`overlay-pricing ${pricing?.status ?? "unavailable"}`} title={pricing?.note ?? "API-equivalent pricing is unavailable for this window."}>
+  return <section className={`overlay-pricing ${pricing?.status ?? "unavailable"}`}>
     <div><span>API-equivalent usage</span><small>{pricing?.status === "partial" ? "Partial coverage" : pricing?.status === "available" ? "All observed models" : "Unavailable"}</small></div>
     <strong>{available && pricing?.usdEquivalent !== undefined ? `$${pricing.usdEquivalent}` : "Unavailable"}</strong>
     <b>{available && pricing?.apiCredits !== undefined ? `${pricing.apiCredits} credits` : "No priced token samples"}</b>

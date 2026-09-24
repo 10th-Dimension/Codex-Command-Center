@@ -290,7 +290,7 @@ function QuotaPanel({ account, now }: Readonly<{ account?: OverlaySnapshot["code
 function PricingPanel({ pricing }: Readonly<{ pricing?: OverlaySnapshot["pricing"] }>) {
   const available = pricing?.status === "available" || pricing?.status === "partial";
   const coverageReasons = pricing ? codexPricingCoverageReasons(pricing) : [];
-  return <section className={`pricing-panel ${pricing?.status ?? "unavailable"}`} title={pricing?.note ?? "API-equivalent pricing is unavailable for this window."}>
+  return <section className={`pricing-panel ${pricing?.status ?? "unavailable"}`}>
     <div className="section-title"><b>API-equivalent usage</b><span>{pricing?.status === "partial" ? "Partial coverage" : pricing?.status === "available" ? "All observed models" : "Unavailable"}</span></div>
     <div className="pricing-main"><div><small>USD equivalent</small><strong>{available && pricing?.usdEquivalent !== undefined ? `$${pricing.usdEquivalent}` : "Unavailable"}</strong></div><div><small>Codex credits</small><strong>{available && pricing?.apiCredits !== undefined ? pricing.apiCredits : "—"}</strong></div><div><small>Priced token coverage</small><strong>{pricing?.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}%`}</strong></div></div>
     {pricing?.status === "partial" && coverageReasons.length ? <p className="pricing-coverage-reasons">{coverageReasons.join(" · ")}</p> : null}

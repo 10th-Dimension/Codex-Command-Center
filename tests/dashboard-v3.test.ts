@@ -206,8 +206,10 @@ test("website and native pricing surfaces share truthful coverage semantics and 
   assert.match(website, /codexPricingCoverageReasons/);
   assert.match(webOverlay, /Priced token coverage/);
   assert.match(webOverlay, /codexPricingCoverageReasons/);
+  assert.doesNotMatch(webOverlay, /<section[^>]*overlay-pricing[^>]*\btitle=/);
   assert.match(nativeOverlay, /Priced token coverage/);
   assert.match(nativeOverlay, /codexPricingCoverageReasons/);
+  assert.doesNotMatch(nativeOverlay, /<section[^>]*pricing-panel[^>]*\btitle=/);
   assert.match(pricing, /not an invoice or account balance/i);
   assert.match(pricing, /Codex does not charge cache writes/);
   assert.doesNotMatch(nativeOverlay, /credit amounts are estimates, not official Work\/Codex rates/i);
