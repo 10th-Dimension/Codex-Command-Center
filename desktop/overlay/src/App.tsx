@@ -3,6 +3,7 @@ import { Activity, AlertTriangle, Check, ChevronDown, Circle, ExternalLink, EyeO
 import type { CodexQuotaWindow, OverlaySnapshot, TelemetryBufferHealth } from "../../../src/lib/overlay/contracts";
 import { stackTokenSeries } from "../../../src/lib/telemetry/stacked-token-series";
 import { tokenCompositionSegments, tokenVisualSeries } from "../../../src/lib/telemetry/token-visuals";
+import { codexPricingCoverageReasons } from "../../../src/lib/telemetry/pricing";
 import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../../../src/lib/overlay/account";
 import { telemetryFreshness } from "./lib/freshness";
 import { applyWindowSettings, configureHotkeys, controlRelay, fetchOverlay, getAutostart, getNativeState, hideOverlay, loadSettings, onNativeAction, openDashboard, quitOverlay, recoverOverlay, saveSettings, setAutostart, setCorner, setLayout, startDrag, startResize, type NativeState } from "./lib/native";
@@ -288,14 +289,13 @@ function QuotaPanel({ account, now }: Readonly<{ account?: OverlaySnapshot["code
 
 function PricingPanel({ pricing }: Readonly<{ pricing?: OverlaySnapshot["pricing"] }>) {
   const available = pricing?.status === "available" || pricing?.status === "partial";
-  const estimatedCreditModels = pricing?.byModel.some((model) =>
-    ["gpt-6-sol", "gpt-6-luna"].includes(model.model.toLowerCase()) && model.status === "priced",
-  ) ?? false;
+  const coverageReasons = pricing ? codexPricingCoverageReasons(pricing) : [];
   return <section className={`pricing-panel ${pricing?.status ?? "unavailable"}`} title={pricing?.note ?? "API-equivalent pricing is unavailable for this window."}>
     <div className="section-title"><b>API-equivalent usage</b><span>{pricing?.status === "partial" ? "Partial coverage" : pricing?.status === "available" ? "All observed models" : "Unavailable"}</span></div>
-    <div className="pricing-main"><div><small>USD equivalent</small><strong>{available && pricing?.usdEquivalent !== undefined ? `$${pricing.usdEquivalent}` : "Unavailable"}</strong></div><div><small>Codex credits</small><strong>{available && pricing?.apiCredits !== undefined ? pricing.apiCredits : "—"}</strong></div><div><small>Coverage</small><strong>{pricing?.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}%`}</strong></div></div>
-    {pricing?.byModel.length ? <details className="pricing-details"><summary>Model math <span>+</span></summary><div>{pricing.byModel.map((model) => <div key={model.model}><span><b>{model.displayName}</b><small>{model.model} · {model.eventCount.toLocaleString()} events</small></span><strong>{model.status === "priced" ? `$${model.usdEquivalent}` : "Unpriced"}</strong></div>)}</div></details> : null}
-    <p>{estimatedCreditModels ? "GPT-6 Sol/Luna credit amounts are estimates, not official Work/Codex rates." : "Standard token rates · feature charges excluded · reasoning is not double-counted."}</p>
+    <div className="pricing-main"><div><small>USD equivalent</small><strong>{available && pricing?.usdEquivalent !== undefined ? `$${pricing.usdEquivalent}` : "Unavailable"}</strong></div><div><small>Codex credits</small><strong>{available && pricing?.apiCredits !== undefined ? pricing.apiCredits : "—"}</strong></div><div><small>Priced token coverage</small><strong>{pricing?.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}%`}</strong></div></div>
+    {pricing?.status === "partial" && coverageReasons.length ? <p className="pricing-coverage-reasons">{coverageReasons.join(" · ")}</p> : null}
+    {pricing?.byModel.length ? <details className="pricing-details"><summary>Model math <span>+</span></summary><div>{pricing.byModel.map((model) => <div key={model.model}><span><b>{model.displayName}</b><small>{model.model} · {model.eventCount.toLocaleString()} events{model.reason ? ` · ${model.reason}` : ""}</small></span><strong>{model.status === "priced" ? `$${model.usdEquivalent ?? "—"}` : model.status === "incomplete" ? "Incomplete" : "Unpriced"}</strong></div>)}</div></details> : null}
+    <p>{pricing?.note ?? "Standard token rates · feature charges excluded · reasoning is included in output."}</p>
   </section>;
 }
 

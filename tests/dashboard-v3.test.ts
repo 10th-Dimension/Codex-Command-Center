@@ -195,6 +195,24 @@ test("Codex page gates raw forensics and keeps the overview bounded", async () =
   assert.doesNotMatch(source, /subscription|plan limit|remaining credits/i);
 });
 
+test("website and native pricing surfaces share truthful coverage semantics and comparison disclosure", async () => {
+  const [website, webOverlay, nativeOverlay, pricing] = await Promise.all([
+    readFile(new URL("../src/components/dashboard/command-pages.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/overlay/overlay-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/overlay/src/App.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/telemetry/pricing.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(website, /Priced token coverage/);
+  assert.match(website, /codexPricingCoverageReasons/);
+  assert.match(webOverlay, /Priced token coverage/);
+  assert.match(webOverlay, /codexPricingCoverageReasons/);
+  assert.match(nativeOverlay, /Priced token coverage/);
+  assert.match(nativeOverlay, /codexPricingCoverageReasons/);
+  assert.match(pricing, /not an invoice or account balance/i);
+  assert.match(pricing, /Codex does not charge cache writes/);
+  assert.doesNotMatch(nativeOverlay, /credit amounts are estimates, not official Work\/Codex rates/i);
+});
+
 test("usage and activity keep their detail responsibilities separate", async () => {
   const source = await readFile(new URL("../src/components/dashboard/command-pages.tsx", import.meta.url), "utf8");
   const usageWorkspace = source.match(/function UsageWorkspace[\s\S]*?function ActivityWorkspace/)?.[0] ?? "";
