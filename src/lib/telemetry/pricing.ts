@@ -5,7 +5,7 @@
  */
 export const CODEX_PRICING_CARD_ID = "openai-api-and-codex-token-rates-2026-09-23";
 export const CODEX_PRICING_BASIS = "codex-token-credit-rates" as const;
-export const CODEX_PRICING_NOTE = "Standard API USD and Work/Codex credit token rates only. Cache reads and writes are separate input subsets; Codex does not charge cache writes. Reasoning tokens are included in output and are not added again. Fast mode, long-context, regional-processing, and separately metered feature charges are excluded. Pricing compares matching complete hourly rollups, so the partial leading model hour is excluded. This is not an invoice or account balance.";
+export const CODEX_PRICING_NOTE = "Codex auto-review activity is excluded from these estimates and coverage because it has no published per-token rate. Standard API USD and Work/Codex credit token rates only. Cache reads and writes are separate input subsets; Codex does not charge cache writes. Reasoning tokens are included in output and are not added again. Fast mode, long-context, regional-processing, and separately metered feature charges are excluded. Pricing compares matching complete hourly rollups, so the partial leading model hour is excluded. This is not an invoice or account balance.";
 
 export interface CodexModelPricingRate {
   model: string;
@@ -156,6 +156,7 @@ interface DisjointTokenCounts {
 const MICRO_UNITS = 1_000_000n;
 const MILLION_TOKENS = 1_000_000n;
 const effortSuffix = /-(?:light|low|medium|high|extra-high|extra-high|max|ultra|xhigh)$/;
+const excludedEquivalentPricingModels = new Set(["codex-auto-review"]);
 
 function rate(
   model: string,
@@ -188,12 +189,23 @@ export function resolveCodexPricingRate(model: string | undefined) {
   return pricingByAlias.get(canonical) ?? pricingByAlias.get(canonical.replace(effortSuffix, ""));
 }
 
+function isExcludedFromEquivalentPricing(model: string) {
+  return excludedEquivalentPricingModels.has(canonicalModel(model));
+}
+
 function tokenCount(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
 }
 
 function metricValue(value: PricingMeasuredValue) {
   return value.availability === "available" ? tokenCount(value.value) : undefined;
+}
+
+function subtractObservedTokens(value: PricingMeasuredValue, tokensToSubtract: number): PricingMeasuredValue {
+  if (tokensToSubtract === 0 || value.availability !== "available") return value;
+  const observedTokens = metricValue(value);
+  if (observedTokens === undefined || observedTokens < tokensToSubtract) return { availability: "unavailable" };
+  return { ...value, value: observedTokens - tokensToSubtract };
 }
 
 function fixedRate(value: number | undefined) {
@@ -258,7 +270,19 @@ export function calculateCodexEquivalentPricing({
   modelCount?: number;
   totalModelTokenCount?: number;
 }): CodexEquivalentPricing {
-  const observedTokenCount = measuredTotal(metrics);
+  const excludedModels = models.filter((model) => isExcludedFromEquivalentPricing(model.model));
+  const pricedModels = models.filter((model) => !isExcludedFromEquivalentPricing(model.model));
+  const excludedUsage = excludedModels.reduce((total, model) => {
+    const usage = sumTokenFields(model);
+    return { input: total.input + usage.input, output: total.output + usage.output };
+  }, { input: 0, output: 0 });
+  const pricingMetrics: PricingSummaryMetrics = {
+    ...metrics,
+    inputTokens: subtractObservedTokens(metrics.inputTokens, excludedUsage.input),
+    outputTokens: subtractObservedTokens(metrics.outputTokens, excludedUsage.output),
+  };
+  const observedTokenCount = measuredTotal(pricingMetrics);
+  const excludedModelTokenCount = excludedUsage.input + excludedUsage.output;
   let pricedCredits = 0n;
   let pricedUsd = 0n;
   let creditCostAvailable = false;
@@ -271,9 +295,10 @@ export function calculateCodexEquivalentPricing({
   let unpricedModelTokenCount = 0;
   let tokenFieldsUnavailableTokenCount = 0;
   let categoryOverlapTokenCount = 0;
-  const totalModelCount = Math.max(models.length, typeof modelCount === "number" && Number.isFinite(modelCount) ? Math.trunc(modelCount) : models.length);
-  const hasModelTruncation = modelsTruncated || totalModelCount > models.length;
-  const byModel = models.map((model) => {
+  const declaredModelCount = Math.max(models.length, typeof modelCount === "number" && Number.isFinite(modelCount) ? Math.trunc(modelCount) : models.length);
+  const totalModelCount = Math.max(pricedModels.length, declaredModelCount - excludedModels.length);
+  const hasModelTruncation = modelsTruncated || totalModelCount > pricedModels.length;
+  const byModel = pricedModels.map((model) => {
     const usage = sumTokenFields(model);
     const rateValue = resolveCodexPricingRate(model.model);
     const eventCount = tokenCount(model.eventCount);
@@ -360,9 +385,13 @@ export function calculateCodexEquivalentPricing({
   });
 
   const completeModelTokenCount = typeof totalModelTokenCount === "number" && Number.isFinite(totalModelTokenCount)
-    ? Math.max(0, Math.trunc(totalModelTokenCount))
+    ? Math.max(0, Math.trunc(totalModelTokenCount) - excludedModelTokenCount)
     : visibleModelTokenCount;
+  const exclusionAccountingMismatch = typeof totalModelTokenCount === "number" && Number.isFinite(totalModelTokenCount)
+    ? Math.max(0, excludedModelTokenCount - Math.max(0, Math.trunc(totalModelTokenCount)))
+    : 0;
   const accountingMismatchTokenCount = Math.max(
+    exclusionAccountingMismatch,
     0,
     visibleModelTokenCount - completeModelTokenCount,
     observedTokenCount === undefined ? 0 : completeModelTokenCount - observedTokenCount,
@@ -380,7 +409,7 @@ export function calculateCodexEquivalentPricing({
   const coveragePercent = observedTokenCount !== undefined && observedTokenCount > 0 && accountingMismatchTokenCount === 0
     ? Math.min(100, Math.max(0, Number(((pricedTokenCount / observedTokenCount) * 100).toFixed(2))))
     : undefined;
-  const hasTokenSamples = observedTokenCount !== undefined || completeModelTokenCount > 0 || models.some((model) => tokenCount(model.priceableSampleCount) > 0);
+  const hasTokenSamples = observedTokenCount !== undefined || completeModelTokenCount > 0 || pricedModels.some((model) => tokenCount(model.priceableSampleCount) > 0);
   const incompleteAccountAttribution = observedTokenCount === undefined;
   const isComplete = hasTokenSamples && observedTokenCount !== undefined &&
     unpricedTokenCount === 0 && unpricedModelCount === 0 && incompleteModelCount === 0 &&

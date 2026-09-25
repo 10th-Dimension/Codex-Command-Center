@@ -122,6 +122,28 @@ test("an unknown model remains visibly unpriced with an exact token count", () =
   assert.equal(result.byModel[1].status, "unpriced");
 });
 
+test("Codex auto-review is excluded from API-equivalent model totals and coverage", () => {
+  const result = calculateCodexEquivalentPricing({
+    metrics: metrics(1_011_738, 0, 0),
+    models: [
+      modelUsage("gpt-6-astra", { input: 1_000_000 }),
+      { model: "codex-auto-review", eventCount: 12, inputTokens: 11_738 },
+    ],
+    modelCount: 2,
+    totalModelTokenCount: 1_011_738,
+  });
+  assert.equal(result.status, "available");
+  assert.equal(result.observedTokenCount, 1_000_000);
+  assert.equal(result.modelAttributedTokenCount, 1_000_000);
+  assert.equal(result.pricedTokenCount, 1_000_000);
+  assert.equal(result.unpricedModelTokenCount, 0);
+  assert.equal(result.modelCount, 1);
+  assert.equal(result.unpricedModelCount, 0);
+  assert.equal(result.coveragePercent, 100);
+  assert.deepEqual(result.byModel.map((model) => model.model), ["gpt-6-astra"]);
+  assert.match(result.note, /Codex auto-review activity is excluded/);
+});
+
 test("model-less token usage stays unattributed and is not assigned from another model or session", () => {
   const result = calculateCodexEquivalentPricing({
     metrics: metrics(2_000_000, 0, 0),
