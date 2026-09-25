@@ -508,7 +508,7 @@ export async function buildMaterializedSnapshot(database: D1DatabaseLike, range:
       FROM codex_rollup_model_hourly WHERE hour_start>=? GROUP BY model
     )
     SELECT *,COUNT(*) OVER() AS model_count,SUM(input_tokens+output_tokens) OVER() AS model_token_count
-    FROM grouped ORDER BY count DESC LIMIT 64`).bind(pricingCutoff),
+    FROM grouped ORDER BY CASE WHEN label='codex-auto-review' THEN 0 ELSE 1 END,count DESC LIMIT 65`).bind(pricingCutoff),
     database.prepare("SELECT reasoning_effort AS label,SUM(event_count) AS count FROM codex_rollup_reasoning_hourly WHERE hour_start>=? GROUP BY reasoning_effort ORDER BY count DESC LIMIT 8").bind(cutoff),
     database.prepare("SELECT *,COUNT(*) OVER() AS range_session_count FROM codex_session_summary WHERE last_seen_at>=? ORDER BY last_seen_at DESC LIMIT 20").bind(cutoff),
   ]);
@@ -569,7 +569,7 @@ export async function buildMaterializedSnapshot(database: D1DatabaseLike, range:
     trend: hourly.map((row) => ({ label: row.label, events: Number(row.event_count), errors: Number(row.error_count),
       toolExecutions: Number(row.completed_tools), inputTokens: Number(row.input_tokens), outputTokens: Number(row.output_tokens),
       cachedTokens: Number(row.cached_tokens), cacheWriteTokens: Number(row.cache_write_tokens), reasoningTokens: Number(row.reasoning_tokens), toolTokens: Number(row.tool_tokens) })),
-    models: modelRows.slice(0, 8).map((row) => ({ label: row.label, count: Number(row.count) })),
+    models: [...modelRows].sort((left, right) => Number(right.count) - Number(left.count)).slice(0, 8).map((row) => ({ label: row.label, count: Number(row.count) })),
     reasoningEfforts: reasoningRows.map((row) => ({ label: row.label, count: Number(row.count) })),
     sessions: sessionRows.map((row) => ({ sessionId: row.session_id, projectName: row.project_name ?? undefined,
       models: row.latest_model ? [row.latest_model] : [], reasoningEfforts: row.latest_reasoning_effort ? [row.latest_reasoning_effort] : [],

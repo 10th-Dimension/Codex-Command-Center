@@ -183,11 +183,20 @@ test("native pricing rows expose partial USD amounts and keep the long rate note
     readFile(new URL("../desktop/overlay/src/styles.css", import.meta.url), "utf8"),
   ]);
   assert.match(app, /codexEquivalentModelPriceLabel\(model\)/);
+  assert.match(app, /"Full coverage"/);
   assert.match(app, /<details className="pricing-details pricing-note-details"><summary>Pricing assumptions/);
   assert.doesNotMatch(app, /<details className="pricing-details pricing-note-details" open/);
   assert.match(app, /pricing-note-details\"><summary>Pricing assumptions <span>\+<\/span><\/summary><p>\{pricing\?\.note/);
   assert.match(styles, /\.pricing-note-details summary/);
   assert.match(styles, /\.pricing-note-details p/);
+});
+
+test("native pricing keeps model amounts in view beside long reasons", async () => {
+  const styles = await readFile(new URL("../desktop/overlay/src/styles.css", import.meta.url), "utf8");
+  assert.match(styles, /\.pricing-details > div\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)[^}]*overflow-x:\s*hidden/);
+  assert.match(styles, /\.pricing-details > div > div\s*\{[^}]*min-width:\s*0[^}]*width:\s*100%[^}]*overflow:\s*hidden/);
+  assert.match(styles, /\.pricing-details > div > div > span\s*\{[^}]*flex:\s*1 1 0%/);
+  assert.match(styles, /\.pricing-details > div > div > strong\s*\{[^}]*flex:\s*0 0 auto[^}]*margin-left:\s*auto/);
 });
 
 test("overlay layouts keep content scrollable when the window is resized", async () => {

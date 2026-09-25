@@ -184,6 +184,42 @@ test("pricing snapshot aligns scalar and model rollups to the same complete-hour
   assert.equal(snapshot.pricing?.coveragePercent, 100);
 });
 
+test("pricing snapshot returns 100% coverage without including Codex auto-review in model math", async () => {
+  const database = new SnapshotD1();
+  database.hourlyRows = [{
+    label: "2026-09-13T12:00:00.000Z", event_count: 2, input_tokens: 1_011_738, input_samples: 2, output_tokens: 0, output_samples: 2,
+    cached_tokens: 0, cached_samples: 2, cache_write_tokens: 0, cache_write_samples: 2, reasoning_tokens: 0, reasoning_samples: 0,
+    tool_tokens: 0, tool_token_samples: 0, error_count: 0, warning_count: 0, completed_tools: 0, failed_tools: 0, approvals: 0,
+    ttft_sum_ms: 0, ttft_sample_count: 0, duration_sum_ms: 0, duration_sample_count: 0, last_received_at: "2026-09-13T12:43:00.000Z",
+    pricing_input_tokens: 1_011_738, pricing_input_samples: 2, pricing_cached_tokens: 0, pricing_cached_samples: 2,
+    pricing_cache_write_tokens: 0, pricing_cache_write_samples: 2, pricing_output_tokens: 0, pricing_output_samples: 2,
+  }];
+  database.modelRows = [
+    {
+      label: "codex-auto-review", count: 1, input_tokens: 11_738, output_tokens: 0, cached_tokens: 0, reasoning_tokens: 0, tool_tokens: 0,
+      pricing_input_tokens: 0, pricing_cached_tokens: 0, pricing_cache_write_tokens: 0, pricing_output_tokens: 0,
+      pricing_sample_count: 0, pricing_category_overlap_tokens: 0, model_count: 2, model_token_count: 1_011_738,
+    },
+    {
+      label: "gpt-6-astra", count: 100, input_tokens: 1_000_000, output_tokens: 0, cached_tokens: 0, reasoning_tokens: 0, tool_tokens: 0,
+      pricing_input_tokens: 1_000_000, pricing_cached_tokens: 0, pricing_cache_write_tokens: 0, pricing_output_tokens: 0,
+      pricing_sample_count: 1, pricing_category_overlap_tokens: 0, model_count: 2, model_token_count: 1_011_738,
+    },
+  ];
+
+  const snapshot = await buildMaterializedSnapshot(database, "24h", new Date("2026-09-13T12:43:00.000Z"));
+  const modelRead = database.statements.find((statement) => statement.sql.includes("FROM codex_rollup_model_hourly"));
+  assert.ok(modelRead);
+  assert.match(modelRead.sql, /ORDER BY CASE WHEN label='codex-auto-review' THEN 0 ELSE 1 END,count DESC LIMIT 65/);
+  assert.deepEqual(snapshot.models, [{ label: "gpt-6-astra", count: 100 }, { label: "codex-auto-review", count: 1 }]);
+  assert.equal(snapshot.pricing?.observedTokenCount, 1_000_000);
+  assert.equal(snapshot.pricing?.pricedTokenCount, 1_000_000);
+  assert.equal(snapshot.pricing?.unpricedModelTokenCount, 0);
+  assert.equal(snapshot.pricing?.modelCount, 1);
+  assert.deepEqual(snapshot.pricing?.byModel.map((model) => model.model), ["gpt-6-astra"]);
+  assert.equal(snapshot.pricing?.coveragePercent, 100);
+});
+
 test("legacy model rollups with no exact pricing samples remain incomplete, not zero-cost or fully covered", async () => {
   const database = new SnapshotD1();
   database.hourlyRows = [{

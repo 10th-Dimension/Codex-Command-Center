@@ -188,7 +188,7 @@ for (const [range, hours] of Object.entries(ranges)) {
     FROM codex_rollup_model_hourly WHERE hour_start>=${sqlQuote(pricingCutoff)} GROUP BY model
   )
   SELECT *,COUNT(*) OVER() AS model_count,SUM(input_tokens+output_tokens) OVER() AS model_token_count
-  FROM grouped ORDER BY count DESC LIMIT 64`);
+  FROM grouped ORDER BY CASE WHEN label='codex-auto-review' THEN 0 ELSE 1 END,count DESC LIMIT 65`);
   const reasoning = await query(`SELECT reasoning_effort AS label,SUM(event_count) AS count FROM codex_rollup_reasoning_hourly WHERE hour_start>=${sqlQuote(cutoff)} GROUP BY reasoning_effort ORDER BY count DESC LIMIT 8`);
   const sessions = await query(`SELECT *,COUNT(*) OVER() AS range_session_count FROM codex_session_summary WHERE last_seen_at>=${sqlQuote(cutoff)} ORDER BY last_seen_at DESC LIMIT 20`);
   const total = (key) => hourly.reduce((sum, row) => sum + Number(row[key] ?? 0), 0);
@@ -220,7 +220,7 @@ for (const [range, hours] of Object.entries(ranges)) {
       averageDurationMs: total("duration_sample_count") ? total("duration_sum_ms") / total("duration_sample_count") : undefined,
     },
     trend: hourly.map((row) => ({ label: row.label, events: Number(row.event_count), errors: Number(row.error_count), toolExecutions: Number(row.completed_tools), inputTokens: Number(row.input_tokens), outputTokens: Number(row.output_tokens), cachedTokens: Number(row.cached_tokens), cacheWriteTokens: Number(row.cache_write_tokens), reasoningTokens: Number(row.reasoning_tokens), toolTokens: Number(row.tool_tokens) })),
-    models: models.map((row) => ({ label: row.label, count: Number(row.count) })),
+    models: [...models].sort((left, right) => Number(right.count) - Number(left.count)).slice(0, 8).map((row) => ({ label: row.label, count: Number(row.count) })),
     reasoningEfforts: reasoning.map((row) => ({ label: row.label, count: Number(row.count) })),
     sessions: sessions.map((row) => ({ sessionId: row.session_id, projectName: row.project_name ?? undefined, models: row.latest_model ? [row.latest_model] : [], reasoningEfforts: row.latest_reasoning_effort ? [row.latest_reasoning_effort] : [], eventCount: Number(row.event_count), errorCount: Number(row.error_count), warningCount: Number(row.warning_count), toolExecutions: Number(row.completed_tools), failedTools: Number(row.failed_tools), toolRelatedEvents: Number(row.completed_tools), usageEvents: Number(row.event_count), approvalEvents: Number(row.approvals), inputTokens: Number(row.input_tokens), outputTokens: Number(row.output_tokens), cachedTokens: Number(row.cached_tokens), cacheWriteTokens: Number(row.cache_write_tokens), reasoningTokens: Number(row.reasoning_tokens), toolTokens: Number(row.tool_tokens), averageTtftMs: Number(row.ttft_sample_count) ? Number(row.ttft_sum_ms) / Number(row.ttft_sample_count) : undefined, firstSeenAt: row.first_seen_at, lastSeenAt: row.last_seen_at })),
     pricing,

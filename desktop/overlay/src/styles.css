@@ -97,4 +97,9 @@ footer { position: relative; justify-content: space-between; flex-wrap: wrap; ga
 .pricing-note-details summary { display: flex; justify-content: space-between; padding-top: 6px; color: color-mix(in srgb, var(--text) 43%, transparent); cursor: pointer; font-size: .46em; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
 .pricing-note-details summary span { font-size: 10px; }
 .pricing-note-details p { margin: 5px 0 0; color: color-mix(in srgb, var(--text) 31%, transparent); font-size: .46em; line-height: 1.4; }
+/* Keep long pricing diagnostics from pushing the model amount offscreen. */
+.pricing-details > div { width: 100%; grid-template-columns: minmax(0,1fr); overflow-x: hidden; overflow-y: auto; }
+.pricing-details > div > div { min-width: 0; width: 100%; overflow: hidden; }
+.pricing-details > div > div > span { flex: 1 1 0%; }
+.pricing-details > div > div > strong { flex: 0 0 auto; margin-left: auto; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
