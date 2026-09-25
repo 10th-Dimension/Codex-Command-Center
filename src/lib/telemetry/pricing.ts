@@ -127,6 +127,58 @@ export function codexPricingCoverageReasons(pricing: CodexEquivalentPricing) {
   return reasons;
 }
 
+/**
+ * Re-project legacy persisted pricing snapshots after a model is excluded.
+ * This is intentionally an in-memory read compatibility step: it does not
+ * rewrite D1 snapshots or change the underlying telemetry rollups.
+ */
+export function excludeCodexAutoReviewFromStoredPricing(pricing: CodexEquivalentPricing | undefined) {
+  if (!pricing) return pricing;
+  const excluded = pricing.byModel.filter((model) => isExcludedFromEquivalentPricing(model.model));
+  if (excluded.length === 0) return pricing;
+  if (excluded.some((model) => model.status !== "unpriced" || model.pricedTokenCount !== 0 || model.apiCredits !== undefined || model.usdEquivalent !== undefined)) return pricing;
+
+  const excludedTokenCount = excluded.reduce((total, model) => total + tokenCount(model.inputTokens) + tokenCount(model.outputTokens), 0);
+  const observedTokenCount = pricing.observedTokenCount;
+  const modelAttributedTokenCount = pricing.modelAttributedTokenCount;
+  if (observedTokenCount === undefined || modelAttributedTokenCount === undefined ||
+      observedTokenCount < excludedTokenCount || modelAttributedTokenCount < excludedTokenCount ||
+      pricing.unpricedModelTokenCount < excludedTokenCount || pricing.unpricedTokenCount === undefined ||
+      pricing.unpricedTokenCount < excludedTokenCount || pricing.modelCount < excluded.length ||
+      pricing.unpricedModelCount < excluded.length ||
+      pricing.unpricedTokenCount !== Math.max(0, observedTokenCount - pricing.pricedTokenCount)) return pricing;
+
+  const adjustedObservedTokenCount = observedTokenCount - excludedTokenCount;
+  const adjustedModelAttributedTokenCount = modelAttributedTokenCount - excludedTokenCount;
+  const adjustedUnpricedModelTokenCount = pricing.unpricedModelTokenCount - excludedTokenCount;
+  const adjustedUnpricedTokenCount = Math.max(0, adjustedObservedTokenCount - pricing.pricedTokenCount);
+  const adjustedModelCount = pricing.modelCount - excluded.length;
+  const adjustedUnpricedModelCount = pricing.unpricedModelCount - excluded.length;
+  const byModel = pricing.byModel.filter((model) => !isExcludedFromEquivalentPricing(model.model));
+  const coveragePercent = adjustedObservedTokenCount > 0 && pricing.accountingMismatchTokenCount === 0
+    ? Math.min(100, Math.max(0, Number(((pricing.pricedTokenCount / adjustedObservedTokenCount) * 100).toFixed(2))))
+    : undefined;
+  const hasTokenSamples = adjustedObservedTokenCount > 0 || adjustedModelAttributedTokenCount > 0 || byModel.some((model) => model.inputTokens + model.outputTokens > 0);
+  const isComplete = hasTokenSamples && adjustedObservedTokenCount > 0 && adjustedUnpricedTokenCount === 0 &&
+    adjustedUnpricedModelCount === 0 && pricing.incompleteModelCount === 0 &&
+    (pricing.unattributedTokenCount ?? 0) === 0 && (pricing.truncatedModelTokenCount ?? 0) === 0 &&
+    pricing.categoryOverlapTokenCount === 0 && pricing.accountingMismatchTokenCount === 0 && !pricing.modelsTruncated;
+
+  return {
+    ...pricing,
+    status: !hasTokenSamples ? "unavailable" as const : isComplete ? "available" as const : "partial" as const,
+    observedTokenCount: adjustedObservedTokenCount,
+    modelAttributedTokenCount: adjustedModelAttributedTokenCount,
+    unpricedTokenCount: adjustedUnpricedTokenCount,
+    unpricedModelTokenCount: adjustedUnpricedModelTokenCount,
+    modelCount: adjustedModelCount,
+    unpricedModelCount: adjustedUnpricedModelCount,
+    coveragePercent,
+    byModel,
+    note: CODEX_PRICING_NOTE,
+  };
+}
+
 interface PricingMeasuredValue {
   availability: "available" | "unavailable" | "no-samples";
   value?: number;

@@ -6,7 +6,7 @@ import type {
 } from "@/lib/providers/types";
 import type { D1DatabaseLike, D1MutationResult, D1PreparedStatementLike, D1ResultLike } from "@/lib/telemetry/database";
 import type { NormalizedTelemetryEvent } from "@/lib/telemetry/normalize";
-import { calculateCodexEquivalentPricing, type CodexEquivalentPricing, type CodexPricingModelUsage } from "@/lib/telemetry/pricing";
+import { calculateCodexEquivalentPricing, excludeCodexAutoReviewFromStoredPricing, type CodexEquivalentPricing, type CodexPricingModelUsage } from "@/lib/telemetry/pricing";
 
 export type TelemetryRange = "24h" | "7d" | "30d";
 export const TELEMETRY_RANGES: readonly TelemetryRange[] = ["24h", "7d", "30d"];
@@ -460,7 +460,8 @@ function sum(rows: HourlyRow[], key: keyof HourlyRow) {
 function parseSnapshot(row: SnapshotRow): CodexMaterializedSnapshot | undefined {
   try {
     const value = JSON.parse(row.payload_json) as CodexMaterializedSnapshot;
-    return value?.schemaVersion === 1 && value.range === row.range ? value : undefined;
+    if (value?.schemaVersion !== 1 || value.range !== row.range) return undefined;
+    return { ...value, pricing: excludeCodexAutoReviewFromStoredPricing(value.pricing) };
   } catch {
     return undefined;
   }
