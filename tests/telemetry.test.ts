@@ -378,13 +378,20 @@ test("ingestion batches writes, deduplicates retries, and runs retention cleanup
   assert.equal(second.headers.get("x-codex-telemetry-accepted"), "0");
   assert.equal(second.headers.get("x-codex-telemetry-duplicates"), "1");
   assert.equal(database.insertedValues.length, 1);
-  assert.equal(database.rawDeleteCount, 1, "retention cleanup is time-gated across duplicate requests");
-  const rawDelete = database.statements.find((statement) => statement.sql.includes("DELETE FROM codex_telemetry_events"));
-  assert.ok(rawDelete);
-  assert.match(rawDelete.sql, /INDEXED BY sqlite_autoindex_codex_telemetry_events_1/);
-  assert.match(rawDelete.sql, /WHERE id IN\s*\(\s*SELECT id/);
-  assert.match(rawDelete.sql, /LIMIT \?/);
-  assert.equal(rawDelete.values[1], TELEMETRY_RETENTION_DELETE_BATCH_SIZE);
+  assert.equal(database.rawDeleteCount, 2, "one legacy and one compact cleanup are time-gated across duplicate requests");
+  const legacyDelete = database.statements.find((statement) => statement.sql.includes("DELETE FROM codex_telemetry_events INDEXED"));
+  const compactDelete = database.statements.find((statement) => statement.sql.includes("DELETE FROM codex_telemetry_events_compact"));
+  assert.ok(legacyDelete && compactDelete);
+  assert.match(legacyDelete.sql, /INDEXED BY sqlite_autoindex_codex_telemetry_events_1/);
+  for (const rawDelete of [legacyDelete, compactDelete]) {
+    assert.match(rawDelete.sql, /LIMIT \?/);
+    assert.equal(rawDelete.values[1], TELEMETRY_RETENTION_DELETE_BATCH_SIZE / 2);
+  }
+  assert.match(legacyDelete.sql, /WHERE id IN\s*\(\s*SELECT id/);
+  assert.match(compactDelete.sql, /WHERE \(occurred_at,id\) IN\s*\(\s*SELECT occurred_at,id/);
+  const compactInsert = database.statements.find((statement) => statement.sql.includes("INSERT OR IGNORE INTO codex_telemetry_events_compact"));
+  assert.ok(compactInsert);
+  assert.match(compactInsert.sql, /NOT EXISTS \(SELECT 1 FROM codex_telemetry_events WHERE id=\?\)/);
   assert.ok(database.rollupInsertCount > 0);
   assert.equal(database.rollupInsertCount, rollupsAfterFirst, "duplicate delivery must not increment rollups");
   assert.equal(database.lastDeleteCutoff, "2026-08-12T12:00:00.000Z");
@@ -405,7 +412,7 @@ test("duplicate-only retries skip maintenance even when the maintenance interval
 
   assert.equal(first.status, 200);
   assert.equal(second.status, 200);
-  assert.equal(database.rawDeleteCount, 1);
+  assert.equal(database.rawDeleteCount, 2);
   assert.equal(second.headers.get("x-codex-telemetry-rollups"), "skipped-no-new-events");
   assert.equal(second.headers.get("x-codex-telemetry-rollup-upserts"), "0");
   assert.equal(second.headers.get("x-codex-telemetry-snapshot-rebuilds"), "0");
@@ -498,7 +505,7 @@ test("ingestion exposes bounded write-amplification diagnostics without creating
   const response = await handleTelemetryIngest(requestFor(jsonPayload()), { database, ingestKey, retentionDays: 30, now: () => new Date(now) });
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("x-codex-telemetry-accepted"), "1");
-  assert.equal(response.headers.get("x-codex-telemetry-d1-rows-written"), "12", "controlled metadata fixture measures one raw insert, three grouped rollups, four cleanup statements, three snapshots, and one raw cleanup");
+  assert.equal(response.headers.get("x-codex-telemetry-d1-rows-written"), "13", "controlled metadata fixture measures one raw insert, three grouped rollups, four rollup cleanup statements, three snapshots, and two bounded raw cleanup statements");
   assert.ok(Number(response.headers.get("x-codex-telemetry-rollup-upserts")) > 0);
   assert.equal(response.headers.get("x-codex-telemetry-ingest-requests"), "1");
   assert.equal(database.insertedValues.length, 1);
@@ -511,7 +518,7 @@ test("missing migration 0003 does not break ingest or trigger a raw analytics fa
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("x-codex-telemetry-accepted"), "1");
   assert.equal(response.headers.get("x-codex-telemetry-rollups"), "schema-unavailable");
-  assert.equal(database.rawDeleteCount, 1);
+  assert.equal(database.rawDeleteCount, 2);
 });
 
 test("D1 migration preserves deduplication, query indexes, and bounded raw-event schema", async () => {
@@ -534,6 +541,17 @@ test("analytics v2 migration is additive, indexed, privacy-safe, and historicall
   for (const index of ["reasoning_occurred_at", "call_occurred_at", "tool_state_occurred_at", "ttft_occurred_at"]) assert.match(migration, new RegExp(`idx_codex_telemetry_events_${index}`));
   assert.match(migration, /WHERE event_category = 'unknown'/);
   assert.doesNotMatch(migration, /DROP\s|DELETE\s|reasoning_summary|user_email|account_id|authorization|cookie|password|tool_output/i);
+});
+
+test("compact telemetry migration preserves evidence while removing hot-path index amplification", async () => {
+  const migration = await readFile(new URL("../migrations/0005_compact_telemetry_events.sql", import.meta.url), "utf8");
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS codex_telemetry_events_compact[\s\S]+WITHOUT ROWID/);
+  assert.match(migration, /PRIMARY KEY \(occurred_at, id\)/);
+  assert.doesNotMatch(migration, /CREATE INDEX[^;]+codex_telemetry_events_compact/);
+  assert.match(migration, /CREATE VIEW IF NOT EXISTS codex_telemetry_events_all[\s\S]+UNION ALL/);
+  assert.match(migration, /DROP INDEX IF EXISTS idx_codex_telemetry_events_model_occurred_at/);
+  assert.match(migration, /DROP INDEX IF EXISTS idx_codex_session_summary_last_seen/);
+  assert.doesNotMatch(migration, /DROP TABLE|DELETE FROM|prompt|authorization|cookie|credential|secret|tool_output/i);
 });
 
 test("database analytics deduplicate terminal tool events by call hash and bound raw hydration", async () => {
