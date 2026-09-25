@@ -177,6 +177,19 @@ test("native standard overlay reserves enough room for its operational surface",
   assert.match(rust, /migrate_legacy_standard_size/);
 });
 
+test("native pricing rows expose partial USD amounts and keep the long rate note collapsed", async () => {
+  const [app, styles] = await Promise.all([
+    readFile(new URL("../desktop/overlay/src/App.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/overlay/src/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(app, /codexEquivalentModelPriceLabel\(model\)/);
+  assert.match(app, /<details className="pricing-details pricing-note-details"><summary>Pricing assumptions/);
+  assert.doesNotMatch(app, /<details className="pricing-details pricing-note-details" open/);
+  assert.match(app, /pricing-note-details\"><summary>Pricing assumptions <span>\+<\/span><\/summary><p>\{pricing\?\.note/);
+  assert.match(styles, /\.pricing-note-details summary/);
+  assert.match(styles, /\.pricing-note-details p/);
+});
+
 test("overlay layouts keep content scrollable when the window is resized", async () => {
   const [app, styles] = await Promise.all([
     readFile(new URL("../desktop/overlay/src/App.tsx", import.meta.url), "utf8"),

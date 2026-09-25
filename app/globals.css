@@ -539,5 +539,6 @@ body { font-size: 14px; line-height: 1.5; }
 .pricing-coverage-reasons { margin: 8px 0 0; color: #cfb98f; font-size: 8px; line-height: 1.45; }
 .pricing-card > .pricing-coverage-reasons { padding-left: 14px; }
 .pricing-coverage-reasons li + li { margin-top: 2px; }
+.pricing-model-row strong.partial { color: #c69d5e; }
 .overlay-pricing > .pricing-coverage-reasons { grid-column: 1 / -1; max-height: 3.5em; overflow: auto; color: #c9b58f; font-size: .52em; line-height: 1.35; white-space: normal; }
 .overlay-compact .overlay-pricing > .pricing-coverage-reasons { grid-column: 1 / -1; grid-row: 3; max-height: 2.7em; }

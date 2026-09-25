@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { calculateCodexEquivalentPricing, CODEX_MODEL_PRICING, resolveCodexPricingRate } from "../src/lib/telemetry/pricing";
+import { calculateCodexEquivalentPricing, codexEquivalentModelPriceLabel, CODEX_MODEL_PRICING, resolveCodexPricingRate } from "../src/lib/telemetry/pricing";
 
 const available = (value: number) => ({ availability: "available" as const, value, sampleCount: 1 });
 const noSamples = { availability: "no-samples" as const, sampleCount: 0 };
@@ -144,6 +144,23 @@ test("known model usage with historical token categories missing is explicitly i
   assert.equal(result.byModel[0].status, "incomplete");
 });
 
+test("per-model prices show safely priced partial USD amounts without implying a full total", () => {
+  const result = calculateCodexEquivalentPricing({
+    metrics: metrics(100, 0, 10),
+    models: [{
+      model: "gpt-6-sol", inputTokens: 100, cachedInputTokens: 0, outputTokens: 10,
+      priceableInputTokens: 50, priceableCachedInputTokens: 0, priceableCacheWriteInputTokens: 0,
+      priceableOutputTokens: 5, priceableSampleCount: 1,
+    }],
+  });
+  const model = result.byModel[0];
+  assert.equal(model.status, "incomplete");
+  assert.equal(model.usdEquivalent, "0.00015");
+  assert.equal(codexEquivalentModelPriceLabel(model), "Partial $0.00015");
+  assert.equal(codexEquivalentModelPriceLabel({ status: "incomplete" }), "Incomplete");
+  assert.equal(codexEquivalentModelPriceLabel({ status: "unpriced" }), "Unpriced");
+});
+
 test("published Work credits without a public API USD rate do not invent a USD estimate", () => {
   const result = calculateCodexEquivalentPricing({
     metrics: metrics(1_000_000, 0, 0),
@@ -154,6 +171,7 @@ test("published Work credits without a public API USD rate do not invent a USD e
   assert.equal(result.unpricedModelTokenCount, 1_000_000);
   assert.equal(result.byModel[0].status, "unpriced");
   assert.match(result.byModel[0].reason ?? "", /API USD rate/);
+  assert.equal(codexEquivalentModelPriceLabel(result.byModel[0]), "312.5 credits only");
 });
 
 test("cache-write and cached input exceeding total input are reported as an accounting mismatch", () => {
