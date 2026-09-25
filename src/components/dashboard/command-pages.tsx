@@ -10,7 +10,7 @@ import { compactNumber, selectTrend, selectUsage, type DashboardRange } from "@/
 import { codexWorkspaceMode, type CodexWorkspaceMode } from "@/lib/navigation";
 import type { getCodexPageData, getGitHubPageData } from "@/lib/dashboard/queries";
 import type { CodexActivityRecord, CodexTelemetrySessionSummary, CodexUsageSnapshot, DataResult, IssueRecord, PullRequestRecord } from "@/lib/providers/types";
-import { codexPricingCoverageReasons, type CodexEquivalentPricing } from "@/lib/telemetry/pricing";
+import { codexEquivalentModelPriceLabel, codexPricingCoverageReasons, type CodexEquivalentPricing } from "@/lib/telemetry/pricing";
 
 type CodexData = Awaited<ReturnType<typeof getCodexPageData>>;
 type GitHubData = Awaited<ReturnType<typeof getGitHubPageData>>;
@@ -212,7 +212,7 @@ function ApiEquivalentCard({ result }: Readonly<{ result: DataResult<CodexEquiva
     <div className="pricing-primary"><div><small>USD equivalent</small><strong>{pricing.usdEquivalent === undefined ? "Unavailable" : `$${pricing.usdEquivalent}`}</strong></div><div><small>Codex credits</small><strong>{pricing.apiCredits === undefined ? "Unavailable" : pricing.apiCredits}</strong></div></div>
     <div className="pricing-meta"><span>Priced token coverage <b>{pricing.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}%`}</b></span><span>Models <b>{pricing.modelCount}</b></span></div>
     {pricing.status === "partial" && coverageReasons.length ? <ul className="pricing-coverage-reasons">{coverageReasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
-    {pricing.byModel.length ? <details className="pricing-breakdown"><summary>Inspect model math <span>+</span></summary><div>{pricing.byModel.map((model) => <div className="pricing-model-row" key={model.model}><span><b>{model.displayName}</b><small>{model.model} · {model.eventCount.toLocaleString()} events{model.reason ? ` · ${model.reason}` : ""}</small></span><strong>{model.status === "priced" ? `$${model.usdEquivalent ?? "—"}` : model.status === "incomplete" ? "Incomplete" : "Unpriced"}</strong></div>)}</div></details> : null}
+    {pricing.byModel.length ? <details className="pricing-breakdown"><summary>Inspect model math <span>+</span></summary><div>{pricing.byModel.map((model) => <div className="pricing-model-row" key={model.model}><span><b>{model.displayName}</b><small>{model.model} · {model.eventCount.toLocaleString()} events{model.reason ? ` · ${model.reason}` : ""}</small></span><strong className={model.status === "incomplete" && (model.usdEquivalent !== undefined || model.apiCredits !== undefined) ? "partial" : undefined}>{codexEquivalentModelPriceLabel(model)}</strong></div>)}</div></details> : null}
     <p>{pricing.note} This is a token-rate comparison, not a live account balance or invoice.</p>
   </aside>;
 }

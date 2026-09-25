@@ -3,7 +3,7 @@ import { Activity, AlertTriangle, Check, ChevronDown, Circle, ExternalLink, EyeO
 import type { CodexQuotaWindow, OverlaySnapshot, TelemetryBufferHealth } from "../../../src/lib/overlay/contracts";
 import { stackTokenSeries } from "../../../src/lib/telemetry/stacked-token-series";
 import { tokenCompositionSegments, tokenVisualSeries } from "../../../src/lib/telemetry/token-visuals";
-import { codexPricingCoverageReasons } from "../../../src/lib/telemetry/pricing";
+import { codexEquivalentModelPriceLabel, codexPricingCoverageReasons } from "../../../src/lib/telemetry/pricing";
 import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../../../src/lib/overlay/account";
 import { telemetryFreshness } from "./lib/freshness";
 import { applyWindowSettings, configureHotkeys, controlRelay, fetchOverlay, getAutostart, getNativeState, hideOverlay, loadSettings, onNativeAction, openDashboard, quitOverlay, recoverOverlay, saveSettings, setAutostart, setCorner, setLayout, startDrag, startResize, type NativeState } from "./lib/native";
@@ -294,8 +294,8 @@ function PricingPanel({ pricing }: Readonly<{ pricing?: OverlaySnapshot["pricing
     <div className="section-title"><b>API-equivalent usage</b><span>{pricing?.status === "partial" ? "Partial coverage" : pricing?.status === "available" ? "All observed models" : "Unavailable"}</span></div>
     <div className="pricing-main"><div><small>USD equivalent</small><strong>{available && pricing?.usdEquivalent !== undefined ? `$${pricing.usdEquivalent}` : "Unavailable"}</strong></div><div><small>Codex credits</small><strong>{available && pricing?.apiCredits !== undefined ? pricing.apiCredits : "—"}</strong></div><div><small>Priced token coverage</small><strong>{pricing?.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}%`}</strong></div></div>
     {pricing?.status === "partial" && coverageReasons.length ? <p className="pricing-coverage-reasons">{coverageReasons.join(" · ")}</p> : null}
-    {pricing?.byModel.length ? <details className="pricing-details"><summary>Model math <span>+</span></summary><div>{pricing.byModel.map((model) => <div key={model.model}><span><b>{model.displayName}</b><small>{model.model} · {model.eventCount.toLocaleString()} events{model.reason ? ` · ${model.reason}` : ""}</small></span><strong>{model.status === "priced" ? `$${model.usdEquivalent ?? "—"}` : model.status === "incomplete" ? "Incomplete" : "Unpriced"}</strong></div>)}</div></details> : null}
-    <p>{pricing?.note ?? "Standard token rates · feature charges excluded · reasoning is included in output."}</p>
+    {pricing?.byModel.length ? <details className="pricing-details"><summary>Model math <span>+</span></summary><div>{pricing.byModel.map((model) => <div key={model.model}><span><b>{model.displayName}</b><small>{model.model} · {model.eventCount.toLocaleString()} events{model.reason ? ` · ${model.reason}` : ""}</small></span><strong className={model.status === "incomplete" && (model.usdEquivalent !== undefined || model.apiCredits !== undefined) ? "partial" : undefined}>{codexEquivalentModelPriceLabel(model)}</strong></div>)}</div></details> : null}
+    <details className="pricing-details pricing-note-details"><summary>Pricing assumptions <span>+</span></summary><p>{pricing?.note ?? "Standard token rates · feature charges excluded · reasoning is included in output."}</p></details>
   </section>;
 }
 

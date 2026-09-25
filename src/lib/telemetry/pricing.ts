@@ -77,6 +77,16 @@ export interface CodexEquivalentModelCost {
   usdEquivalent?: string;
 }
 
+export function codexEquivalentModelPriceLabel(model: Pick<CodexEquivalentModelCost, "status" | "apiCredits" | "usdEquivalent">) {
+  if (model.usdEquivalent !== undefined) {
+    return model.status === "incomplete" ? `Partial $${model.usdEquivalent}` : `$${model.usdEquivalent}`;
+  }
+  if (model.apiCredits !== undefined) {
+    return model.status === "incomplete" ? `Partial ${model.apiCredits} credits` : `${model.apiCredits} credits only`;
+  }
+  return model.status === "priced" ? "$—" : model.status === "incomplete" ? "Incomplete" : "Unpriced";
+}
+
 export interface CodexEquivalentPricing {
   status: CodexPricingStatus;
   basis: typeof CODEX_PRICING_BASIS;
