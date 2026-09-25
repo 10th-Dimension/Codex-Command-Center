@@ -4,7 +4,7 @@ import test from "node:test";
 
 import type { D1DatabaseLike, D1PreparedStatementLike, D1ResultLike } from "../src/lib/telemetry/database";
 import type { NormalizedTelemetryEvent } from "../src/lib/telemetry/normalize";
-import { applyTelemetryRollups, buildMaterializedSnapshot, groupTelemetryRollups, refreshStaleMaterializedSnapshots, writeMaterializedSnapshot } from "../src/lib/telemetry/rollups";
+import { applyTelemetryRollups, buildMaterializedSnapshot, groupTelemetryRollups, readMaterializedSnapshot, refreshStaleMaterializedSnapshots, writeMaterializedSnapshot } from "../src/lib/telemetry/rollups";
 
 const now = new Date("2026-09-13T12:00:00.000Z");
 
@@ -218,6 +218,55 @@ test("pricing snapshot returns 100% coverage without including Codex auto-review
   assert.equal(snapshot.pricing?.modelCount, 1);
   assert.deepEqual(snapshot.pricing?.byModel.map((model) => model.model), ["gpt-6-astra"]);
   assert.equal(snapshot.pricing?.coveragePercent, 100);
+});
+
+test("legacy materialized pricing snapshots exclude Codex auto-review on read without a D1 write", async () => {
+  const database = new SnapshotD1();
+  database.existingSnapshots = [{
+    range: "24h",
+    generated_at: "2026-09-13T12:00:00.000Z",
+    payload_json: JSON.stringify({
+      schemaVersion: 1,
+      range: "24h",
+      generatedAt: "2026-09-13T12:00:00.000Z",
+      summary: {}, trend: [], models: [], reasoningEfforts: [], sessions: [],
+      pricing: {
+        status: "partial", basis: "codex-token-credit-rates", rateCardId: "old-rate-card", featureChargesIncluded: false,
+        apiCredits: "2383", usdEquivalent: "99.934752", observedTokenCount: 1_011_738,
+        modelAttributedTokenCount: 1_011_738, pricedTokenCount: 1_000_000, unpricedTokenCount: 11_738,
+        unpricedModelTokenCount: 11_738, unattributedTokenCount: 0, tokenFieldsUnavailableTokenCount: 0,
+        truncatedModelTokenCount: 0, categoryOverlapTokenCount: 0, accountingMismatchTokenCount: 0,
+        coveragePercent: 99.99, modelCount: 2, pricedModelCount: 1, unpricedModelCount: 1,
+        incompleteModelCount: 0, modelsTruncated: false,
+        byModel: [
+          { model: "gpt-6-astra", displayName: "GPT-6 Astra", status: "priced", eventCount: 10, inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, pricedTokenCount: 1_000_000, apiCredits: "250", usdEquivalent: "10" },
+          { model: "codex-auto-review", displayName: "codex-auto-review", status: "unpriced", eventCount: 12, inputTokens: 11_738, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, pricedTokenCount: 0, reason: "No published rate is available for this model." },
+        ],
+        note: "legacy note",
+      },
+    }),
+  }];
+
+  const snapshot = await readMaterializedSnapshot(database, "24h");
+  assert.equal(snapshot?.pricing?.status, "available");
+  assert.equal(snapshot?.pricing?.coveragePercent, 100);
+  assert.equal(snapshot?.pricing?.observedTokenCount, 1_000_000);
+  assert.equal(snapshot?.pricing?.modelAttributedTokenCount, 1_000_000);
+  assert.equal(snapshot?.pricing?.unpricedTokenCount, 0);
+  assert.equal(snapshot?.pricing?.unpricedModelTokenCount, 0);
+  assert.equal(snapshot?.pricing?.modelCount, 1);
+  assert.equal(snapshot?.pricing?.unpricedModelCount, 0);
+  assert.deepEqual(snapshot?.pricing?.byModel.map((model) => model.model), ["gpt-6-astra"]);
+  assert.match(snapshot?.pricing?.note ?? "", /Codex auto-review activity is excluded/);
+  assert.equal(database.statements.length, 1);
+  assert.ok(database.statements[0].sql.startsWith("SELECT range,generated_at,payload_json FROM codex_dashboard_snapshot"));
+
+  const inconsistentPayload = JSON.parse(String(database.existingSnapshots[0].payload_json)) as { pricing: { unpricedTokenCount: number } };
+  inconsistentPayload.pricing.unpricedTokenCount = 1;
+  database.existingSnapshots[0].payload_json = JSON.stringify(inconsistentPayload);
+  const inconsistentSnapshot = await readMaterializedSnapshot(database, "24h");
+  assert.equal(inconsistentSnapshot?.pricing?.status, "partial");
+  assert.deepEqual(inconsistentSnapshot?.pricing?.byModel.map((model) => model.model), ["gpt-6-astra", "codex-auto-review"]);
 });
 
 test("legacy model rollups with no exact pricing samples remain incomplete, not zero-cost or fully covered", async () => {
