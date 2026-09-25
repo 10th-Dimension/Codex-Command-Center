@@ -96,7 +96,7 @@ SELECT ${trendBucketSql},COUNT(*),COALESCE(SUM(input_tokens),0),COUNT(input_toke
   SUM(CASE WHEN tool_execution_state='failed' THEN 1 ELSE 0 END),
   SUM(CASE WHEN event_category IN ('approval','decision') THEN 1 ELSE 0 END),
   COALESCE(SUM(ttft_ms),0),COUNT(ttft_ms),COALESCE(SUM(duration_ms),0),COUNT(duration_ms),MAX(received_at)
-FROM codex_telemetry_events GROUP BY ${trendBucketSql};
+FROM codex_telemetry_events_all GROUP BY ${trendBucketSql};
 
 INSERT INTO codex_rollup_model_hourly (
   hour_start,model,event_count,input_tokens,output_tokens,cached_tokens,reasoning_tokens,tool_tokens,ttft_sum_ms,ttft_sample_count,
@@ -117,13 +117,13 @@ SELECT ${hourlyBucketSql},model,COUNT(*),COALESCE(SUM(input_tokens),0),COALESCE(
     AND cached_input_tokens+cache_write_tokens<=input_tokens THEN 1 ELSE 0 END),
   COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND cached_input_tokens IS NOT NULL AND cache_write_tokens IS NOT NULL AND output_tokens IS NOT NULL
     AND cached_input_tokens+cache_write_tokens>input_tokens THEN cached_input_tokens+cache_write_tokens-input_tokens ELSE 0 END),0)
-FROM codex_telemetry_events WHERE model IS NOT NULL GROUP BY ${hourlyBucketSql},model;
+FROM codex_telemetry_events_all WHERE model IS NOT NULL GROUP BY ${hourlyBucketSql},model;
 
 INSERT INTO codex_rollup_reasoning_hourly
 SELECT ${hourlyBucketSql},reasoning_effort,COUNT(*),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),
   COALESCE(SUM(cached_input_tokens),0),COALESCE(SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)),0),COALESCE(SUM(tool_tokens),0),
   COALESCE(SUM(ttft_ms),0),COUNT(ttft_ms)
-FROM codex_telemetry_events WHERE reasoning_effort IS NOT NULL GROUP BY ${hourlyBucketSql},reasoning_effort;
+FROM codex_telemetry_events_all WHERE reasoning_effort IS NOT NULL GROUP BY ${hourlyBucketSql},reasoning_effort;
 
 INSERT INTO codex_session_summary
 WITH ranked AS (
@@ -131,7 +131,7 @@ WITH ranked AS (
     cached_input_tokens,cache_write_tokens,reasoning_tokens,reasoning_output_tokens,tool_tokens,ttft_ms,
     COALESCE(session_id,thread_id) AS rollup_session_id,
     ROW_NUMBER() OVER (PARTITION BY COALESCE(session_id,thread_id) ORDER BY occurred_at DESC,id DESC) AS recency
-  FROM codex_telemetry_events WHERE COALESCE(session_id,thread_id) IS NOT NULL
+  FROM codex_telemetry_events_all WHERE COALESCE(session_id,thread_id) IS NOT NULL
 )
 SELECT rollup_session_id,MAX(CASE WHEN recency=1 THEN project_name END),MIN(occurred_at),MAX(occurred_at),
   MAX(CASE WHEN recency=1 THEN model END),MAX(CASE WHEN recency=1 THEN reasoning_effort END),COUNT(*),

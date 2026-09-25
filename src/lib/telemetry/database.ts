@@ -35,7 +35,11 @@ const INSERT_COLUMNS = [
   "tool_namespace", "call_id_hash", "tool_execution_state", "approval_policy", "sandbox_policy", "agent_name", "provider_name", "originator", "mcp_server_origin",
   "app_version", "service_name", "service_version", "startup_phase", "startup_status", "terminal_type",
 ] as const;
-const INSERT_SQL = `INSERT OR IGNORE INTO codex_telemetry_events (${INSERT_COLUMNS.join(", ")}) VALUES (${INSERT_COLUMNS.map(() => "?").join(", ")})`;
+const COMPACT_EVENTS_TABLE = "codex_telemetry_events_compact";
+const FORENSICS_EVENTS_VIEW = "codex_telemetry_events_all";
+const INSERT_SQL = `INSERT OR IGNORE INTO ${COMPACT_EVENTS_TABLE} (${INSERT_COLUMNS.join(", ")})
+  SELECT ${INSERT_COLUMNS.map(() => "?").join(", ")}
+  WHERE NOT EXISTS (SELECT 1 FROM codex_telemetry_events WHERE id=?)`;
 const nil = (value: string | number | undefined) => value ?? null;
 
 function eventValues(event: NormalizedTelemetryEvent) {
@@ -58,7 +62,7 @@ export async function insertTelemetryEventsDetailed(database: D1DatabaseLike, ev
   let rowsWrittenObserved = false;
   for (let offset = 0; offset < events.length; offset += 50) {
     const chunk = events.slice(offset, offset + 50);
-    const results = await database.batch(chunk.map((event) => database.prepare(INSERT_SQL).bind(...eventValues(event))));
+    const results = await database.batch(chunk.map((event) => database.prepare(INSERT_SQL).bind(...eventValues(event), event.id)));
     if (results.some((result) => !result.success)) throw new Error("Telemetry storage batch failed.");
     results.forEach((result, index) => {
       if ((result.meta?.changes ?? 0) > 0) insertedEvents.push(chunk[index]);
@@ -77,20 +81,36 @@ export async function insertTelemetryEvents(database: D1DatabaseLike, events: No
 
 export async function deleteExpiredTelemetry(database: D1DatabaseLike, retentionDays: number, now: Date): Promise<D1MutationResult> {
   const cutoff = new Date(now.getTime() - retentionDays * 86_400_000).toISOString();
-  const result = await database.prepare(`
-    DELETE FROM codex_telemetry_events INDEXED BY sqlite_autoindex_codex_telemetry_events_1
-    WHERE id IN (
-      SELECT id
-      FROM codex_telemetry_events
-      WHERE occurred_at < ?
-      ORDER BY occurred_at ASC, id ASC
-      LIMIT ?
-    )
-  `).bind(cutoff, TELEMETRY_RETENTION_DELETE_BATCH_SIZE).run();
-  if (!result.success) throw new Error("Telemetry retention cleanup failed.");
+  const perTableLimit = Math.floor(TELEMETRY_RETENTION_DELETE_BATCH_SIZE / 2);
+  const results = await database.batch([
+    database.prepare(`
+      DELETE FROM codex_telemetry_events INDEXED BY sqlite_autoindex_codex_telemetry_events_1
+      WHERE id IN (
+        SELECT id
+        FROM codex_telemetry_events
+        WHERE occurred_at < ?
+        ORDER BY occurred_at ASC, id ASC
+        LIMIT ?
+      )
+    `).bind(cutoff, perTableLimit),
+    database.prepare(`
+      DELETE FROM ${COMPACT_EVENTS_TABLE}
+      WHERE (occurred_at,id) IN (
+        SELECT occurred_at,id
+        FROM ${COMPACT_EVENTS_TABLE}
+        WHERE occurred_at < ?
+        ORDER BY occurred_at ASC, id ASC
+        LIMIT ?
+      )
+    `).bind(cutoff, perTableLimit),
+  ]);
+  if (results.some((result) => !result.success)) throw new Error("Telemetry retention cleanup failed.");
+  const rowsWritten = results.some((result) => typeof result.meta?.rows_written === "number")
+    ? results.reduce((total, result) => total + (result.meta?.rows_written ?? 0), 0)
+    : undefined;
   return {
-    changes: result.meta?.changes ?? 0,
-    ...(typeof result.meta?.rows_written === "number" ? { rowsWritten: result.meta.rows_written } : {}),
+    changes: results.reduce((total, result) => total + (result.meta?.changes ?? 0), 0),
+    ...(rowsWritten === undefined ? {} : { rowsWritten }),
   };
 }
 
@@ -160,30 +180,31 @@ export interface TelemetryForensicsSnapshot {
  * and must never be called by normal dashboard or overlay rendering.
  */
 export async function readTelemetryForensics(database: D1DatabaseLike, now: Date): Promise<TelemetryForensicsSnapshot> {
+  const raw = (sql: string) => database.prepare(sql.replaceAll("codex_telemetry_events", FORENSICS_EVENTS_VIEW));
   const cutoff30 = new Date(now.getTime() - 30 * 86_400_000).toISOString(); const cutoff7 = new Date(now.getTime() - 7 * 86_400_000).toISOString(); const cutoff24 = new Date(now.getTime() - 86_400_000).toISOString(); const today = `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
-  const preflight = await database.prepare(`SELECT id FROM codex_telemetry_events WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT ?`).bind(cutoff30, TELEMETRY_FORENSICS_MAX_RAW_EVENTS + 1).all<{ id: string }>();
+  const preflight = await raw(`SELECT id FROM codex_telemetry_events WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT ?`).bind(cutoff30, TELEMETRY_FORENSICS_MAX_RAW_EVENTS + 1).all<{ id: string }>();
   if (!preflight.success) throw new Error("Telemetry forensic preflight failed.");
   if ((preflight.results ?? []).length > TELEMETRY_FORENSICS_MAX_RAW_EVENTS) throw new TelemetryForensicsLimitError();
   const usageSelect = `COUNT(*) AS event_count, SUM(input_tokens) AS input_tokens, COUNT(input_tokens) AS input_samples, SUM(output_tokens) AS output_tokens, COUNT(output_tokens) AS output_samples, SUM(cached_input_tokens) AS cached_tokens, COUNT(cached_input_tokens) AS cached_samples, SUM(cache_write_tokens) AS cache_write_tokens, COUNT(cache_write_tokens) AS cache_write_samples, SUM(COALESCE(reasoning_tokens, reasoning_output_tokens)) AS reasoning_tokens, COUNT(COALESCE(reasoning_tokens, reasoning_output_tokens)) AS reasoning_samples, SUM(tool_tokens) AS tool_tokens, COUNT(tool_tokens) AS tool_samples, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_events, COUNT(DISTINCT CASE WHEN ${USAGE_FIELDS} THEN COALESCE(session_id,thread_id) END) AS usage_sessions, COUNT(DISTINCT CASE WHEN ${USAGE_FIELDS} THEN model END) AS usage_models`;
-  const breakdown = (column: string) => database.prepare(`SELECT ${column} AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND ${column} IS NOT NULL GROUP BY ${column} ORDER BY count DESC LIMIT 30`).bind(cutoff30);
+  const breakdown = (column: string) => raw(`SELECT ${column} AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND ${column} IS NOT NULL GROUP BY ${column} ORDER BY count DESC LIMIT 30`).bind(cutoff30);
   const statements = [
-    database.prepare("SELECT * FROM codex_telemetry_events WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT 100").bind(cutoff30),
-    database.prepare(`SELECT substr(occurred_at,1,10) AS label, ${TREND_SELECT} FROM codex_telemetry_events WHERE occurred_at >= ? GROUP BY label ORDER BY label`).bind(cutoff30),
-    database.prepare(`SELECT substr(occurred_at,1,13) || ':00:00.000Z' AS label, ${TREND_SELECT} FROM codex_telemetry_events WHERE occurred_at >= ? GROUP BY label ORDER BY label`).bind(cutoff24),
+    raw("SELECT * FROM codex_telemetry_events WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT 100").bind(cutoff30),
+    raw(`SELECT substr(occurred_at,1,10) AS label, ${TREND_SELECT} FROM codex_telemetry_events WHERE occurred_at >= ? GROUP BY label ORDER BY label`).bind(cutoff30),
+    raw(`SELECT substr(occurred_at,1,13) || ':00:00.000Z' AS label, ${TREND_SELECT} FROM codex_telemetry_events WHERE occurred_at >= ? GROUP BY label ORDER BY label`).bind(cutoff24),
     breakdown("event_category"), breakdown("model"), breakdown("reasoning_effort"),
-    database.prepare(`SELECT tool_name AS label, COUNT(*) AS related_events, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS completed_executions, COUNT(DISTINCT CASE WHEN tool_execution_state='succeeded' THEN COALESCE(call_id_hash,id) END) AS success_count, COUNT(DISTINCT CASE WHEN tool_execution_state='failed' THEN COALESCE(call_id_hash,id) END) AS failure_count, AVG(CASE WHEN ${TOOL_TERMINAL} THEN duration_ms END) AS average_duration_ms, SUM(tool_tokens) AS tool_tokens, MAX(occurred_at) AS last_seen_at FROM codex_telemetry_events WHERE occurred_at >= ? AND tool_name IS NOT NULL GROUP BY tool_name ORDER BY related_events DESC LIMIT 30`).bind(cutoff30),
-    database.prepare(TIMING_SQL("duration_ms", "event_category")).bind(cutoff30), database.prepare(TIMING_SQL("ttft_ms", "model")).bind(cutoff30),
-    database.prepare(`SELECT '24h' AS window, ${usageSelect} FROM codex_telemetry_events WHERE occurred_at >= ? UNION ALL SELECT '7d', ${usageSelect} FROM codex_telemetry_events WHERE occurred_at >= ? UNION ALL SELECT '30d', ${usageSelect} FROM codex_telemetry_events WHERE occurred_at >= ?`).bind(cutoff24, cutoff7, cutoff30),
-    database.prepare("SELECT COUNT(input_tokens) AS input_samples, COUNT(output_tokens) AS output_samples, COUNT(cached_input_tokens) AS cached_samples, COUNT(cache_write_tokens) AS cache_write_samples, COUNT(COALESCE(reasoning_tokens,reasoning_output_tokens)) AS reasoning_samples, COUNT(tool_tokens) AS tool_samples FROM codex_telemetry_events").bind(),
-    database.prepare(`SELECT model, COUNT(*) AS event_count, COUNT(DISTINCT COALESCE(session_id,thread_id)) AS session_count, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_event_count, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cached_input_tokens) AS cached_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)) AS reasoning_tokens, SUM(tool_tokens) AS tool_tokens, AVG(ttft_ms) AS average_ttft_ms, AVG(duration_ms) AS average_duration_ms, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS tool_executions, COUNT(DISTINCT CASE WHEN tool_execution_state='failed' THEN COALESCE(call_id_hash,id) END) AS tool_failures, SUM(CASE WHEN event_category IN ('approval','decision') THEN 1 ELSE 0 END) AS approval_events FROM codex_telemetry_events WHERE occurred_at >= ? AND model IS NOT NULL GROUP BY model ORDER BY event_count DESC LIMIT 30`).bind(cutoff30),
-    database.prepare(`SELECT reasoning_effort, COUNT(*) AS event_count, COUNT(DISTINCT COALESCE(session_id,thread_id)) AS session_count, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_event_count, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cached_input_tokens) AS cached_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)) AS reasoning_tokens, SUM(tool_tokens) AS tool_tokens, AVG(ttft_ms) AS average_ttft_ms, AVG(duration_ms) AS average_duration_ms, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS tool_executions FROM codex_telemetry_events WHERE occurred_at >= ? AND reasoning_effort IS NOT NULL GROUP BY reasoning_effort ORDER BY event_count DESC LIMIT 30`).bind(cutoff30),
-    database.prepare(`SELECT COALESCE(session_id,thread_id) AS session_id, MAX(project_name) AS project_name, GROUP_CONCAT(DISTINCT model) AS models, GROUP_CONCAT(DISTINCT reasoning_effort) AS reasoning_efforts, COUNT(*) AS event_count, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_event_count, SUM(CASE WHEN event_category='error' THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN event_category='warning' THEN 1 ELSE 0 END) AS warning_count, SUM(CASE WHEN event_category='tool' THEN 1 ELSE 0 END) AS tool_related_events, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS tool_executions, SUM(CASE WHEN event_category IN ('approval','decision') THEN 1 ELSE 0 END) AS approval_events, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cached_input_tokens) AS cached_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)) AS reasoning_tokens, SUM(tool_tokens) AS tool_tokens, AVG(ttft_ms) AS average_ttft_ms, MIN(occurred_at) AS first_seen_at, MAX(occurred_at) AS last_seen_at FROM codex_telemetry_events WHERE occurred_at >= ? AND COALESCE(session_id,thread_id) IS NOT NULL GROUP BY COALESCE(session_id,thread_id) ORDER BY last_seen_at DESC LIMIT 50`).bind(cutoff30),
-    database.prepare("SELECT project_id, MAX(project_name) AS project_name, COUNT(*) AS event_count, COUNT(DISTINCT COALESCE(session_id,thread_id)) AS session_count, MAX(occurred_at) AS last_seen_at FROM codex_telemetry_events WHERE occurred_at >= ? AND project_id IS NOT NULL GROUP BY project_id ORDER BY last_seen_at DESC LIMIT 50").bind(cutoff30),
-    database.prepare("SELECT * FROM codex_telemetry_events WHERE occurred_at >= ? AND event_category IN ('error','warning') ORDER BY occurred_at DESC LIMIT 25").bind(cutoff30),
+    raw(`SELECT tool_name AS label, COUNT(*) AS related_events, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS completed_executions, COUNT(DISTINCT CASE WHEN tool_execution_state='succeeded' THEN COALESCE(call_id_hash,id) END) AS success_count, COUNT(DISTINCT CASE WHEN tool_execution_state='failed' THEN COALESCE(call_id_hash,id) END) AS failure_count, AVG(CASE WHEN ${TOOL_TERMINAL} THEN duration_ms END) AS average_duration_ms, SUM(tool_tokens) AS tool_tokens, MAX(occurred_at) AS last_seen_at FROM codex_telemetry_events WHERE occurred_at >= ? AND tool_name IS NOT NULL GROUP BY tool_name ORDER BY related_events DESC LIMIT 30`).bind(cutoff30),
+    raw(TIMING_SQL("duration_ms", "event_category")).bind(cutoff30), raw(TIMING_SQL("ttft_ms", "model")).bind(cutoff30),
+    raw(`SELECT '24h' AS window, ${usageSelect} FROM codex_telemetry_events WHERE occurred_at >= ? UNION ALL SELECT '7d', ${usageSelect} FROM codex_telemetry_events WHERE occurred_at >= ? UNION ALL SELECT '30d', ${usageSelect} FROM codex_telemetry_events WHERE occurred_at >= ?`).bind(cutoff24, cutoff7, cutoff30),
+    raw("SELECT COUNT(input_tokens) AS input_samples, COUNT(output_tokens) AS output_samples, COUNT(cached_input_tokens) AS cached_samples, COUNT(cache_write_tokens) AS cache_write_samples, COUNT(COALESCE(reasoning_tokens,reasoning_output_tokens)) AS reasoning_samples, COUNT(tool_tokens) AS tool_samples FROM codex_telemetry_events").bind(),
+    raw(`SELECT model, COUNT(*) AS event_count, COUNT(DISTINCT COALESCE(session_id,thread_id)) AS session_count, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_event_count, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cached_input_tokens) AS cached_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)) AS reasoning_tokens, SUM(tool_tokens) AS tool_tokens, AVG(ttft_ms) AS average_ttft_ms, AVG(duration_ms) AS average_duration_ms, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS tool_executions, COUNT(DISTINCT CASE WHEN tool_execution_state='failed' THEN COALESCE(call_id_hash,id) END) AS tool_failures, SUM(CASE WHEN event_category IN ('approval','decision') THEN 1 ELSE 0 END) AS approval_events FROM codex_telemetry_events WHERE occurred_at >= ? AND model IS NOT NULL GROUP BY model ORDER BY event_count DESC LIMIT 30`).bind(cutoff30),
+    raw(`SELECT reasoning_effort, COUNT(*) AS event_count, COUNT(DISTINCT COALESCE(session_id,thread_id)) AS session_count, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_event_count, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cached_input_tokens) AS cached_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)) AS reasoning_tokens, SUM(tool_tokens) AS tool_tokens, AVG(ttft_ms) AS average_ttft_ms, AVG(duration_ms) AS average_duration_ms, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS tool_executions FROM codex_telemetry_events WHERE occurred_at >= ? AND reasoning_effort IS NOT NULL GROUP BY reasoning_effort ORDER BY event_count DESC LIMIT 30`).bind(cutoff30),
+    raw(`SELECT COALESCE(session_id,thread_id) AS session_id, MAX(project_name) AS project_name, GROUP_CONCAT(DISTINCT model) AS models, GROUP_CONCAT(DISTINCT reasoning_effort) AS reasoning_efforts, COUNT(*) AS event_count, SUM(CASE WHEN ${USAGE_FIELDS} THEN 1 ELSE 0 END) AS usage_event_count, SUM(CASE WHEN event_category='error' THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN event_category='warning' THEN 1 ELSE 0 END) AS warning_count, SUM(CASE WHEN event_category='tool' THEN 1 ELSE 0 END) AS tool_related_events, COUNT(DISTINCT CASE WHEN ${TOOL_TERMINAL} THEN COALESCE(call_id_hash,id) END) AS tool_executions, SUM(CASE WHEN event_category IN ('approval','decision') THEN 1 ELSE 0 END) AS approval_events, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cached_input_tokens) AS cached_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(COALESCE(reasoning_tokens,reasoning_output_tokens)) AS reasoning_tokens, SUM(tool_tokens) AS tool_tokens, AVG(ttft_ms) AS average_ttft_ms, MIN(occurred_at) AS first_seen_at, MAX(occurred_at) AS last_seen_at FROM codex_telemetry_events WHERE occurred_at >= ? AND COALESCE(session_id,thread_id) IS NOT NULL GROUP BY COALESCE(session_id,thread_id) ORDER BY last_seen_at DESC LIMIT 50`).bind(cutoff30),
+    raw("SELECT project_id, MAX(project_name) AS project_name, COUNT(*) AS event_count, COUNT(DISTINCT COALESCE(session_id,thread_id)) AS session_count, MAX(occurred_at) AS last_seen_at FROM codex_telemetry_events WHERE occurred_at >= ? AND project_id IS NOT NULL GROUP BY project_id ORDER BY last_seen_at DESC LIMIT 50").bind(cutoff30),
+    raw("SELECT * FROM codex_telemetry_events WHERE occurred_at >= ? AND event_category IN ('error','warning') ORDER BY occurred_at DESC LIMIT 25").bind(cutoff30),
     breakdown("approval_decision"), breakdown("approval_policy"), breakdown("sandbox_policy"), breakdown("mcp_server"), breakdown("mcp_tool"), breakdown("mcp_server_origin"), breakdown("tool_namespace"), breakdown("agent_name"), breakdown("provider_name"), breakdown("originator"), breakdown("app_version"), breakdown("service_version"), breakdown("startup_status"), breakdown("terminal_type"), breakdown("network_decision"), breakdown("network_host"),
-    database.prepare(`SELECT 'model × tool' AS dimension, model || ' × ' || tool_name AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND model IS NOT NULL AND tool_name IS NOT NULL GROUP BY model,tool_name UNION ALL SELECT 'model × reasoning' AS dimension, model || ' × ' || reasoning_effort AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND model IS NOT NULL AND reasoning_effort IS NOT NULL GROUP BY model,reasoning_effort UNION ALL SELECT 'approval × model' AS dimension, approval_decision || ' × ' || model AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND approval_decision IS NOT NULL AND model IS NOT NULL GROUP BY approval_decision,model UNION ALL SELECT 'approval × tool' AS dimension, approval_decision || ' × ' || tool_name AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND approval_decision IS NOT NULL AND tool_name IS NOT NULL GROUP BY approval_decision,tool_name ORDER BY dimension,count DESC LIMIT 50`).bind(cutoff30, cutoff30, cutoff30, cutoff30),
-    database.prepare(`SELECT 'approval × reasoning' AS dimension, approval_decision || ' × ' || reasoning_effort AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND approval_decision IS NOT NULL AND reasoning_effort IS NOT NULL GROUP BY approval_decision,reasoning_effort UNION ALL SELECT 'sandbox × model' AS dimension, sandbox_policy || ' × ' || model AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND sandbox_policy IS NOT NULL AND model IS NOT NULL GROUP BY sandbox_policy,model UNION ALL SELECT 'sandbox × tool' AS dimension, sandbox_policy || ' × ' || tool_name AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND sandbox_policy IS NOT NULL AND tool_name IS NOT NULL GROUP BY sandbox_policy,tool_name UNION ALL SELECT 'MCP × model' AS dimension, mcp_server || ' × ' || model AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND mcp_server IS NOT NULL AND model IS NOT NULL GROUP BY mcp_server,model ORDER BY dimension,count DESC LIMIT 50`).bind(cutoff30, cutoff30, cutoff30, cutoff30),
-    database.prepare(`SELECT COUNT(*) AS event_count, MAX(received_at) AS last_received_at, MIN(occurred_at) AS oldest_event_at, MAX(occurred_at) AS newest_event_at, SUM(CASE WHEN occurred_at >= ? THEN 1 ELSE 0 END) AS today_event_count, COUNT(DISTINCT CASE WHEN occurred_at >= ? THEN COALESCE(session_id,thread_id) END) AS observed_session_count_24h, COUNT(DISTINCT CASE WHEN occurred_at >= ? AND tool_execution_state='failed' THEN COALESCE(call_id_hash,id) END) AS failed_tool_count_30d FROM codex_telemetry_events`).bind(today, cutoff24, cutoff30),
+    raw(`SELECT 'model × tool' AS dimension, model || ' × ' || tool_name AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND model IS NOT NULL AND tool_name IS NOT NULL GROUP BY model,tool_name UNION ALL SELECT 'model × reasoning' AS dimension, model || ' × ' || reasoning_effort AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND model IS NOT NULL AND reasoning_effort IS NOT NULL GROUP BY model,reasoning_effort UNION ALL SELECT 'approval × model' AS dimension, approval_decision || ' × ' || model AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND approval_decision IS NOT NULL AND model IS NOT NULL GROUP BY approval_decision,model UNION ALL SELECT 'approval × tool' AS dimension, approval_decision || ' × ' || tool_name AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND approval_decision IS NOT NULL AND tool_name IS NOT NULL GROUP BY approval_decision,tool_name ORDER BY dimension,count DESC LIMIT 50`).bind(cutoff30, cutoff30, cutoff30, cutoff30),
+    raw(`SELECT 'approval × reasoning' AS dimension, approval_decision || ' × ' || reasoning_effort AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND approval_decision IS NOT NULL AND reasoning_effort IS NOT NULL GROUP BY approval_decision,reasoning_effort UNION ALL SELECT 'sandbox × model' AS dimension, sandbox_policy || ' × ' || model AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND sandbox_policy IS NOT NULL AND model IS NOT NULL GROUP BY sandbox_policy,model UNION ALL SELECT 'sandbox × tool' AS dimension, sandbox_policy || ' × ' || tool_name AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND sandbox_policy IS NOT NULL AND tool_name IS NOT NULL GROUP BY sandbox_policy,tool_name UNION ALL SELECT 'MCP × model' AS dimension, mcp_server || ' × ' || model AS label, COUNT(*) AS count FROM codex_telemetry_events WHERE occurred_at >= ? AND mcp_server IS NOT NULL AND model IS NOT NULL GROUP BY mcp_server,model ORDER BY dimension,count DESC LIMIT 50`).bind(cutoff30, cutoff30, cutoff30, cutoff30),
+    raw(`SELECT COUNT(*) AS event_count, MAX(received_at) AS last_received_at, MIN(occurred_at) AS oldest_event_at, MAX(occurred_at) AS newest_event_at, SUM(CASE WHEN occurred_at >= ? THEN 1 ELSE 0 END) AS today_event_count, COUNT(DISTINCT CASE WHEN occurred_at >= ? THEN COALESCE(session_id,thread_id) END) AS observed_session_count_24h, COUNT(DISTINCT CASE WHEN occurred_at >= ? AND tool_execution_state='failed' THEN COALESCE(call_id_hash,id) END) AS failed_tool_count_30d FROM codex_telemetry_events`).bind(today, cutoff24, cutoff30),
   ];
   const r = await database.batch(statements); if (r.length !== statements.length) throw new Error("Telemetry query batch returned an unexpected result count.");
   const resultAt = <T,>(index: number) => r[index] as unknown as D1ResultLike<T>;
