@@ -113,7 +113,7 @@ export function shouldPollRemote(followChatgpt: boolean, chatgptRunning: boolean
 export function needsPresetResize(width: number, height: number, layout: OverlayLayout): boolean {
   if (!Number.isFinite(width) || !Number.isFinite(height)) return true;
   switch (layout) {
-    case "strip": return width < 500 || height < 70;
+    case "strip": return width < 280 || height < 90;
     case "mini": return width < 280 || height < 125;
     case "standard": return width < 390 || height < 250;
     case "expanded": return width < 390 || height < 390;

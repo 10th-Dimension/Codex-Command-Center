@@ -106,14 +106,34 @@ footer { position: relative; justify-content: space-between; flex-wrap: wrap; ga
 /* Each compact mode has its own visual hierarchy. Expanded keeps the full surface. */
 .layout-strip.app { min-height: 0; min-width: 0; }
 .layout-strip .instrument { grid-template-rows: 28px minmax(0,1fr); }
-.layout-strip .strip-content { grid-template-columns: minmax(0,1fr) auto; gap: 12px; padding: 0 13px; }
+.layout-strip .strip-content { grid-template-columns: minmax(0,1fr) minmax(170px,280px); gap: 12px; padding: 0 13px; }
 .layout-strip .identity { padding: 0; }
 .layout-strip .identity span { font-size: 1em; }
-.layout-strip .strip-quota { justify-content: flex-end; gap: 14px; font-size: .66em; }
-.layout-strip .strip-quota b { color: var(--accent); font-size: 1.2em; }
+.layout-strip .strip-quota { display: grid; width: 100%; min-width: 0; justify-content: stretch; gap: 3px; color: color-mix(in srgb, var(--text) 58%, transparent); font-size: .72em; }
+.layout-strip .strip-quota.unavailable { display: block; text-align: right; }
+.strip-quota-heading,.strip-quota-detail { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 6px; white-space: nowrap; }
+.strip-quota-heading span,.strip-quota-detail span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.strip-quota-heading b { color: var(--accent); font-size: 1.15em; font-variant-numeric: tabular-nums; }
+.strip-quota-bar { height: 5px; overflow: hidden; border-radius: 9px; background: color-mix(in srgb, var(--text) 9%, transparent); }
+.strip-quota-bar i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.strip-quota-detail { color: color-mix(in srgb, var(--text) 48%, transparent); font-size: .86em; }
 .layout-strip .offline { grid-auto-flow: column; justify-content: space-between; justify-items: start; gap: 8px; padding: 5px 12px; text-align: left; }
 .layout-strip .offline h1 { margin: 0; }
 .layout-strip .offline p { display: none; }
+@media (max-width: 390px) {
+  .layout-strip .drag-region { gap: 3px; padding: 0 5px; }
+  .layout-strip .brand { gap: 4px; }
+  .layout-strip .brand b { font-size: 9px; }
+  .layout-strip .brand-mode { display: none; }
+  .layout-strip .header-meta { flex: 0 0 auto; gap: 1px; }
+  .layout-strip .header-meta button { width: 21px; }
+  .layout-strip .header-meta .range-trigger { min-width: 29px; padding: 0 2px; }
+  .layout-strip .strip-content { grid-template-columns: minmax(0,1fr); grid-template-rows: 18px minmax(0,1fr); gap: 1px; align-content: center; padding: 2px 10px; }
+  .layout-strip .identity { align-self: center; font-size: .9em; }
+  .layout-strip .strip-quota { gap: 2px; font-size: .62em; }
+  .layout-strip .strip-quota.unavailable { text-align: left; }
+  .layout-strip .strip-quota-bar { height: 4px; }
+}
 
 .overlay-content-mini { overflow-x: hidden; overflow-y: auto; }
 .layout-mini .brand-mode { display: none; }

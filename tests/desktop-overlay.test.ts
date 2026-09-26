@@ -38,7 +38,9 @@ test("desktop color and hotkey validation reject content-shaped input", () => {
 test("manual resizing preserves the selected layout while undersized restored presets are repaired", () => {
   assert.equal(needsPresetResize(600, 90, "strip"), false);
   assert.equal(needsPresetResize(600, 180, "strip"), false);
-  assert.equal(needsPresetResize(280, 123, "strip"), true);
+  assert.equal(needsPresetResize(280, 90, "strip"), false);
+  assert.equal(needsPresetResize(279, 90, "strip"), true);
+  assert.equal(needsPresetResize(280, 89, "strip"), true);
   assert.equal(needsPresetResize(310, 140, "mini"), false);
   assert.equal(needsPresetResize(430, 320, "standard"), false);
   assert.equal(needsPresetResize(430, 500, "expanded"), false);
@@ -245,6 +247,7 @@ test("compact layouts show only their intended information, while expanded retai
   const standard = content.slice(content.indexOf('if (layout === "standard")'), content.indexOf('return <div className={`overlay-content overlay-content-${layout}`}'));
   const expanded = content.slice(content.indexOf('return <div className={`overlay-content overlay-content-${layout}`}'));
   assert.match(strip, /<StripQuota/);
+  assert.match(strip, /now=\{now\}/);
   assert.doesNotMatch(strip, /<Metric|<HealthChip|<BufferStatus|<footer/);
   assert.match(mini, /<MiniQuota/);
   assert.doesNotMatch(mini, /<Metric|<HealthChip|<BufferStatus|<footer/);
@@ -256,6 +259,13 @@ test("compact layouts show only their intended information, while expanded retai
   assert.match(expanded, /<BufferStatus/);
   assert.match(app, /estimateUsagePace\(window, now\)/);
   assert.match(app, /width: `\$\{window\.remainingPercent\}%`/);
+  const stripQuota = app.slice(app.indexOf("function StripQuota("), app.indexOf("function QuotaFreshness("));
+  assert.match(stripQuota, /item\.kind === "7d"/);
+  assert.match(stripQuota, /role="progressbar"/);
+  assert.match(stripQuota, /Linear pace/);
+  assert.match(stripQuota, /Resets in/);
+  assert.match(styles, /@media \(max-width: 390px\)[\s\S]*?\.layout-strip \.strip-content\s*\{[^}]*grid-template-rows:/);
+  assert.match(styles, /\.layout-strip \.brand-mode\s*\{[^}]*display:\s*none/);
   assert.match(styles, /\.layout-strip\.app\s*\{[^}]*min-height:\s*0/);
   assert.match(styles, /\.layout-mini \.brand-mode\s*\{[^}]*display:\s*none/);
   assert.match(rust, /fn layout_size\(layout: &str\) -> Option<LogicalSize<f64>>/);
