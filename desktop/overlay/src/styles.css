@@ -102,4 +102,40 @@ footer { position: relative; justify-content: space-between; flex-wrap: wrap; ga
 .pricing-details > div > div { min-width: 0; width: 100%; overflow: hidden; }
 .pricing-details > div > div > span { flex: 1 1 0%; }
 .pricing-details > div > div > strong { flex: 0 0 auto; margin-left: auto; }
+
+/* Each compact mode has its own visual hierarchy. Expanded keeps the full surface. */
+.layout-strip.app { min-height: 0; min-width: 0; }
+.layout-strip .instrument { grid-template-rows: 28px minmax(0,1fr); }
+.layout-strip .strip-content { grid-template-columns: minmax(0,1fr) auto; gap: 12px; padding: 0 13px; }
+.layout-strip .identity { padding: 0; }
+.layout-strip .identity span { font-size: 1em; }
+.layout-strip .strip-quota { justify-content: flex-end; gap: 14px; font-size: .66em; }
+.layout-strip .strip-quota b { color: var(--accent); font-size: 1.2em; }
+.layout-strip .offline { grid-auto-flow: column; justify-content: space-between; justify-items: start; gap: 8px; padding: 5px 12px; text-align: left; }
+.layout-strip .offline h1 { margin: 0; }
+.layout-strip .offline p { display: none; }
+
+.overlay-content-mini { overflow-x: hidden; overflow-y: auto; }
+.layout-mini .identity-row { height: 35px; min-height: 35px; gap: 6px; }
+.layout-mini .identity { overflow: hidden; }
+.layout-mini .identity span { font-size: .85em; }
+.layout-mini .freshness { flex: 0 0 auto; }
+.layout-mini .mini-quota { display: grid; gap: 0; margin: 0 8px 8px; border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent); background: rgba(0,0,0,.08); }
+.layout-mini .mini-quota-window { display: grid; grid-template-columns: 1fr; gap: 4px; min-width: 0; padding: 6px 9px; }
+.layout-mini .mini-quota-window + .mini-quota-window { border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent); }
+.layout-mini .mini-quota-window > span,.layout-mini .mini-quota-window > small { display: flex; min-width: 0; justify-content: space-between; align-items: center; gap: 8px; }
+.layout-mini .mini-quota-window > span { padding: 0; border: 0; color: color-mix(in srgb, var(--text) 64%, transparent); font-size: .63em; }
+.layout-mini .mini-quota-window > span b { color: var(--text); font-size: 1.08em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.layout-mini .mini-quota-window > i { display: block; grid-column: auto; height: 5px; overflow: hidden; border-radius: 9px; background: color-mix(in srgb, var(--text) 9%, transparent); }
+.layout-mini .mini-quota-window > i b { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.layout-mini .mini-quota-window > small { color: color-mix(in srgb, var(--text) 45%, transparent); font-size: .54em; font-style: normal; white-space: nowrap; }
+.layout-mini .mini-quota-window > small em { overflow: hidden; font-style: normal; text-overflow: ellipsis; }
+.layout-mini .mini-quota > strong { display: block; padding: 14px 9px; color: color-mix(in srgb, var(--text) 58%, transparent); font-size: .64em; }
+
+.layout-standard .standard-metrics { margin-bottom: 8px; }
+.layout-standard .standard-metrics .metric { border-top: 0; }
+.layout-standard .standard-trend { margin: 0 8px 8px; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--text) 9%, transparent); border-radius: 8px; background: rgba(0,0,0,.08); }
+.layout-standard .standard-trend .section-title { margin-bottom: 3px; }
+.layout-standard .standard-trend .spark { height: 64px; }
+.layout-standard .standard-trend .trend-caption { display: none; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
