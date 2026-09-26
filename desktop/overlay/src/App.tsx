@@ -1,27 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { Activity, AlertTriangle, Check, ChevronDown, Circle, ExternalLink, EyeOff, Grip, LayoutGrid, Lock, Minus, Power, RefreshCw, Settings, Unlock, X } from "lucide-react";
 import type { CodexQuotaWindow, OverlaySnapshot, TelemetryBufferHealth } from "../../../src/lib/overlay/contracts";
-import { stackTokenSeries } from "../../../src/lib/telemetry/stacked-token-series";
-import { tokenCompositionSegments, tokenVisualSeries } from "../../../src/lib/telemetry/token-visuals";
 import { codexEquivalentModelPriceLabel, codexPricingCoverageReasons } from "../../../src/lib/telemetry/pricing";
 import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../../../src/lib/overlay/account";
 import { telemetryFreshness } from "./lib/freshness";
 import { applyWindowSettings, configureHotkeys, controlRelay, fetchOverlay, getAutostart, getNativeState, hideOverlay, loadSettings, onNativeAction, openDashboard, quitOverlay, recoverOverlay, saveSettings, setAutostart, setCorner, setLayout, startDrag, startResize, type NativeState } from "./lib/native";
 import { defaultDesktopOverlaySettings, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, resolveLayout, shouldPollRemote, textColorValue, type DesktopOverlaySettings, type OverlayLayout, type OverlayRange } from "./lib/settings";
 import { isUsableOverlaySnapshot, shouldReplaceOverlaySnapshot } from "./lib/snapshot";
+import { prepareOverlayTrend, type DisplayTrendPoint } from "./lib/trend";
 
 type RelayState = "checking" | "online" | "offline" | "upstream-error" | "paused";
 type HeaderMenu = "range" | "layout";
 const clickThroughNotice = "Click-through enabled · Ctrl+Shift+O to regain control";
-const MAX_OVERLAY_TREND_POINTS = 30;
-const OVERLAY_TREND_BUCKET_NOTE = "10-minute source buckets · local time";
-const overlayTokenSeries = [
-  { key: "inputTokens", ...tokenVisualSeries[0] },
-  { key: "outputTokens", ...tokenVisualSeries[1] },
-  { key: "cachedTokens", ...tokenVisualSeries[2] },
-  { key: "reasoningTokens", ...tokenVisualSeries[4] },
-  { key: "toolTokens", ...tokenVisualSeries[5] },
-] as const;
 
 export function App() {
   const [settings, setSettings] = useState(defaultDesktopOverlaySettings);
@@ -202,7 +192,7 @@ export function App() {
 
   const dataPathHealthy = (relay === "online" || relay === "paused") && snapshot?.overlayCache !== "stale" && snapshot?.health.telemetry === "connected" && snapshot.health.d1 === "connected";
   const freshness = telemetryFreshness(snapshot?.lastTelemetryAt, undefined, dataPathHealthy);
-  const colors = { "--text": textColorValue(settings), "--accent": settings.accentColor, "--surface-opacity": settings.opacity / 100, "--font-scale": settings.fontScale / 100 } as CSSProperties;
+  const colors = { "--text": textColorValue(settings), "--accent": settings.accentColor, "--chart-line": settings.chartLineColor, "--surface-opacity": settings.opacity / 100, "--font-scale": settings.fontScale / 100 } as CSSProperties;
 
   return <main className={`app layout-${effectiveLayout} density-${settings.density} effect-${settings.effect} surface-${settings.surface} ${settings.clickThrough ? "click-through-enabled" : ""}`} style={colors} onContextMenu={(event) => { event.preventDefault(); setHeaderMenu(undefined); setContextOpen(true); }}>
     <section className="instrument">
@@ -250,10 +240,10 @@ function Expanded({ snapshot, now }: Readonly<{ snapshot: OverlaySnapshot; now: 
   const session = snapshot.latestSession;
   return <div className="expanded-content">
     <ObservedOperations session={session} summary={snapshot.windowSummary} lastTelemetryAt={snapshot.lastTelemetryAt} />
+    <section><SectionTitle title="Token trend" note={`${snapshot.range.toUpperCase()} · ${snapshot.range === "24h" ? "10m" : "1d"}`} /><TokenTrendChart points={snapshot.tokenTrend} range={snapshot.range} asOf={snapshot.generatedAt} /></section>
+    <div className="split"><section><SectionTitle title="Model mix" /><Distribution items={snapshot.modelDistribution} /></section><section><SectionTitle title="Reasoning mix" /><Distribution items={snapshot.reasoningDistribution} /></section></div>
     <AccountDetails account={snapshot.codexAccount} now={now} />
-    <section><SectionTitle title="Token trend" note={`${snapshot.range.toUpperCase()} · 10m`} /><TokenTrendChart points={snapshot.tokenTrend} /></section>
-    <div className="split"><section><SectionTitle title="Token composition" /><Composition summary={snapshot.windowSummary} /></section><section><SectionTitle title="Model mix" /><Distribution items={snapshot.modelDistribution} /></section></div>
-    <div className="split"><section><SectionTitle title="Reasoning mix" /><Distribution items={snapshot.reasoningDistribution} /></section><section><SectionTitle title="Latest session" note={session ? shortAge(session.lastSeenAt) : undefined} /><div className="session-line"><span>{session ? `${session.completedTools} tools` : "No session"}</span><span>{session ? `${session.toolFailures ?? 0} failed` : "—"}</span></div></section></div>
+    <section><SectionTitle title="Latest session" note={session ? shortAge(session.lastSeenAt) : undefined} /><div className="session-line"><span>{session ? `${session.completedTools} tools` : "No session"}</span><span>{session ? `${session.toolFailures ?? 0} failed` : "—"}</span></div></section>
     <section><SectionTitle title="Delivery" note={snapshot.delivery?.repository} /><div className="delivery"><HealthChip label="GitHub" status={snapshot.health.github} /><HealthChip label={snapshot.delivery?.latestBuild?.name ?? "CI"} status={snapshot.health.ci} /><span>{snapshot.delivery?.latestBuild?.status ?? "Unavailable"}</span></div></section>
   </div>;
 }
@@ -311,7 +301,7 @@ function AccountDetails({ account, now }: Readonly<{ account?: OverlaySnapshot["
   const credits = account.limits.map((limit) => limit.credits).find(Boolean);
   const activity = account.activity;
   return <>
-    <section><SectionTitle title="Account quota" note={account.planType ? `${account.planType} plan` : undefined} /><div className="account-facts"><span>Included usage<b>{account.ordinaryUsageAllowed === false ? "Blocked" : account.ordinaryUsageAllowed === true ? "Available" : "Unknown"}</b></span><span>Usage credits<b>{credits?.unlimited ? "Unlimited" : credits?.balance ? `${credits.balance} credits` : "Unavailable"}</b></span><span>Banked resets<b>{account.resetCredits ? account.resetCredits.availableCount : "Unavailable"}</b></span></div></section>
+    <section><SectionTitle title="Account quota" note={account.planType ? `${account.planType} plan` : undefined} /><div className="account-facts"><span>Included usage<b>{account.ordinaryUsageAllowed === false ? "Blocked" : account.ordinaryUsageAllowed === true ? "Available" : "Unknown"}</b></span><span>Usage credits<b title={credits?.balance ? `${credits.balance} credits` : undefined}>{credits?.unlimited ? "Unlimited" : credits?.balance ? `${formatCreditBalance(credits.balance)} credits` : "Unavailable"}</b></span><span>Banked resets<b>{account.resetCredits ? account.resetCredits.availableCount : "Unavailable"}</b></span></div></section>
     {account.limits.flatMap((limit) => limit.windows.map((window) => ({ limit, window }))).map(({ limit, window }, index) => <section key={`${limit.limitId ?? "default"}-${window.slot}-${index}`}><SectionTitle title={limit.normalModelSlug ?? limit.limitName ?? window.label} note={window.label} /><QuotaDetail window={window} now={now} /></section>)}
     {extraLimits.length ? <section><SectionTitle title="Additional limit pools" note={`${extraLimits.length}`} /><div className="extra-limits">{extraLimits.map((limit) => <span key={limit.limitId ?? limit.limitName}><b>{limit.limitName ?? limit.limitId ?? "Usage limit"}</b><small>{limit.normalModelSlug ?? "Model association unavailable"}</small></span>)}</div></section> : null}
     {activity ? <section><SectionTitle title="Account Activity" note="OpenAI backend" /><div className="account-facts"><span>Lifetime tokens<b>{numberLabel(activity.lifetimeTokens)}</b></span><span>Current streak<b>{activity.currentStreakDays === undefined ? "Unavailable" : `${activity.currentStreakDays}d`}</b></span><span>Peak daily<b>{numberLabel(activity.peakDailyTokens)}</b></span></div><p className="account-note">Daily activity bucket timezone semantics are backend-defined and are not merged with OTel history.</p></section> : null}
@@ -366,72 +356,54 @@ function BufferStatus({ buffer }: Readonly<{ buffer?: TelemetryBufferHealth }>) 
 function HealthLabel({ relay, freshness }: Readonly<{ relay: RelayState; freshness: ReturnType<typeof telemetryFreshness> }>) { const healthy = relay === "online" && freshness.state !== "stale"; return <div className={`strip-health ${healthy ? "connected" : "degraded"}`}><StatusDot state={healthy ? "connected" : "degraded"} />{healthy ? freshness.label : "Attention"}</div>; }
 function SectionTitle({ title, note }: Readonly<{ title: string; note?: string }>) { return <div className="section-title"><b>{title}</b>{note ? <span title={note}>{note}</span> : null}</div>; }
 
-function TokenTrendChart({ points }: Readonly<{ points: OverlaySnapshot["tokenTrend"] }>) {
+function TokenTrendChart({ points, range, asOf }: Readonly<{ points: OverlaySnapshot["tokenTrend"]; range: OverlaySnapshot["range"]; asOf: string }>) {
   const [activeIndex, setActiveIndex] = useState<number>();
-  const values = compactOverlayTrendPoints(points, MAX_OVERLAY_TREND_POINTS);
-  const totals = values.map(tokenPointTotal);
-  if (!totals.some((point) => point > 0)) return <div className="chart-empty">No samples</div>;
+  const trend = prepareOverlayTrend(points, range, asOf);
+  const values = trend.points;
+  if (!trend.observedBuckets) return <div className="chart-empty">No observed buckets in this range</div>;
 
   const width = 320;
-  const height = 48;
-  const top = 3;
-  const bottom = height - 4;
-  const maximum = Math.max(...totals, 1);
-  const x = (index: number) => values.length === 1 ? width / 2 : index / (values.length - 1) * width;
+  const height = 64;
+  const top = 2;
+  const bottom = height - 2;
+  const inputValues = values.map(inputTokenValue);
+  const maximum = Math.max(1, ...inputValues) * 1.25;
+  const x = (index: number) => index / (values.length - 1) * width;
   const y = (value: number) => bottom - value / maximum * (bottom - top);
-  const stacked = stackTokenSeries(values, overlayTokenSeries, overlayTokenValue);
+  const inputPath = linePath(inputValues, x, y);
   const activePoint = activeIndex === undefined ? undefined : values[activeIndex];
-  const hitWidth = values.length === 1 ? width : Math.max(8, width / (values.length - 1));
+  const selectAtPointer = (clientX: number, left: number, renderedWidth: number) => {
+    if (renderedWidth <= 0) return;
+    setActiveIndex(Math.max(0, Math.min(values.length - 1, Math.round((clientX - left) / renderedWidth * (values.length - 1)))));
+  };
 
   return <div className="trend-chart">
-    <svg aria-label="Color-coded measured token activity by time bucket" className="spark" preserveAspectRatio="none" role="img" viewBox={`0 0 ${width} ${height}`} onMouseLeave={() => setActiveIndex(undefined)}>
-      {stacked.map(({ definition, base, topValues }) => <path className="spark-series-area" d={stackedAreaPath(topValues, base, x, y)} fill={definition.color} fillOpacity={0.3} key={definition.id} stroke={definition.color} strokeOpacity={0.84} strokeWidth="0.8" vectorEffect="non-scaling-stroke" />)}
-      <path aria-label="Total measured tokens" className="spark-total-line" d={linePath(totals, x, y)} />
+    <svg aria-label={activePoint && activeIndex !== undefined ? tokenTrendTooltip(activePoint, activeIndex, values.length) : `Measured input tokens by ${trend.intervalLabel}. Focus and use arrow keys for exact buckets.`} className="spark" preserveAspectRatio="none" role="img" tabIndex={0} viewBox={`0 0 ${width} ${height}`} onBlur={() => setActiveIndex(undefined)} onFocus={() => setActiveIndex(values.reduce((last, point, index) => point.observed ? index : last, 0))} onKeyDown={(event) => {
+      const direction = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+      if (!direction && event.key !== "Home" && event.key !== "End") return;
+      event.preventDefault();
+      setActiveIndex((current) => event.key === "Home" ? 0 : event.key === "End" ? values.length - 1 : Math.max(0, Math.min(values.length - 1, (current ?? values.length - 1) + direction)));
+    }} onMouseLeave={() => setActiveIndex(undefined)} onMouseMove={(event) => { const rect = event.currentTarget.getBoundingClientRect(); selectAtPointer(event.clientX, rect.left, rect.width); }}>
+      <path className="spark-input-area" d={`${inputPath} L${width},${bottom} L0,${bottom} Z`} />
+      <path className="spark-input-line" d={inputPath} />
       {activeIndex !== undefined ? <line className="spark-hover-line" x1={x(activeIndex)} x2={x(activeIndex)} y1={top} y2={bottom} /> : null}
-      {values.map((point, index) => <rect aria-label={tokenTrendTooltip(point, index, values.length)} className="spark-hit" height={height} key={`${point.label}-${index}`} tabIndex={0} width={hitWidth} x={x(index) - hitWidth / 2} y={0} onBlur={() => setActiveIndex(undefined)} onFocus={() => setActiveIndex(index)} onMouseEnter={() => setActiveIndex(index)} />)}
     </svg>
-    <div aria-live="polite" className={`trend-tooltip ${activePoint ? "visible" : ""}`}>{activePoint && activeIndex !== undefined ? tokenTrendTooltip(activePoint, activeIndex, values.length) : "Hover or focus a numbered bucket for local-time details"}</div>
-    <div className="trend-legend"><span className="trend-timeframe">{OVERLAY_TREND_BUCKET_NOTE}{values.length < points.length ? ` · ${values.length} display points` : ""}</span>{overlayTokenSeries.map((series) => <span key={series.id}><i style={{ background: series.color }} />{series.label}</span>)}</div>
+    <div className="trend-axis"><span>{formatOverlayTrendLabel(values[0].label)}</span><span>{formatOverlayTrendLabel(values[Math.floor(values.length / 2)].label)}</span><span>{formatOverlayTrendLabel(values[values.length - 1].label)}</span></div>
+    {activePoint && activeIndex !== undefined ? <div aria-live="polite" className="trend-tooltip visible">{tokenTrendTooltip(activePoint, activeIndex, values.length)}</div> : null}
+    <div className="trend-caption">Measured input tokens · {trend.intervalLabel} · {trend.observedBuckets} observed / {values.length} intervals</div>
   </div>;
 }
 
-function compactOverlayTrendPoints(points: OverlaySnapshot["tokenTrend"], maximumPoints: number) {
-  if (points.length <= maximumPoints) return points;
-  const bucketSize = Math.ceil(points.length / maximumPoints);
-  const buckets: OverlaySnapshot["tokenTrend"] = [];
-  for (let start = 0; start < points.length; start += bucketSize) {
-    const group = points.slice(start, start + bucketSize);
-    buckets.push({
-      label: group.length === 1 ? group[0].label : `${group[0].label} – ${group[group.length - 1].label}`,
-      ...Object.fromEntries(overlayTokenSeries.map((series) => {
-        const values = group.map((point) => point[series.key]).filter((value): value is number => typeof value === "number");
-        return [series.key, values.length ? values.reduce((sum, value) => sum + value, 0) : undefined];
-      })),
-    });
-  }
-  return buckets;
-}
-
 function linePath(values: number[], x: (index: number) => number, y: (value: number) => number) {
-  return values.map((value, index) => `${index ? "L" : "M"}${x(index)},${y(value)}`).join(" ");
+  return values.map((value, index) => index ? `C${x(index - 1) + (x(index) - x(index - 1)) / 3},${y(values[index - 1])} ${x(index) - (x(index) - x(index - 1)) / 3},${y(value)} ${x(index)},${y(value)}` : `M${x(index)},${y(value)}`).join(" ");
 }
 
-function stackedAreaPath(topValues: number[], baseValues: number[], x: (index: number) => number, y: (value: number) => number) {
-  const topPath = linePath(topValues, x, y);
-  const basePath = baseValues.map((value, index) => `${x(index)},${y(value)}`).reverse().join(" L");
-  return `${topPath} L${basePath} Z`;
-}
-
-function overlayTokenValue(point: OverlaySnapshot["tokenTrend"][number] | OverlaySnapshot["windowSummary"], key: typeof overlayTokenSeries[number]["key"]) {
-  return point[key] ?? 0;
-}
-
-function tokenPointTotal(point: OverlaySnapshot["tokenTrend"][number]) {
-  return overlayTokenSeries.reduce((sum, series) => sum + overlayTokenValue(point, series.key), 0);
+function inputTokenValue(point: DisplayTrendPoint) {
+  const value = point.inputTokens;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 function formatOverlayTrendLabel(label: string): string {
-  if (label.includes(" – ")) return label.split(" – ").map(formatOverlayTrendLabel).join(" – ");
   if (/^\d{4}-\d{2}-\d{2}$/.test(label)) {
     const date = new Date(`${label}T12:00:00.000Z`);
     return Number.isNaN(date.getTime()) ? label : new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", timeZone: "UTC", year: "numeric" }).format(date);
@@ -443,21 +415,9 @@ function formatOverlayTrendLabel(label: string): string {
   return `${dateLabel} · ${timeLabel}`;
 }
 
-function tokenTrendTooltip(point: OverlaySnapshot["tokenTrend"][number], index?: number, totalPoints?: number) {
-  const total = tokenPointTotal(point);
-  const fields = overlayTokenSeries.filter((series) => overlayTokenValue(point, series.key) > 0).map((series) => `${series.label} ${numberLabel(overlayTokenValue(point, series.key))}`);
-  const bucket = index === undefined || totalPoints === undefined ? undefined : `Bucket ${index + 1} of ${totalPoints}`;
-  return [bucket, formatOverlayTrendLabel(point.label), `${numberLabel(total)} tokens`, ...fields].filter(Boolean).join(" · ");
-}
-
-function Composition({ summary }: Readonly<{ summary: OverlaySnapshot["windowSummary"] }>) {
-  const values = overlayTokenSeries.map((series) => ({ ...series, value: overlayTokenValue(summary, series.key) })).filter((item) => item.value > 0);
-  const { items, total } = tokenCompositionSegments(values);
-  if (!total) return <div className="chart-empty">No samples</div>;
-  return <div className="composition-wrap">
-    <div className="composition" aria-label={`Input, output, cached, reasoning, and tool measured fields, ${numberLabel(total)} displayed tokens`} role="img" title={`Displayed measured fields total: ${numberLabel(total)} tokens`}>{items.map((item) => <i aria-label={`${item.label}: ${numberLabel(item.value)} tokens`} key={item.id} style={{ background: item.color, flex: `0 0 ${item.fraction * 100}%` }} title={`${item.label}: ${numberLabel(item.value)} tokens`} />)}</div>
-    <div className="composition-legend">{items.map((item) => <span key={item.id} title={`${item.label}: ${numberLabel(item.value)} tokens`}><i style={{ background: item.color }} />{item.label}</span>)}</div>
-  </div>;
+function tokenTrendTooltip(point: DisplayTrendPoint, index: number, totalPoints: number) {
+  const measured = !point.observed ? "No events observed" : point.inputTokens === undefined ? "Input token count unavailable" : `${new Intl.NumberFormat("en-US").format(point.inputTokens)} input tokens`;
+  return [`${index + 1}/${totalPoints}`, formatOverlayTrendLabel(point.label), measured].join(" · ");
 }
 
 function Distribution({ items }: Readonly<{ items: OverlaySnapshot["modelDistribution"] }>) {
@@ -470,7 +430,7 @@ function PausedState() { return <div className="offline"><div><Power size={18} /
 
 function SettingsPanel({ settings, nativeState, close, update, refresh, report }: Readonly<{ settings: DesktopOverlaySettings; nativeState?: NativeState; close: () => void; update: (partial: Partial<DesktopOverlaySettings>, resize?: boolean) => Promise<void>; refresh: () => void; report: (error: unknown) => void }>) {
   return <aside className="settings-panel"><header><div><Settings size={13} /><b>Overlay settings</b></div><button onClick={close}><X size={14} /></button></header><div className="settings-scroll">
-    <SettingsGroup title="Appearance"><Select label="Effect" value={settings.effect} values={["translucent", "mica", "acrylic", "solid"]} change={(value) => void update({ effect: value as DesktopOverlaySettings["effect"] })} /><Select label="Surface" value={settings.surface} values={["dark", "light"]} change={(value) => void update({ surface: value as DesktopOverlaySettings["surface"] })} /><Range label={`Opacity · ${settings.opacity}%`} value={settings.opacity} min={0} max={100} change={(value) => void update({ opacity: value })} /><Select label="Text" value={settings.textColor} values={["auto", "white", "black", "red", "amber", "cyan", "custom"]} change={(value) => void update({ textColor: value as DesktopOverlaySettings["textColor"] })} /><Color label="Accent" value={settings.accentColor} change={(value) => void update({ accentColor: value })} />{settings.textColor === "custom" ? <Color label="Custom text" value={settings.customTextColor} change={(value) => void update({ customTextColor: value })} /> : null}<Range label={`Font · ${settings.fontScale}%`} value={settings.fontScale} min={80} max={150} change={(value) => void update({ fontScale: value })} /><Select label="Density" value={settings.density} values={["tight", "comfortable"]} change={(value) => void update({ density: value as DesktopOverlaySettings["density"] })} /></SettingsGroup>
+    <SettingsGroup title="Appearance"><Select label="Effect" value={settings.effect} values={["translucent", "mica", "acrylic", "solid"]} change={(value) => void update({ effect: value as DesktopOverlaySettings["effect"] })} /><Select label="Surface" value={settings.surface} values={["dark", "light"]} change={(value) => void update({ surface: value as DesktopOverlaySettings["surface"] })} /><Range label={`Opacity · ${settings.opacity}%`} value={settings.opacity} min={0} max={100} change={(value) => void update({ opacity: value })} /><Select label="Text" value={settings.textColor} values={["auto", "white", "black", "red", "amber", "cyan", "custom"]} change={(value) => void update({ textColor: value as DesktopOverlaySettings["textColor"] })} /><Color label="Accent" value={settings.accentColor} change={(value) => void update({ accentColor: value })} /><Color label="Chart line" value={settings.chartLineColor} change={(value) => void update({ chartLineColor: value })} />{settings.textColor === "custom" ? <Color label="Custom text" value={settings.customTextColor} change={(value) => void update({ customTextColor: value })} /> : null}<Range label={`Font · ${settings.fontScale}%`} value={settings.fontScale} min={80} max={150} change={(value) => void update({ fontScale: value })} /><Select label="Density" value={settings.density} values={["tight", "comfortable"]} change={(value) => void update({ density: value as DesktopOverlaySettings["density"] })} /></SettingsGroup>
     <SettingsGroup title="Window"><Select label="Layout" value={settings.layout} values={[...overlayLayouts]} change={(value) => void update({ layout: value as OverlayLayout }, true)} /><Select label="Position" value={settings.corner} values={["free", "top-left", "top-right", "bottom-left", "bottom-right"]} change={(value) => void update({ corner: value as DesktopOverlaySettings["corner"] })} /><Toggle label="Lock position" checked={settings.lockPosition} change={(value) => void update({ lockPosition: value })} /><Toggle label="Edge snapping" checked={settings.edgeSnapping} change={(value) => void update({ edgeSnapping: value })} /><Toggle label="Always on top" checked={settings.alwaysOnTop} change={(value) => void update({ alwaysOnTop: value })} /><Toggle label="Show in taskbar" checked={settings.showInTaskbar} change={(value) => void update({ showInTaskbar: value })} /><Toggle label="Click through" checked={settings.clickThrough} disabled={!nativeState?.shortcutsReady} change={(value) => void update({ clickThrough: value })} /></SettingsGroup>
     <SettingsGroup title="Behavior"><Toggle label="Follow ChatGPT" checked={settings.followChatgpt} change={(value) => void update({ followChatgpt: value })} /><p>Detected host: <b>{nativeState?.chatgptRunning ? "ChatGPT running" : "ChatGPT closed"}</b></p><Select label="Local refresh" value={String(settings.refreshSeconds)} values={["5", "10", "15", "30", "60"]} labels={["5 seconds", "10 seconds", "15 seconds", "30 seconds", "60 seconds"]} change={(value) => void update({ refreshSeconds: Number(value) })} /><Select label="Range" value={settings.range} values={[...overlayRanges]} change={(value) => void update({ range: value as OverlayRange })} /><Toggle label="Start with Windows" checked={settings.startWithWindows} change={(value) => void update({ startWithWindows: value })} /><Text label="Show / hide" value={settings.showHideHotkey} change={(value) => void update({ showHideHotkey: value })} /><Text label="Click through" value={settings.clickThroughHotkey} change={(value) => void update({ clickThroughHotkey: value })} />{nativeState?.shortcutError ? <p className="settings-error">{nativeState.shortcutError}</p> : null}</SettingsGroup>
       <SettingsGroup title="Data"><div className="data-actions"><button onClick={refresh}><RefreshCw size={12} />Refresh now</button><button onClick={() => void openDashboard()}><ExternalLink size={12} />Open Command Center</button></div><div className="data-actions"><button onClick={() => void controlRelay("start").then(refresh).catch(report)}><Power size={12} />Start relay</button><button onClick={() => void controlRelay("restart").then(refresh).catch(report)}><RefreshCw size={12} />Restart relay</button><button onClick={() => void controlRelay("stop").catch(report)}><X size={12} />Stop relay</button></div><p>Relay: <b>{nativeState?.relayStatus ?? "checking"}</b> · 127.0.0.1:14318</p><p>The widget refreshes locally at the selected cadence. The relay limits remote snapshot reads to once every 30 seconds.</p><p>Snapshot values are operational and privacy-filtered. No cloud credential is stored in this app.</p></SettingsGroup>
@@ -487,6 +447,7 @@ function Toggle({ label, checked, disabled, change }: Readonly<{ label: string; 
 function Text({ label, value, change }: Readonly<{ label: string; value: string; change: (value: string) => void }>) { const [draft, setDraft] = useState(value); return <label><span>{label}</span><input type="text" value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={() => change(draft)} /></label>; }
 
 function numberLabel(value?: number) { return value === undefined ? "—" : new Intl.NumberFormat("en", { notation: value >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value); }
+function formatCreditBalance(balance: string) { const value = Number(balance); return Number.isFinite(value) ? new Intl.NumberFormat("en", { maximumFractionDigits: 2 }).format(value) : balance; }
 function durationLabel(value?: number) { return value === undefined ? "—" : value < 1_000 ? `${Math.round(value)}ms` : `${(value / 1_000).toFixed(1)}s`; }
 function friendlyModel(value?: string) { return value ? value.replace(/^gpt-/, "").replace(/\.0$/, "") : "No model"; }
 function shortAge(value: string) { const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 1_000)); return seconds < 60 ? `${seconds}s ago` : seconds < 3_600 ? `${Math.floor(seconds / 60)}m ago` : `${Math.floor(seconds / 3_600)}h ago`; }

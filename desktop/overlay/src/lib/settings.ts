@@ -18,6 +18,7 @@ export interface DesktopOverlaySettings {
   textColor: OverlayTextColor;
   customTextColor: string;
   accentColor: string;
+  chartLineColor: string;
   fontScale: number;
   density: OverlayDensity;
   corner: OverlayCorner;
@@ -42,6 +43,7 @@ export const defaultDesktopOverlaySettings: DesktopOverlaySettings = {
   textColor: "auto",
   customTextColor: "#f2f8fa",
   accentColor: "#66d9e8",
+  chartLineColor: "#66d9e8",
   fontScale: 100,
   density: "tight",
   corner: "free",
@@ -85,6 +87,7 @@ export function parseDesktopOverlaySettings(value: unknown): DesktopOverlaySetti
     textColor: choice(input.textColor, ["auto", "white", "black", "red", "amber", "cyan", "custom"] as const, defaultDesktopOverlaySettings.textColor),
     customTextColor: isSafeHexColor(input.customTextColor) ? input.customTextColor : defaultDesktopOverlaySettings.customTextColor,
     accentColor: isSafeHexColor(input.accentColor) ? input.accentColor : defaultDesktopOverlaySettings.accentColor,
+    chartLineColor: isSafeHexColor(input.chartLineColor) ? input.chartLineColor : defaultDesktopOverlaySettings.chartLineColor,
     fontScale: bounded(input.fontScale, 80, 150, defaultDesktopOverlaySettings.fontScale),
     density: choice(input.density, ["tight", "comfortable"] as const, defaultDesktopOverlaySettings.density),
     corner: choice(input.corner, ["free", "top-left", "top-right", "bottom-left", "bottom-right"] as const, defaultDesktopOverlaySettings.corner),
