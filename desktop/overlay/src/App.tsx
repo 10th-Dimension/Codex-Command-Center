@@ -100,6 +100,9 @@ export function App() {
       const autostart = await getAutostart().catch(() => stored.startWithWindows);
       const hydrated = { ...stored, startWithWindows: autostart };
       setSettings(hydrated);
+      if (resolveLayout(window.innerWidth, window.innerHeight, hydrated.layout) !== hydrated.layout) {
+        await setLayout(hydrated.layout).catch(() => undefined);
+      }
       let chatgptRunning = true;
       try {
         const shortcuts = await configureHotkeys(hydrated.showHideHotkey, hydrated.clickThroughHotkey);
@@ -219,15 +222,19 @@ function OverlayContent({ snapshot, relay, layout, freshness, now }: Readonly<{ 
   if (!snapshot) return <div className="overlay-content"><div className="loading"><RefreshCw className="spin" size={15} />Retrieving private snapshot…</div></div>;
   const session = snapshot.latestSession;
   const summary = snapshot.windowSummary;
-  if (layout === "strip") return <div className="overlay-content overlay-content-strip"><div className="strip-content"><Identity session={session} /><StripQuota account={snapshot.codexAccount} /><Metric short="IN" value={summary.inputTokens} /><Metric short="TOOLS" value={summary.completedTools} /><HealthLabel relay={relay} freshness={freshness} /></div></div>;
+  if (layout === "strip") return <div className="overlay-content overlay-content-strip"><div className="strip-content"><Identity session={session} /><StripQuota account={snapshot.codexAccount} /></div></div>;
   if (layout === "mini") return <div className="overlay-content overlay-content-mini">
     <div className="identity-row"><Identity session={session} /><QuotaFreshness account={snapshot.codexAccount} now={now} /></div>
-    <MiniQuota account={snapshot.codexAccount} now={now} summary={summary} />
-    <footer><HealthChip label="Relay" status={relay === "online" ? "connected" : "degraded"} /><HealthChip label="Telemetry" status={snapshot.health.telemetry} /><HealthChip label="D1" status={snapshot.health.d1} /><BufferStatus buffer={snapshot.telemetryBuffer} /></footer>
+    <MiniQuota account={snapshot.codexAccount} now={now} />
+  </div>;
+  if (layout === "standard") return <div className="overlay-content overlay-content-standard">
+    <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>Snapshot {freshness.label}</span></div>
+    <QuotaPanel account={snapshot.codexAccount} now={now} />
+    <div className="metric-grid standard-metrics"><Metric label="Input" value={summary.inputTokens} /><Metric label="Output" value={summary.outputTokens} /><Metric label="Tools" value={summary.completedTools} /><Metric label="Errors" value={summary.failures} /></div>
+    <section className="standard-trend"><SectionTitle title="Token trend" note={`${snapshot.range.toUpperCase()} · ${snapshot.range === "24h" ? "10m" : "1d"}`} /><TokenTrendChart points={snapshot.tokenTrend} range={snapshot.range} asOf={snapshot.generatedAt} /></section>
   </div>;
   return <div className={`overlay-content overlay-content-${layout}`}>
     <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>Snapshot {freshness.label}</span></div>
-    {layout === "standard" ? <ObservationRail session={session} summary={summary} lastTelemetryAt={snapshot.lastTelemetryAt} /> : null}
     <QuotaPanel account={snapshot.codexAccount} now={now} />
     <PricingPanel pricing={snapshot.pricing} />
     <div className="metric-grid primary"><Metric label="Input" value={summary.inputTokens} /><Metric label="Output" value={summary.outputTokens} /><Metric label="Cached" value={summary.cachedTokens} optionalMini /><Metric label="Reasoning" value={summary.reasoningTokens} /><Metric label="Tool tokens" value={summary.toolTokens} optionalMini /><Metric label="TTFT" value={summary.averageTtftMs} duration /><Metric label="Tools" value={summary.completedTools} /><Metric label="Errors" value={summary.failures} /></div>
@@ -263,11 +270,18 @@ function QuotaFreshness({ account, now }: Readonly<{ account?: OverlaySnapshot["
   return <span className={`freshness ${freshness.state}`}>Quota {freshness.label}</span>;
 }
 
-function MiniQuota({ account, now, summary }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number; summary: OverlaySnapshot["windowSummary"] }>) {
+function MiniQuota({ account, now }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number }>) {
   const windows = primaryWindows(account);
   return <div className="mini-quota">
-    <div>{windows.length ? windows.slice(0, 2).map((window) => <span key={window.slot}><small>{window.kind === "5h" ? "5H" : window.kind === "7d" ? "7D" : window.label}</small><b>{Math.round(window.remainingPercent)}%</b><i>{resetCountdown(window.resetsAt, now) ?? "—"}</i></span>) : <strong>Quota unavailable</strong>}</div>
-    <p>Input {numberLabel(summary.inputTokens)} · Tools {numberLabel(summary.completedTools)} · Errors {numberLabel(summary.failures)}</p>
+    {windows.length ? windows.slice(0, 2).map((window) => {
+      const pace = estimateUsagePace(window, now);
+      const reset = absoluteResetTime(window.resetsAt);
+      return <div className="mini-quota-window" key={window.slot} title={reset ? `${window.label} resets ${reset}` : `${window.label} reset unavailable`}>
+        <span>{window.label}<b>{Math.round(window.remainingPercent)}% left</b></span>
+        <i><b style={{ width: `${window.remainingPercent}%` }} /></i>
+        <small>{pace ? `Linear pace ${pace.deltaPercent > 0 ? "+" : ""}${Math.round(pace.deltaPercent)}%` : "Pace unavailable"}<em>{resetCountdown(window.resetsAt, now) ? `Resets in ${resetCountdown(window.resetsAt, now)}` : "Reset unavailable"}</em></small>
+      </div>;
+    }) : <strong>Quota unavailable</strong>}
   </div>;
 }
 
@@ -317,17 +331,6 @@ function QuotaDetail({ window, now }: Readonly<{ window: CodexQuotaWindow; now: 
 
 function Identity({ session }: Readonly<{ session?: OverlaySnapshot["latestSession"] }>) { return <div className="identity" title={session ? `Latest observed session · ${session.lastSeenAt}` : "No observed session"}><span>{friendlyModel(session?.model)}</span><i>·</i><small>{session?.reasoningEffort ?? "effort unavailable"}</small></div>; }
 
-function ObservationRail({ session, summary, lastTelemetryAt }: Readonly<{ session?: OverlaySnapshot["latestSession"]; summary: OverlaySnapshot["windowSummary"]; lastTelemetryAt?: string }>) {
-  const observed = Boolean(session);
-  const observedAt = session?.lastSeenAt ?? lastTelemetryAt;
-  return <div className={`observation-rail ${observed ? "observed" : "unavailable"}`} title="This is the latest observed telemetry, not a claim about current agent state.">
-    <StatusDot state={observed ? "connected" : "unavailable"} />
-    <div><b>{observed ? "Last session observed" : "No session observed"}</b><small>{observed ? `${friendlyModel(session?.model)} · ${session?.reasoningEffort ?? "effort unavailable"}` : "No bounded session summary is available."}</small></div>
-    <time>{observedAt ? shortAge(observedAt) : "Unavailable"}</time>
-    <span className="observation-facts">{numberLabel(summary.completedTools)} tools · {numberLabel(summary.approvals)} approvals · {numberLabel(summary.failures)} failed</span>
-  </div>;
-}
-
 function ObservedOperations({ session, summary, lastTelemetryAt }: Readonly<{ session?: OverlaySnapshot["latestSession"]; summary: OverlaySnapshot["windowSummary"]; lastTelemetryAt?: string }>) {
   const observed = Boolean(session);
   const observedAt = session?.lastSeenAt ?? lastTelemetryAt;
@@ -353,7 +356,6 @@ function BufferStatus({ buffer }: Readonly<{ buffer?: TelemetryBufferHealth }>) 
   const title = `${buffer.queuedBatches} queued batch${buffer.queuedBatches === 1 ? "" : "es"}${buffer.oldestQueuedAgeSeconds === undefined ? "" : ` · oldest ${buffer.oldestQueuedAgeSeconds}s`}${buffer.droppedBatches ? ` · ${buffer.droppedBatches} dropped` : ""}`;
   return <span className="buffer-status" title={title}><StatusDot state={state} />{label}</span>;
 }
-function HealthLabel({ relay, freshness }: Readonly<{ relay: RelayState; freshness: ReturnType<typeof telemetryFreshness> }>) { const healthy = relay === "online" && freshness.state !== "stale"; return <div className={`strip-health ${healthy ? "connected" : "degraded"}`}><StatusDot state={healthy ? "connected" : "degraded"} />{healthy ? freshness.label : "Attention"}</div>; }
 function SectionTitle({ title, note }: Readonly<{ title: string; note?: string }>) { return <div className="section-title"><b>{title}</b>{note ? <span title={note}>{note}</span> : null}</div>; }
 
 function TokenTrendChart({ points, range, asOf }: Readonly<{ points: OverlaySnapshot["tokenTrend"]; range: OverlaySnapshot["range"]; asOf: string }>) {

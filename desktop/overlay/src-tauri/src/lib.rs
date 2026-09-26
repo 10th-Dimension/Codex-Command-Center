@@ -19,7 +19,7 @@ use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     window::EffectsBuilder,
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -744,12 +744,12 @@ fn apply_effect(window: &WebviewWindow, requested: &str) -> String {
     }
 }
 
-fn layout_size(layout: &str) -> Option<PhysicalSize<u32>> {
+fn layout_size(layout: &str) -> Option<LogicalSize<f64>> {
     match layout {
-        "mini" => Some(PhysicalSize::new(300, 150)),
-        "standard" => Some(PhysicalSize::new(430, 320)),
-        "expanded" => Some(PhysicalSize::new(430, 500)),
-        "strip" => Some(PhysicalSize::new(600, 90)),
+        "mini" => Some(LogicalSize::new(310.0, 176.0)),
+        "standard" => Some(LogicalSize::new(430.0, 320.0)),
+        "expanded" => Some(LogicalSize::new(430.0, 500.0)),
+        "strip" => Some(LogicalSize::new(600.0, 90.0)),
         _ => None,
     }
 }
@@ -849,7 +849,7 @@ fn migrate_legacy_standard_size(window: &WebviewWindow) {
         return;
     };
     if size.width == 360 && size.height == 250 {
-        let _ = window.set_size(PhysicalSize::new(430, 320));
+        let _ = window.set_size(LogicalSize::new(430.0, 320.0));
     }
 }
 

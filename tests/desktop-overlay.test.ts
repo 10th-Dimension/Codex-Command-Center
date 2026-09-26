@@ -90,7 +90,7 @@ test("overlay quick controls reuse supported ranges, layouts, and the existing s
   assert.match(rust, /fn recover_overlay[\s\S]+click_through = false;[\s\S]+lock_position = false;/);
   assert.match(native, /startResizeDragging/);
   assert.match(app, /function ResizeHandles/);
-  assert.match(app, /function ObservationRail/);
+  assert.match(app, /className="standard-trend"/);
   assert.match(app, /Observed operations/);
   assert.match(app, /Snapshot unavailable/);
   assert.match(app, /overlayCache/);
@@ -179,7 +179,9 @@ test("native standard overlay reserves enough room for its operational surface",
   ]);
   assert.match(config, /"width": 430/);
   assert.match(config, /"height": 320/);
-  assert.match(rust, /"standard" => Some\(PhysicalSize::new\(430, 320\)\)/);
+  assert.match(rust, /"standard" => Some\(LogicalSize::new\(430\.0, 320\.0\)\)/);
+  assert.match(rust, /"strip" => Some\(LogicalSize::new\(600\.0, 90\.0\)\)/);
+  assert.match(rust, /"mini" => Some\(LogicalSize::new\(310\.0, 176\.0\)\)/);
   assert.match(rust, /migrate_legacy_standard_size/);
 });
 
@@ -213,8 +215,11 @@ test("overlay layouts keep content scrollable when the window is resized", async
   assert.match(app, /overlay-content overlay-content-strip/);
   assert.match(app, /overlay-content overlay-content-mini/);
   assert.match(app, /overlay-content-\$\{layout\}/);
+  assert.match(app, /if \(layout === "standard"\) return/);
+  assert.match(app, /if \(layout === "mini"\) return/);
+  assert.match(app, /if \(layout === "strip"\) return/);
   assert.match(styles, /\.overlay-content-standard,\.overlay-content-expanded\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto/);
-  assert.match(styles, /\.overlay-content-mini\s*\{[^}]*overflow:\s*auto/);
+  assert.match(styles, /\.overlay-content-mini\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto/);
   assert.match(styles, /\.overlay-content-strip\s*\{[^}]*display:\s*grid/);
   assert.doesNotMatch(styles, /\.expanded-content\s*\{[^}]*height:\s*calc\(100% - 238px\)/);
   assert.match(styles, /footer\s*\{[^}]*position:\s*relative/);
@@ -223,6 +228,34 @@ test("overlay layouts keep content scrollable when the window is resized", async
   assert.doesNotMatch(styles, /\.overlay-content-(?:standard|expanded|mini)[^{]*\{[^}]*padding-bottom:/);
   assert.doesNotMatch(styles, /footer \.health-chip[^}]*display:\s*none/);
   assert.match(styles, /@media \(max-width: 330px\)\s*\{[^}]*\.split\s*\{[^}]*grid-template-columns:\s*1fr/);
+});
+
+test("compact layouts show only their intended information, while expanded retains full diagnostics", async () => {
+  const [app, styles, rust] = await Promise.all([
+    readFile(new URL("../desktop/overlay/src/App.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/overlay/src/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/overlay/src-tauri/src/lib.rs", import.meta.url), "utf8"),
+  ]);
+  const content = app.slice(app.indexOf("function OverlayContent("), app.indexOf("function Expanded("));
+  const strip = content.slice(content.indexOf('if (layout === "strip")'), content.indexOf('if (layout === "mini")'));
+  const mini = content.slice(content.indexOf('if (layout === "mini")'), content.indexOf('if (layout === "standard")'));
+  const standard = content.slice(content.indexOf('if (layout === "standard")'), content.indexOf('return <div className={`overlay-content overlay-content-${layout}`}'));
+  const expanded = content.slice(content.indexOf('return <div className={`overlay-content overlay-content-${layout}`}'));
+  assert.match(strip, /<StripQuota/);
+  assert.doesNotMatch(strip, /<Metric|<HealthChip|<BufferStatus|<footer/);
+  assert.match(mini, /<MiniQuota/);
+  assert.doesNotMatch(mini, /<Metric|<HealthChip|<BufferStatus|<footer/);
+  assert.match(standard, /<QuotaPanel/);
+  assert.match(standard, /<TokenTrendChart/);
+  assert.doesNotMatch(standard, /<PricingPanel|<BufferStatus|<footer/);
+  assert.match(expanded, /<PricingPanel/);
+  assert.match(expanded, /<Expanded snapshot/);
+  assert.match(expanded, /<BufferStatus/);
+  assert.match(app, /estimateUsagePace\(window, now\)/);
+  assert.match(app, /width: `\$\{window\.remainingPercent\}%`/);
+  assert.match(styles, /\.layout-strip\.app\s*\{[^}]*min-height:\s*0/);
+  assert.match(styles, /\.layout-mini \.brand-mode\s*\{[^}]*display:\s*none/);
+  assert.match(rust, /fn layout_size\(layout: &str\) -> Option<LogicalSize<f64>>/);
 });
 
 test("overlay appearance remains stable when the native window loses focus", async () => {
