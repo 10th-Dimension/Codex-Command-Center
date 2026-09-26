@@ -254,6 +254,7 @@ test("compact layouts show only their intended information, while expanded retai
   assert.match(app, /estimateUsagePace\(window, now\)/);
   assert.match(app, /width: `\$\{window\.remainingPercent\}%`/);
   assert.match(styles, /\.layout-strip\.app\s*\{[^}]*min-height:\s*0/);
+  assert.match(styles, /\.layout-mini \.brand-mode\s*\{[^}]*display:\s*none/);
   assert.match(rust, /fn layout_size\(layout: &str\) -> Option<LogicalSize<f64>>/);
 });
 

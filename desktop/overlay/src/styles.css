@@ -116,6 +116,7 @@ footer { position: relative; justify-content: space-between; flex-wrap: wrap; ga
 .layout-strip .offline p { display: none; }
 
 .overlay-content-mini { overflow-x: hidden; overflow-y: auto; }
+.layout-mini .brand-mode { display: none; }
 .layout-mini .identity-row { height: 35px; min-height: 35px; gap: 6px; }
 .layout-mini .identity { overflow: hidden; }
 .layout-mini .identity span { font-size: .85em; }
