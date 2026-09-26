@@ -277,6 +277,22 @@ mod tests {
         );
         assert_eq!(RELAY_STARTUP_DEADLINE, Duration::from_secs(12));
     }
+
+    #[test]
+    fn wider_layout_is_clamped_inside_its_current_monitor() {
+        assert_eq!(clamp_layout_axis(1_700, 0, 1_920, 600), 1_312);
+        assert_eq!(clamp_layout_axis(-2_100, -1_920, 1_920, 600), -1_912);
+        assert_eq!(clamp_layout_axis(100, 0, 1_920, 600), 100);
+        assert_eq!(clamp_layout_axis(900, 0, 500, 600), 8);
+    }
+
+    #[test]
+    fn compact_presets_keep_distinct_heights() {
+        assert_eq!(layout_size("strip").unwrap().height, 90.0);
+        assert_eq!(layout_size("mini").unwrap().height, 140.0);
+        assert_eq!(layout_size("standard").unwrap().height, 320.0);
+        assert_eq!(layout_size("expanded").unwrap().height, 500.0);
+    }
 }
 
 fn node_path_from_source(source: &PathBuf) -> PathBuf {
@@ -746,12 +762,35 @@ fn apply_effect(window: &WebviewWindow, requested: &str) -> String {
 
 fn layout_size(layout: &str) -> Option<LogicalSize<f64>> {
     match layout {
-        "mini" => Some(LogicalSize::new(310.0, 176.0)),
+        "mini" => Some(LogicalSize::new(310.0, 140.0)),
         "standard" => Some(LogicalSize::new(430.0, 320.0)),
         "expanded" => Some(LogicalSize::new(430.0, 500.0)),
         "strip" => Some(LogicalSize::new(600.0, 90.0)),
         _ => None,
     }
+}
+
+fn clamp_layout_axis(position: i32, origin: i32, extent: u32, size: u32) -> i32 {
+    let minimum = origin + 8;
+    let maximum = origin + extent as i32 - size as i32 - 8;
+    position.clamp(minimum, maximum.max(minimum))
+}
+
+fn keep_layout_on_monitor(window: &WebviewWindow, monitor: &tauri::Monitor) -> Result<(), String> {
+    let position = window
+        .outer_position()
+        .map_err(|_| "window_position_unavailable")?;
+    let size = window.outer_size().map_err(|_| "window_size_unavailable")?;
+    let origin = monitor.position();
+    let extent = monitor.size();
+    let x = clamp_layout_axis(position.x, origin.x, extent.width, size.width);
+    let y = clamp_layout_axis(position.y, origin.y, extent.height, size.height);
+    if x != position.x || y != position.y {
+        window
+            .set_position(PhysicalPosition::new(x, y))
+            .map_err(|_| "window_position_failed")?;
+    }
+    Ok(())
 }
 
 fn position_corner(window: &WebviewWindow, corner: &str) -> Result<(), String> {
@@ -966,9 +1005,17 @@ fn apply_window_settings(
 #[tauri::command]
 fn set_layout(window: WebviewWindow, layout: String) -> Result<(), String> {
     let size = layout_size(&layout).ok_or_else(|| "invalid_layout".to_string())?;
+    let monitor = window
+        .current_monitor()
+        .map_err(|_| "monitor_unavailable")?
+        .or(window
+            .primary_monitor()
+            .map_err(|_| "monitor_unavailable")?)
+        .ok_or_else(|| "monitor_unavailable".to_string())?;
     window
         .set_size(size)
-        .map_err(|_| "window_resize_failed".to_string())
+        .map_err(|_| "window_resize_failed".to_string())?;
+    keep_layout_on_monitor(&window, &monitor)
 }
 
 #[tauri::command]

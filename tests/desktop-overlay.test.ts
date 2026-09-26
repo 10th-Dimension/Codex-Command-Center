@@ -6,7 +6,7 @@ import { telemetryFreshness } from "../desktop/overlay/src/lib/freshness";
 import { shouldReplaceOverlaySnapshot } from "../desktop/overlay/src/lib/snapshot";
 import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../src/lib/overlay/account";
 import type { OverlaySnapshot } from "../src/lib/overlay/contracts";
-import { defaultDesktopOverlaySettings, isSafeHexColor, isSafeHotkey, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, resolveLayout, shouldPollRemote } from "../desktop/overlay/src/lib/settings";
+import { defaultDesktopOverlaySettings, isSafeHexColor, isSafeHotkey, needsPresetResize, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, shouldPollRemote } from "../desktop/overlay/src/lib/settings";
 
 test("desktop settings preserve supported choices and bound unsafe values", () => {
   const parsed = parseDesktopOverlaySettings({ opacity: 2, fontScale: 400, refreshSeconds: 1, layout: "expanded", density: "comfortable", textColor: "red", surface: "light" });
@@ -35,11 +35,14 @@ test("desktop color and hotkey validation reject content-shaped input", () => {
   assert.equal(parsed.showHideHotkey, defaultDesktopOverlaySettings.showHideHotkey);
 });
 
-test("desktop layout resolution remains usable when resized", () => {
-  assert.equal(resolveLayout(300, 150, "expanded"), "mini");
-  assert.equal(resolveLayout(360, 250, "expanded"), "standard");
-  assert.equal(resolveLayout(430, 500, "expanded"), "expanded");
-  assert.equal(resolveLayout(600, 90, "standard"), "strip");
+test("manual resizing preserves the selected layout while undersized restored presets are repaired", () => {
+  assert.equal(needsPresetResize(600, 90, "strip"), false);
+  assert.equal(needsPresetResize(600, 180, "strip"), false);
+  assert.equal(needsPresetResize(280, 123, "strip"), true);
+  assert.equal(needsPresetResize(310, 140, "mini"), false);
+  assert.equal(needsPresetResize(430, 320, "standard"), false);
+  assert.equal(needsPresetResize(430, 500, "expanded"), false);
+  assert.equal(needsPresetResize(300, 150, "expanded"), true);
 });
 
 test("telemetry freshness distinguishes healthy activity, idle time, degraded paths, and unavailable data", () => {
@@ -181,7 +184,7 @@ test("native standard overlay reserves enough room for its operational surface",
   assert.match(config, /"height": 320/);
   assert.match(rust, /"standard" => Some\(LogicalSize::new\(430\.0, 320\.0\)\)/);
   assert.match(rust, /"strip" => Some\(LogicalSize::new\(600\.0, 90\.0\)\)/);
-  assert.match(rust, /"mini" => Some\(LogicalSize::new\(310\.0, 176\.0\)\)/);
+  assert.match(rust, /"mini" => Some\(LogicalSize::new\(310\.0, 140\.0\)\)/);
   assert.match(rust, /migrate_legacy_standard_size/);
 });
 
@@ -256,6 +259,23 @@ test("compact layouts show only their intended information, while expanded retai
   assert.match(styles, /\.layout-strip\.app\s*\{[^}]*min-height:\s*0/);
   assert.match(styles, /\.layout-mini \.brand-mode\s*\{[^}]*display:\s*none/);
   assert.match(rust, /fn layout_size\(layout: &str\) -> Option<LogicalSize<f64>>/);
+});
+
+test("layout choice, position lock, and transient menus stay coherent at every window size", async () => {
+  const [app, styles] = await Promise.all([
+    readFile(new URL("../desktop/overlay/src/App.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../desktop/overlay/src/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(app, /layout-\$\{settings\.layout\}/);
+  assert.match(app, /layout=\{settings\.layout\}/);
+  assert.doesNotMatch(app, /setEffectiveLayout|addEventListener\("resize"/);
+  assert.match(app, /aria-label=\{settings\.lockPosition \? "Unlock position" : "Lock position"\}/);
+  assert.match(app, /settings\.lockPosition \? <Lock size=\{12\} \/> : <Unlock size=\{12\} \/>/);
+  assert.doesNotMatch(styles, /header-meta > button:first-of-type/);
+  assert.match(app, /const openSettings = useCallback\(\(\) => \{\s*setHeaderMenu\(undefined\);\s*setContextOpen\(false\);\s*setSettingsOpen\(true\)/);
+  assert.match(app, /document\.addEventListener\("pointerdown", dismissOnOutsideClick\)/);
+  assert.match(app, /window\.addEventListener\("blur", dismissOnBlur\)/);
+  assert.match(styles, /\.settings-panel\s*\{[^}]*z-index:\s*70/);
 });
 
 test("overlay appearance remains stable when the native window loses focus", async () => {

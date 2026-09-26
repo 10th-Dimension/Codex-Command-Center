@@ -108,11 +108,16 @@ export function shouldPollRemote(followChatgpt: boolean, chatgptRunning: boolean
   return overlayVisible && (!followChatgpt || chatgptRunning);
 }
 
-export function resolveLayout(width: number, height: number, preferred: OverlayLayout): OverlayLayout {
-  if (height <= 110 && width >= 520) return "strip";
-  if (height < 190 || width < 330) return "mini";
-  if (height < 390 || width < 410) return preferred === "mini" ? "mini" : "standard";
-  return preferred;
+// Window-state restoration can retain undersized geometry from an older DPI-scaled
+// build. Repair only those cases; manual resizing never changes the chosen layout.
+export function needsPresetResize(width: number, height: number, layout: OverlayLayout): boolean {
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return true;
+  switch (layout) {
+    case "strip": return width < 500 || height < 70;
+    case "mini": return width < 280 || height < 125;
+    case "standard": return width < 390 || height < 250;
+    case "expanded": return width < 390 || height < 390;
+  }
 }
 
 export function textColorValue(settings: DesktopOverlaySettings) {
