@@ -15,6 +15,7 @@
     "check:migrations": "node scripts/check-migrations.mjs",
     "audit:d1": "node scripts/audit-d1.mjs",
     "backfill:codex-rollups": "node --import tsx scripts/backfill-codex-rollups.mjs",
+    "repair:pricing-attribution": "node scripts/repair-pricing-attribution.mjs",
     "telemetry:relay": "tsx scripts/telemetry-relay.ts",
     "install:codex-live-shortcut": "cscript //nologo scripts\\install-codex-live-shortcut.vbs",
     "check:vinext": "vinext check",

@@ -178,6 +178,15 @@ npm run backfill:codex-rollups -- --remote --confirm-remote
 
 The utility refuses non-empty rollup tables unless `--rebuild` is also supplied. A rebuild deletes and recreates rollup/snapshot rows only; it does not modify retained raw telemetry. Its four raw scans select only privacy-safe aggregate columns.
 
+Migration `0004` deliberately left older model-hour pricing counters at zero. An optional, one-time pricing-only repair can recover exact attribution from retained raw scalar fields without rebuilding other rollups. It performs a dry-run preflight by default; local application requires `--apply`. Production application requires separate authorization and all three flags:
+
+```bash
+npm run repair:pricing-attribution -- --remote --confirm-remote # read-only preview
+npm run repair:pricing-attribution -- --remote --confirm-remote --apply
+```
+
+The repair considers only completed model hours within the last 30 days. It updates a model hour only when its raw event count and every existing model-rollup scalar agree exactly, and only for complete, non-overlapping token-category samples. Unmatched hours and genuinely absent fields remain partial; 100% coverage is never promised or fabricated. It changes only the six model pricing counters, never raw events, scalar/reasoning/session rollups, or snapshot rows. Normal ingestion refreshes 24-hour snapshots at most once per minute and 7-/30-day snapshots at most every 15 minutes; the repair does not trigger extra normal dashboard reads or writes. Run the preflight and inspect its counts before any authorized production application. The repair is idempotent and does not run on startup or deployment.
+
 Before an authorized deployment, apply pending checked-in migrations to the configured D1 database and confirm the encrypted Worker secret named `CODEX_TELEMETRY_INGEST_KEY` remains available. Do not put the secret value in Wrangler configuration. Local schema verification can use:
 
 ```bash
