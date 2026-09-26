@@ -237,7 +237,7 @@ function OverlayContent({ snapshot, relay, layout, freshness, now }: Readonly<{ 
   if (!snapshot) return <div className="overlay-content"><div className="loading"><RefreshCw className="spin" size={15} />Retrieving private snapshot…</div></div>;
   const session = snapshot.latestSession;
   const summary = snapshot.windowSummary;
-  if (layout === "strip") return <div className="overlay-content overlay-content-strip"><div className="strip-content"><Identity session={session} /><StripQuota account={snapshot.codexAccount} /></div></div>;
+  if (layout === "strip") return <div className="overlay-content overlay-content-strip"><div className="strip-content"><Identity session={session} /><StripQuota account={snapshot.codexAccount} now={now} /></div></div>;
   if (layout === "mini") return <div className="overlay-content overlay-content-mini">
     <div className="identity-row"><Identity session={session} /><QuotaFreshness account={snapshot.codexAccount} now={now} /></div>
     <MiniQuota account={snapshot.codexAccount} now={now} />
@@ -274,10 +274,19 @@ function primaryWindows(account: OverlaySnapshot["codexAccount"]) {
   return account?.limits[0]?.windows ?? [];
 }
 
-function StripQuota({ account }: Readonly<{ account?: OverlaySnapshot["codexAccount"] }>) {
+function StripQuota({ account, now }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number }>) {
   const windows = primaryWindows(account);
-  if (!windows.length) return <div className="strip-quota unavailable">Quota unavailable</div>;
-  return <div className="strip-quota">{windows.slice(0, 2).map((window) => <span key={window.slot}>{window.kind === "5h" ? "5H" : window.kind === "7d" ? "7D" : window.label} <b>{Math.round(window.remainingPercent)}%</b></span>)}</div>;
+  // A strip has room for one readable quota. Prefer the weekly window when present.
+  const window = windows.find((item) => item.kind === "7d") ?? windows[0];
+  if (!window) return <div className="strip-quota unavailable">Quota unavailable</div>;
+  const pace = estimateUsagePace(window, now);
+  const countdown = resetCountdown(window.resetsAt, now);
+  const reset = absoluteResetTime(window.resetsAt);
+  return <div className="strip-quota" title={reset ? `${window.label} resets ${reset}` : `${window.label} reset unavailable`}>
+    <div className="strip-quota-heading"><span>{window.label}</span><b>{Math.round(window.remainingPercent)}% left</b></div>
+    <div className="strip-quota-bar" role="progressbar" aria-label={`${window.label} quota remaining`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={window.remainingPercent}><i style={{ width: `${window.remainingPercent}%` }} /></div>
+    <div className="strip-quota-detail"><span>{pace ? `Linear pace ${pace.deltaPercent > 0 ? "+" : ""}${Math.round(pace.deltaPercent)}%` : "Pace unavailable"}</span><span>{countdown ? `Resets in ${countdown}` : "Reset unavailable"}</span></div>
+  </div>;
 }
 
 function QuotaFreshness({ account, now }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number }>) {
