@@ -20,7 +20,7 @@
         "width": 430,
         "height": 320,
         "minWidth": 280,
-        "minHeight": 120,
+        "minHeight": 90,
         "decorations": false,
         "transparent": true,
         "resizable": true,

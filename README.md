@@ -224,7 +224,7 @@ The retained `/overlay` route remains a browser-based preview/reference surface.
 
 In Codex Live Expanded mode, the clean cyan-by-default chart shows measured input tokens only, using every ten-minute materialized bucket on a time-aligned 24-hour axis, including visibly empty intervals. Its line color can be changed independently of the overall accent under Settings → Appearance. Seven- and thirty-day views use the server's UTC-day buckets and are labeled accordingly. The overlay does not add overlapping token fields into a false total or show a separate composition panel; the website retains the detailed multi-field breakdown. Hover or focus the chart for the exact input-token count and local bucket time. This presentation uses the existing bounded overlay snapshot and adds no D1 reads or writes.
 
-Codex Live has four deliberately distinct layouts. **Strip** is a single glanceable model-and-quota row; **Mini** shows the latest observed model, real quota bars, reset countdowns, and a clearly labeled linear-pace estimate when the app-server supplies enough data. Neither compact layout displays relay, D1, or OTel delivery diagnostics. **Standard** adds the key observed counters and the bounded token trend. **Expanded** retains the complete pricing, activity, distribution, and delivery detail. Selecting a native layout uses logical window dimensions so the intended layout remains legible on scaled Windows displays; resizing the window can still select a responsive compact layout. Missing quota windows remain unavailable rather than becoming guessed percentages.
+Codex Live has four deliberately distinct layouts. **Strip** is a single glanceable model-and-quota row; **Mini** shows the latest observed model, real quota bars, reset countdowns, and a clearly labeled linear-pace estimate when the app-server supplies enough data. Neither compact layout displays relay, D1, or OTel delivery diagnostics. **Standard** adds the key observed counters and the bounded token trend. **Expanded** retains the complete pricing, activity, distribution, and delivery detail. Selecting a native layout uses logical window dimensions so the intended layout remains legible on scaled Windows displays and keeps the resized preset on-screen. Manual resizing preserves the selected layout instead of silently switching content; selecting another layout restores that preset size. Missing quota windows remain unavailable rather than becoming guessed percentages.
 
 The desktop data path is:
 
@@ -279,12 +279,12 @@ The native GUI is the launcher and supervisor. It starts the existing relay entr
 
 ### Codex Live layouts and controls
 
-- **Mini:** approximately 300 × 150 pixels for a corner monitor.
-- **Standard:** 360 × 250 pixels for current usage and health.
+- **Mini:** approximately 310 × 140 logical pixels for a corner monitor.
+- **Standard:** 430 × 320 logical pixels for current quota, observed counters, and trend.
 - **Expanded:** 430 × 500 pixels with trends, token composition, model/reasoning distributions, latest session, GitHub, and CI.
 - **Strip:** 600 × 90 pixels for a monitor edge.
 
-The frameless window is resizable, draggable when unlocked, always-on-top by default, single-instance, and backed by a system tray. Position and size are restored by Tauri’s window-state plugin. Explicit edge and corner grab areas make resizing reliable without native decorations. Corner placement and optional edge snapping are available. Lock mode disables dragging and resizing. The tray provides Show, Hide, Recover Overlay, all four layouts, always-on-top, click-through, position lock, Settings, Open Command Center, Start Relay, Restart Relay, Stop Relay, Start with Windows, and Quit. The right-click menu also provides Recover movement.
+The frameless window is resizable, draggable when unlocked, always-on-top by default, single-instance, and backed by a system tray. Position and size are restored by Tauri’s window-state plugin. Explicit edge and corner grab areas make resizing reliable without native decorations. Corner placement and optional edge snapping are available. The position lock/unlock control remains available in all four layouts; lock mode disables dragging and resizing. Range and layout menus close when another control, Settings, or another window takes focus. The tray provides Show, Hide, Recover Overlay, all four layouts, always-on-top, click-through, position lock, Settings, Open Command Center, Start Relay, Restart Relay, Stop Relay, Start with Windows, and Quit. The right-click menu also provides Recover movement.
 
 Default global shortcuts are:
 

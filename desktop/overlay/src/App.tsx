@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
-import { Activity, AlertTriangle, Check, ChevronDown, Circle, ExternalLink, EyeOff, Grip, LayoutGrid, Lock, Minus, Power, RefreshCw, Settings, Unlock, X } from "lucide-react";
+import { Activity, AlertTriangle, Check, ChevronDown, Circle, ExternalLink, EyeOff, LayoutGrid, Lock, Minus, Power, RefreshCw, Settings, Unlock, X } from "lucide-react";
 import type { CodexQuotaWindow, OverlaySnapshot, TelemetryBufferHealth } from "../../../src/lib/overlay/contracts";
 import { codexEquivalentModelPriceLabel, codexPricingCoverageReasons } from "../../../src/lib/telemetry/pricing";
 import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../../../src/lib/overlay/account";
 import { telemetryFreshness } from "./lib/freshness";
 import { applyWindowSettings, configureHotkeys, controlRelay, fetchOverlay, getAutostart, getNativeState, hideOverlay, loadSettings, onNativeAction, openDashboard, quitOverlay, recoverOverlay, saveSettings, setAutostart, setCorner, setLayout, startDrag, startResize, type NativeState } from "./lib/native";
-import { defaultDesktopOverlaySettings, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, resolveLayout, shouldPollRemote, textColorValue, type DesktopOverlaySettings, type OverlayLayout, type OverlayRange } from "./lib/settings";
+import { defaultDesktopOverlaySettings, needsPresetResize, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, shouldPollRemote, textColorValue, type DesktopOverlaySettings, type OverlayLayout, type OverlayRange } from "./lib/settings";
 import { isUsableOverlaySnapshot, shouldReplaceOverlaySnapshot } from "./lib/snapshot";
 import { prepareOverlayTrend, type DisplayTrendPoint } from "./lib/trend";
 
@@ -15,7 +15,6 @@ const clickThroughNotice = "Click-through enabled · Ctrl+Shift+O to regain cont
 
 export function App() {
   const [settings, setSettings] = useState(defaultDesktopOverlaySettings);
-  const [effectiveLayout, setEffectiveLayout] = useState<OverlayLayout>(defaultDesktopOverlaySettings.layout);
   const [snapshot, setSnapshot] = useState<OverlaySnapshot>();
   const [relay, setRelay] = useState<RelayState>("checking");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -27,6 +26,12 @@ export function App() {
   const [overlayVisible, setOverlayVisible] = useState(true);
   const [now, setNow] = useState(() => Date.now());
   const snapshotRef = useRef<OverlaySnapshot | undefined>(undefined);
+
+  const openSettings = useCallback(() => {
+    setHeaderMenu(undefined);
+    setContextOpen(false);
+    setSettingsOpen(true);
+  }, []);
 
   const refresh = useCallback(async (range: DesktopOverlaySettings["range"]) => {
     try {
@@ -100,7 +105,7 @@ export function App() {
       const autostart = await getAutostart().catch(() => stored.startWithWindows);
       const hydrated = { ...stored, startWithWindows: autostart };
       setSettings(hydrated);
-      if (resolveLayout(window.innerWidth, window.innerHeight, hydrated.layout) !== hydrated.layout) {
+      if (needsPresetResize(window.innerWidth, window.innerHeight, hydrated.layout)) {
         await setLayout(hydrated.layout).catch(() => undefined);
       }
       let chatgptRunning = true;
@@ -144,11 +149,21 @@ export function App() {
   }, [nativeState?.chatgptRunning, refresh, settings.followChatgpt, settings.range]);
 
   useEffect(() => {
-    const resize = () => setEffectiveLayout(resolveLayout(window.innerWidth, window.innerHeight, settings.layout));
-    resize();
-    window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
-  }, [settings.layout]);
+    if (!headerMenu && !contextOpen) return;
+    const dismissOnOutsideClick = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest(".header-control, .context-menu")) return;
+      setHeaderMenu(undefined);
+      setContextOpen(false);
+    };
+    const dismissOnBlur = () => { setHeaderMenu(undefined); setContextOpen(false); };
+    document.addEventListener("pointerdown", dismissOnOutsideClick);
+    window.addEventListener("blur", dismissOnBlur);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOnOutsideClick);
+      window.removeEventListener("blur", dismissOnBlur);
+    };
+  }, [headerMenu, contextOpen]);
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -163,7 +178,7 @@ export function App() {
   useEffect(() => {
     let unlisten: undefined | (() => void);
     void onNativeAction((action) => {
-      if (action.kind === "show-settings") setSettingsOpen(true);
+      if (action.kind === "show-settings") openSettings();
       else if (action.kind === "recover-overlay") void updateSettings({ clickThrough: false, lockPosition: false });
       else if (action.kind === "layout") void updateSettings({ layout: action.value }, true);
       else if (action.kind === "click-through") void updateSettings({ clickThrough: action.value });
@@ -180,7 +195,7 @@ export function App() {
       }
     }).then((dispose) => { unlisten = dispose; }).catch(() => undefined);
     return () => unlisten?.();
-  }, [refresh, settings.range, updateSettings]);
+  }, [openSettings, refresh, settings.range, updateSettings]);
 
   const toggleDensityLayout = (event: MouseEvent) => {
     if ((event.target as HTMLElement).closest("button, input, select")) return;
@@ -197,7 +212,7 @@ export function App() {
   const freshness = telemetryFreshness(snapshot?.lastTelemetryAt, undefined, dataPathHealthy);
   const colors = { "--text": textColorValue(settings), "--accent": settings.accentColor, "--chart-line": settings.chartLineColor, "--surface-opacity": settings.opacity / 100, "--font-scale": settings.fontScale / 100 } as CSSProperties;
 
-  return <main className={`app layout-${effectiveLayout} density-${settings.density} effect-${settings.effect} surface-${settings.surface} ${settings.clickThrough ? "click-through-enabled" : ""}`} style={colors} onContextMenu={(event) => { event.preventDefault(); setHeaderMenu(undefined); setContextOpen(true); }}>
+  return <main className={`app layout-${settings.layout} density-${settings.density} effect-${settings.effect} surface-${settings.surface} ${settings.clickThrough ? "click-through-enabled" : ""}`} style={colors} onContextMenu={(event) => { event.preventDefault(); setHeaderMenu(undefined); setContextOpen(true); }}>
     <section className="instrument">
       {!settings.lockPosition && !settings.clickThrough ? <ResizeHandles /> : null}
       <header className="drag-region" title="Drag to move Codex Live" onMouseDown={drag} onDoubleClick={toggleDensityLayout}>
@@ -205,11 +220,11 @@ export function App() {
         <div className="header-meta">
           <div className="header-control"><button className="range-trigger" aria-label="Select telemetry range" aria-expanded={headerMenu === "range"} onClick={() => setHeaderMenu((current) => current === "range" ? undefined : "range")}>{settings.range.toUpperCase()}</button>{headerMenu === "range" ? <div className="header-selector range-selector">{overlayRanges.map((range) => <button className={settings.range === range ? "active" : ""} key={range} onClick={() => { setHeaderMenu(undefined); void updateSettings({ range }); }}>{range.toUpperCase()}</button>)}</div> : null}</div>
           <div className="header-control"><button aria-label="Select overlay layout" aria-expanded={headerMenu === "layout"} title={`Layout · ${titleCase(settings.layout)}`} onClick={() => setHeaderMenu((current) => current === "layout" ? undefined : "layout")}><LayoutGrid size={12} /></button>{headerMenu === "layout" ? <div className="header-selector layout-selector">{overlayLayouts.map((layout) => <button className={settings.layout === layout ? "active" : ""} key={layout} onClick={() => { setHeaderMenu(undefined); void updateSettings({ layout }, true); }}>{titleCase(layout)}</button>)}</div> : null}</div>
-          <button title={settings.lockPosition ? "Unlock position" : "Lock position"} onClick={() => void updateSettings({ lockPosition: !settings.lockPosition })}>{settings.lockPosition ? <Lock size={12} /> : <Grip size={12} />}</button><button title="Settings" onClick={() => setSettingsOpen(true)}><Settings size={12} /></button><button title="Hide overlay" onClick={() => void hideOverlay()}><Minus size={12} /></button>
+          <button aria-label={settings.lockPosition ? "Unlock position" : "Lock position"} title={settings.lockPosition ? "Unlock position" : "Lock position"} onClick={() => void updateSettings({ lockPosition: !settings.lockPosition })}>{settings.lockPosition ? <Lock size={12} /> : <Unlock size={12} />}</button><button title="Settings" onClick={openSettings}><Settings size={12} /></button><button title="Hide overlay" onClick={() => void hideOverlay()}><Minus size={12} /></button>
         </div>
       </header>
 
-      {(relay === "offline" || relay === "upstream-error") && !snapshot ? <OfflineState kind={relay} openSettings={() => setSettingsOpen(true)} retry={() => void refresh(settings.range)} /> : relay === "paused" && !snapshot ? <PausedState /> : <OverlayContent snapshot={snapshot} relay={relay} layout={effectiveLayout} freshness={freshness} now={now} />}
+      {(relay === "offline" || relay === "upstream-error") && !snapshot ? <OfflineState kind={relay} openSettings={openSettings} retry={() => void refresh(settings.range)} /> : relay === "paused" && !snapshot ? <PausedState /> : <OverlayContent snapshot={snapshot} relay={relay} layout={settings.layout} freshness={freshness} now={now} />}
 
       {message ? <div className="message"><AlertTriangle size={11} /><span>{message}</span><button aria-label="Dismiss" onClick={() => setMessage(undefined)}><X size={11} /></button></div> : null}
       {settingsOpen ? <SettingsPanel settings={settings} nativeState={nativeState} close={() => setSettingsOpen(false)} update={updateSettings} refresh={() => void refresh(settings.range)} report={(error) => setMessage(safeNativeMessage(error))} /> : null}
