@@ -23,6 +23,7 @@ interface MaintenanceResult {
 interface MaintenanceState {
   lastCompletedAt?: number;
   inFlight?: Promise<MaintenanceResult>;
+  cleanupBacklog?: boolean;
 }
 
 const maintenanceStates = new WeakMap<object, MaintenanceState>();
@@ -100,20 +101,33 @@ async function runMaintenance(database: D1DatabaseLike, retentionDays: number, n
     let cleanupDeletes = 0;
     let snapshotRebuilds = 0;
     let rowsWritten: number | undefined;
+    let cleanupDue = false;
     try {
-      const rollupCleanup = await deleteExpiredRollups(database, now);
-      cleanupDeletes += rollupCleanup.changes;
-      rowsWritten = addRowsWritten(rowsWritten, rollupCleanup.rowsWritten);
       const snapshots = await refreshStaleMaterializedSnapshots(database, now);
       snapshotRebuilds = snapshots.refreshed.length;
       rowsWritten = addRowsWritten(rowsWritten, snapshots.rowsWritten);
+      // The persisted 30-day snapshot timestamp gates normal cleanup across
+      // Worker instances without slowing the one-minute 24-hour snapshot.
+      // If a bounded raw delete fills a batch, keep draining on subsequent
+      // maintenance passes in this instance rather than waiting 15 minutes.
+      cleanupDue = snapshots.refreshed.includes("30d") || state.cleanupBacklog === true;
+      if (cleanupDue) {
+        const rollupCleanup = await deleteExpiredRollups(database, now);
+        cleanupDeletes += rollupCleanup.changes;
+        rowsWritten = addRowsWritten(rowsWritten, rollupCleanup.rowsWritten);
+      }
     } catch (error) {
       if (!isMissingRollupSchemaError(error)) throw error;
       schemaUnavailable = true;
+      // Preserve raw-event retention when rollup tables have not been applied.
+      cleanupDue = true;
     }
-    const rawCleanup = await deleteExpiredTelemetry(database, retentionDays, now);
-    cleanupDeletes += rawCleanup.changes;
-    rowsWritten = addRowsWritten(rowsWritten, rawCleanup.rowsWritten);
+    if (cleanupDue) {
+      const rawCleanup = await deleteExpiredTelemetry(database, retentionDays, now);
+      cleanupDeletes += rawCleanup.changes;
+      rowsWritten = addRowsWritten(rowsWritten, rawCleanup.rowsWritten);
+      state.cleanupBacklog = rawCleanup.backlogMayRemain;
+    }
     const result: MaintenanceResult = { schemaUnavailable, snapshotRebuilds, cleanupDeletes, ...(rowsWritten === undefined ? {} : { rowsWritten }) };
     state.lastCompletedAt = now.getTime();
     return result;
