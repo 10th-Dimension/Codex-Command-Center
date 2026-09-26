@@ -26,9 +26,12 @@ test("desktop color and hotkey validation reject content-shaped input", () => {
   assert.equal(isSafeHexColor("rgba(0,0,0,.5)"), false);
   assert.equal(isSafeHotkey("Ctrl+Shift+Space"), true);
   assert.equal(isSafeHotkey("run powershell.exe"), false);
-  const parsed = parseDesktopOverlaySettings({ customTextColor: "url(https://example.com)", accentColor: "red", showHideHotkey: "bad value" });
+  const parsed = parseDesktopOverlaySettings({ customTextColor: "url(https://example.com)", accentColor: "red", chartLineColor: "var(--secret)", showHideHotkey: "bad value" });
   assert.equal(parsed.customTextColor, defaultDesktopOverlaySettings.customTextColor);
   assert.equal(parsed.accentColor, defaultDesktopOverlaySettings.accentColor);
+  assert.equal(parsed.chartLineColor, defaultDesktopOverlaySettings.chartLineColor);
+  assert.equal(parseDesktopOverlaySettings({ chartLineColor: "#d123ef" }).chartLineColor, "#d123ef");
+  assert.equal(parseDesktopOverlaySettings({}).chartLineColor, "#66d9e8");
   assert.equal(parsed.showHideHotkey, defaultDesktopOverlaySettings.showHideHotkey);
 });
 
@@ -93,10 +96,13 @@ test("overlay quick controls reuse supported ranges, layouts, and the existing s
   assert.match(app, /overlayCache/);
   assert.match(app, /Snapshot stale · showing last good data/);
   assert.match(app, /Recover movement/);
-  assert.match(app, /compactOverlayTrendPoints/);
-  assert.match(app, /10-minute source buckets · local time/);
+  assert.match(app, /prepareOverlayTrend/);
+  assert.match(app, /trend\.observedBuckets/);
+  assert.match(app, /Measured input tokens/);
+  assert.match(app, /label="Chart line" value=\{settings\.chartLineColor\}/);
+  assert.doesNotMatch(app, /compactOverlayTrendPoints|spark-total-line|stackTokenSeries|Token composition/);
   assert.match(app, /formatOverlayTrendLabel/);
-  assert.match(app, /Bucket \$\{index \+ 1\} of \$\{totalPoints\}/);
+  assert.match(app, /No events observed/);
   assert.match(workflow, /tauri -- build --debug --no-bundle/);
   assert.match(rust, /DEFAULT_CLICK_THROUGH: &str = "Ctrl\+Shift\+O"/);
   assert.match(main, /cfg_attr\(windows, windows_subsystem = "windows"\)/);

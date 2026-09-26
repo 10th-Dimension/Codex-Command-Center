@@ -213,6 +213,8 @@ The website is the deep Usage and Operations workspace. Its main Codex view open
 
 The retained `/overlay` route remains a browser-based preview/reference surface. The actual companion in `desktop/overlay/` packages its own Vite/React frontend inside a frameless Tauri window; it does not open that route in Edge and does not require Edge or a local development server during normal use.
 
+In Codex Live Expanded mode, the clean cyan-by-default chart shows measured input tokens only, using every ten-minute materialized bucket on a time-aligned 24-hour axis, including visibly empty intervals. Its line color can be changed independently of the overall accent under Settings → Appearance. Seven- and thirty-day views use the server's UTC-day buckets and are labeled accordingly. The overlay does not add overlapping token fields into a false total or show a separate composition panel; the website retains the detailed multi-field breakdown. Hover or focus the chart for the exact input-token count and local bucket time. This presentation uses the existing bounded overlay snapshot and adds no D1 reads or writes.
+
 The desktop data path is:
 
 ```text
