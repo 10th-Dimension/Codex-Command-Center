@@ -101,6 +101,28 @@ class MetadataD1 extends FakeD1 {
   }
 }
 
+class SnapshotTrackingD1 extends FakeD1 {
+  execute(statement: FakeStatement): D1ResultLike {
+    if (statement.sql.trim().startsWith("INSERT INTO codex_dashboard_snapshot")) {
+      const [range, generatedAt, , payload] = statement.values;
+      this.snapshotRows = this.snapshotRows.filter((row) => row.range !== range);
+      this.snapshotRows.push({ range, generated_at: generatedAt, payload_json: payload });
+      return { success: true, meta: { changes: 1 } };
+    }
+    return super.execute(statement);
+  }
+}
+
+class BacklogD1 extends SnapshotTrackingD1 {
+  legacyDeletePasses = 0;
+  execute(statement: FakeStatement): D1ResultLike {
+    const result = super.execute(statement);
+    if (!statement.sql.trim().startsWith("DELETE FROM codex_telemetry_events INDEXED")) return result;
+    this.legacyDeletePasses += 1;
+    return { ...result, meta: { changes: this.legacyDeletePasses === 1 ? TELEMETRY_RETENTION_DELETE_BATCH_SIZE / 2 : 0 } };
+  }
+}
+
 class ForensicsGuardStatement implements D1PreparedStatementLike {
   values: unknown[] = [];
   constructor(readonly sql: string) {}
@@ -402,6 +424,48 @@ test("ingestion batches writes, deduplicates retries, and runs retention cleanup
   assert.equal(second.headers.get("x-codex-telemetry-cleanup-deletes"), "0");
   const stored = JSON.stringify(database.insertedValues);
   assert.doesNotMatch(stored, /must-never-appear|authorization|private prompt|private output/);
+});
+
+test("retention cleanup follows the 30-day snapshot without slowing 24-hour refresh", async () => {
+  const database = new SnapshotTrackingD1();
+  let current = Date.parse(now);
+  const options = { database, ingestKey, retentionDays: 30, now: () => new Date(current) };
+
+  const first = await handleTelemetryIngest(requestFor(jsonPayload()), options);
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get("x-codex-telemetry-snapshot-rebuilds"), "3");
+  assert.equal(database.deleted, 6, "first maintenance pass cleans four rollups and two raw tables");
+
+  current += 61_000;
+  const nextMinute = await handleTelemetryIngest(requestFor(jsonPayload("codex.api_request.next-minute")), options);
+  assert.equal(nextMinute.status, 200);
+  assert.equal(nextMinute.headers.get("x-codex-telemetry-snapshot-rebuilds"), "1");
+  assert.equal(database.deleted, 6, "24-hour refresh must not repeat retention scans");
+
+  current += 15 * 60_000;
+  const nextLongRange = await handleTelemetryIngest(requestFor(jsonPayload("codex.api_request.next-long-range")), options);
+  assert.equal(nextLongRange.status, 200);
+  assert.equal(nextLongRange.headers.get("x-codex-telemetry-snapshot-rebuilds"), "3");
+  assert.equal(database.deleted, 12, "30-day refresh resumes bounded retention cleanup");
+});
+
+test("a full raw-retention batch keeps draining on the next maintenance pass", async () => {
+  const database = new BacklogD1();
+  let current = Date.parse(now);
+  const options = { database, ingestKey, retentionDays: 30, now: () => new Date(current) };
+  const first = await handleTelemetryIngest(requestFor(jsonPayload()), options);
+  assert.equal(first.status, 200);
+  assert.equal(database.legacyDeletePasses, 1);
+
+  current += 61_000;
+  const drain = await handleTelemetryIngest(requestFor(jsonPayload("codex.api_request.drain")), options);
+  assert.equal(drain.status, 200);
+  assert.equal(drain.headers.get("x-codex-telemetry-snapshot-rebuilds"), "1");
+  assert.equal(database.legacyDeletePasses, 2, "a full batch must not wait for the next 30-day snapshot");
+
+  current += 61_000;
+  await handleTelemetryIngest(requestFor(jsonPayload("codex.api_request.after-drain")), options);
+  assert.equal(database.legacyDeletePasses, 2, "cleanup rests after the backlog is drained");
 });
 
 test("duplicate-only retries skip maintenance even when the maintenance interval is eligible", async () => {

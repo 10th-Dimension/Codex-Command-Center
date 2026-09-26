@@ -8,7 +8,7 @@ import type { NormalizedTelemetryEvent } from "@/lib/telemetry/normalize";
 export interface D1ResultLike<T = Record<string, unknown>> { success: boolean; results?: T[]; meta?: { changes?: number; rows_read?: number; rows_written?: number }; error?: string }
 export interface D1PreparedStatementLike { bind(...values: unknown[]): D1PreparedStatementLike; run<T = Record<string, unknown>>(): Promise<D1ResultLike<T>>; all<T = Record<string, unknown>>(): Promise<D1ResultLike<T>> }
 export interface D1DatabaseLike { prepare(sql: string): D1PreparedStatementLike; batch<T = Record<string, unknown>>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> }
-export interface D1MutationResult { changes: number; rowsWritten?: number }
+export interface D1MutationResult { changes: number; rowsWritten?: number; backlogMayRemain?: boolean }
 
 // Retention runs inline with ingestion. Keep each maintenance pass bounded so
 // an old backlog cannot turn one otherwise small request into an unbounded D1
@@ -110,6 +110,7 @@ export async function deleteExpiredTelemetry(database: D1DatabaseLike, retention
     : undefined;
   return {
     changes: results.reduce((total, result) => total + (result.meta?.changes ?? 0), 0),
+    backlogMayRemain: results.some((result) => (result.meta?.changes ?? 0) >= perTableLimit),
     ...(rowsWritten === undefined ? {} : { rowsWritten }),
   };
 }
