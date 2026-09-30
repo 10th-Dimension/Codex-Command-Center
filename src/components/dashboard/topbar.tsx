@@ -1,6 +1,6 @@
 "use client";
 
-import { BarChart3, ExternalLink, GitBranch, LayoutDashboard, ListTree, RefreshCw, Settings, ShieldCheck, X } from "lucide-react";
+import { BarChart3, Cpu, ExternalLink, GitBranch, LayoutDashboard, ListTree, RefreshCw, Settings, ShieldCheck, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useState } from "react";
@@ -23,6 +23,7 @@ export function Topbar() {
   const overviewActive = pathname === "/" && workspaceMode === "overview";
   const usageActive = pathname === "/" && workspaceMode === "usage";
   const activityActive = pathname === "/" && workspaceMode === "activity";
+  const platformActive = pathname === "/platform";
   const [settingsOpen, setSettingsOpen] = useState(false);
   const timeZone = useBrowserTimeZone();
 
@@ -34,6 +35,7 @@ export function Topbar() {
         <Link aria-current={overviewActive ? "page" : undefined} className={overviewActive ? "active" : ""} href={sectionHref()}><LayoutDashboard size={14} />Overview</Link>
         <Link aria-current={usageActive ? "page" : undefined} className={usageActive ? "active" : ""} href={sectionHref("usage")}><BarChart3 size={14} />Usage</Link>
         <Link aria-current={activityActive ? "page" : undefined} className={activityActive ? "active" : ""} href={sectionHref("activity")}><ListTree size={14} />Activity</Link>
+        <Link aria-current={platformActive ? "page" : undefined} className={platformActive ? "active" : ""} href="/platform"><Cpu size={14} />Platform</Link>
         <span className="command-nav-label">Delivery</span>
         <Link aria-current={pathname.startsWith("/github") ? "page" : undefined} className={pathname.startsWith("/github") ? "active" : ""} href="/github"><GitBranch size={14} />GitHub</Link>
       </nav>

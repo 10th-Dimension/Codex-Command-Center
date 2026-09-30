@@ -3,9 +3,9 @@
  * published Work/Codex credit rates. They are comparisons, not account
  * balances or invoices.
  */
-export const CODEX_PRICING_CARD_ID = "openai-api-and-codex-token-rates-2026-09-23";
+export const CODEX_PRICING_CARD_ID = "openai-api-and-codex-token-rates-2026-09-29";
 export const CODEX_PRICING_BASIS = "codex-token-credit-rates" as const;
-export const CODEX_PRICING_NOTE = "Codex auto-review activity is excluded from these estimates and coverage because it has no published per-token rate. Standard API USD and Work/Codex credit token rates only. Cache reads and writes are separate input subsets; Codex does not charge cache writes. Reasoning tokens are included in output and are not added again. Fast mode, long-context, regional-processing, and separately metered feature charges are excluded. Pricing compares matching complete hourly rollups, so the partial leading model hour is excluded. This is not an invoice or account balance.";
+export const CODEX_PRICING_NOTE = "Codex auto-review activity is excluded from these estimates and coverage because it has no published per-token rate. Standard short-context API USD rates and the published Work/Codex Standard credit rate card only. Cache reads and writes are separate input subsets; API USD estimates use the published cache-write rate, while Codex does not charge cache writes in credits. Reasoning tokens are included in output and are not added again. Fast and Ultrafast service-tier multipliers, long-context requests, regional processing, and separately metered feature charges are excluded because this aggregate does not preserve the request-level fields needed to apply them. Pricing compares matching complete hourly rollups, so the partial leading model hour is excluded. This is not an invoice or account balance.";
 
 export interface CodexModelPricingRate {
   model: string;
@@ -18,6 +18,11 @@ export interface CodexModelPricingRate {
   cachedInputUsdPerMillion?: number;
   cacheWriteUsdPerMillion?: number;
   outputUsdPerMillion?: number;
+  longContextThresholdTokens?: number;
+  longContextInputUsdPerMillion?: number;
+  longContextCachedInputUsdPerMillion?: number;
+  longContextCacheWriteUsdPerMillion?: number;
+  longContextOutputUsdPerMillion?: number;
 }
 
 type CacheWriteUsdRule = "standard-input" | "premium-1.25x" | "unavailable";
@@ -25,6 +30,10 @@ type CacheWriteUsdRule = "standard-input" | "premium-1.25x" | "unavailable";
 /** Published token-based Work/Codex credits and standard API USD rates. */
 export const CODEX_MODEL_PRICING: readonly CodexModelPricingRate[] = [
   rate("gpt-6-astra", "GPT-6 Astra", ["gpt-6-astra", "6-astra", "astra", "gpt-6-pro"], 250, 25, 1250, 10, 1, 50, "premium-1.25x"),
+  rate("gpt-6.1-sol", "GPT-6.1 Sol", ["gpt-6.1-sol", "6.1-sol", "gpt-6.1-sol-latest"], 50, 2.5, 250, 2, 0.1, 10, "premium-1.25x", {
+    thresholdTokens: 272_000, inputUsdPerMillion: 4, cachedInputUsdPerMillion: 0.2,
+    cacheWriteUsdPerMillion: 5, outputUsdPerMillion: 15,
+  }),
   rate("gpt-6-sol", "GPT-6 Sol", ["gpt-6-sol", "6-sol"], 50, 5, 250, 2, 0.2, 10, "premium-1.25x"),
   rate("gpt-6-luna", "GPT-6 Luna", ["gpt-6-luna", "6-luna"], 2.5, 0.25, 12.5, 0.1, 0.01, 0.5, "premium-1.25x"),
   rate("gpt-5.6-sol", "GPT-5.6 Sol", ["gpt-5.6-sol", "5.6-sol", "sol"], 100, 10, 500, 4, 0.4, 20, "premium-1.25x"),
@@ -32,8 +41,8 @@ export const CODEX_MODEL_PRICING: readonly CodexModelPricingRate[] = [
   rate("gpt-5.6-luna", "GPT-5.6 Luna", ["gpt-5.6-luna", "5.6-luna", "luna"], 5, 0.5, 30, 0.2, 0.02, 1.2, "premium-1.25x"),
   rate("gpt-rosalind-research", "GPT-Rosalind-Research", ["gpt-rosalind-research", "rosalind-research"], 125, 12.5, 625, 5, 0.5, 25, "standard-input"),
   rate("gpt-5.5", "GPT-5.5", ["gpt-5.5", "5.5"], 125, 12.5, 750, 5, 0.5, 30, "standard-input"),
-  rate("daybreak-blue", "Daybreak Blue", ["daybreak-blue"], 100, 10, 500, 4, 0.4, 20, "premium-1.25x"),
-  rate("daybreak-red", "Daybreak Red", ["daybreak-red"], 312.5, 31.25, 1875, 12.5, 1.25, 75, "premium-1.25x"),
+  rate("daybreak-blue", "Daybreak Blue", ["daybreak-blue", "gpt-daybreak-blue-latest"], 100, 10, 500, 4, 0.4, 20, "premium-1.25x"),
+  rate("daybreak-red", "Daybreak Red", ["daybreak-red", "gpt-daybreak-red-latest"], 312.5, 31.25, 1875, 12.5, 1.25, 75, "premium-1.25x"),
   rate("gpt-5.4", "GPT-5.4", ["gpt-5.4", "5.4"], 62.5, 6.25, 375, 2.5, 0.25, 15, "standard-input"),
   rate("gpt-5.4-mini", "GPT-5.4 Mini", ["gpt-5.4-mini", "5.4-mini", "gpt-5.4-mini-codex"], 18.75, 1.875, 113, 0.75, 0.075, 4.5, "standard-input"),
   rate("gpt-5.3-codex", "GPT-5.3-Codex", ["gpt-5.3-codex", "5.3-codex"], 43.75, 4.375, 350, 1.75, 0.175, 14, "standard-input"),
@@ -221,12 +230,26 @@ function rate(
   cachedInputUsdPerMillion: number | undefined,
   outputUsdPerMillion: number | undefined,
   cacheWriteRule: CacheWriteUsdRule,
+  longContext?: {
+    thresholdTokens: number;
+    inputUsdPerMillion: number;
+    cachedInputUsdPerMillion: number;
+    cacheWriteUsdPerMillion: number;
+    outputUsdPerMillion: number;
+  },
 ): CodexModelPricingRate {
   const cacheWriteUsdPerMillion = inputUsdPerMillion === undefined || cacheWriteRule === "unavailable"
     ? undefined
     : inputUsdPerMillion * (cacheWriteRule === "premium-1.25x" ? 1.25 : 1);
   return { model, displayName, aliases, inputCreditsPerMillion, cachedInputCreditsPerMillion, outputCreditsPerMillion,
-    inputUsdPerMillion, cachedInputUsdPerMillion, cacheWriteUsdPerMillion, outputUsdPerMillion };
+    inputUsdPerMillion, cachedInputUsdPerMillion, cacheWriteUsdPerMillion, outputUsdPerMillion,
+    ...(longContext ? {
+      longContextThresholdTokens: longContext.thresholdTokens,
+      longContextInputUsdPerMillion: longContext.inputUsdPerMillion,
+      longContextCachedInputUsdPerMillion: longContext.cachedInputUsdPerMillion,
+      longContextCacheWriteUsdPerMillion: longContext.cacheWriteUsdPerMillion,
+      longContextOutputUsdPerMillion: longContext.outputUsdPerMillion,
+    } : {}) };
 }
 
 function canonicalModel(value: string) {

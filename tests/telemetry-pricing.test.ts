@@ -41,6 +41,9 @@ test("pricing resolves model aliases and strips reasoning-effort suffixes", () =
   assert.equal(resolveCodexPricingRate("6-luna-high")?.model, "gpt-6-luna");
   assert.equal(resolveCodexPricingRate("gpt-5.6-sol-high")?.model, "gpt-5.6-sol");
   assert.equal(resolveCodexPricingRate("5.6-luna")?.displayName, "GPT-5.6 Luna");
+  assert.equal(resolveCodexPricingRate("GPT-6.1 Sol")?.model, "gpt-6.1-sol");
+  assert.equal(resolveCodexPricingRate("6.1 Sol")?.model, "gpt-6.1-sol");
+  assert.equal(resolveCodexPricingRate("openai/gpt-6.1-sol-xhigh")?.model, "gpt-6.1-sol");
   assert.equal(resolveCodexPricingRate("future-model"), undefined);
 });
 
@@ -65,6 +68,36 @@ test("GPT-6 Sol/Luna use published standard API prices and official Work/Codex c
   assert.deepEqual([sol?.inputCreditsPerMillion, sol?.cachedInputCreditsPerMillion, sol?.outputCreditsPerMillion], [50, 5, 250]);
   assert.deepEqual([luna?.inputCreditsPerMillion, luna?.cachedInputCreditsPerMillion, luna?.outputCreditsPerMillion], [2.5, 0.25, 12.5]);
   assert.doesNotMatch(sol?.model ?? "", /estimate/i);
+});
+
+test("GPT-6.1 Sol uses its official Standard API and Work/Codex credit rate-card prices", () => {
+  const rate = CODEX_MODEL_PRICING.find((item) => item.model === "gpt-6.1-sol");
+  assert.deepEqual([rate?.inputUsdPerMillion, rate?.cachedInputUsdPerMillion, rate?.cacheWriteUsdPerMillion, rate?.outputUsdPerMillion], [2, 0.1, 2.5, 10]);
+  assert.deepEqual([rate?.inputCreditsPerMillion, rate?.cachedInputCreditsPerMillion, rate?.outputCreditsPerMillion], [50, 2.5, 250]);
+  assert.deepEqual([rate?.longContextThresholdTokens, rate?.longContextInputUsdPerMillion, rate?.longContextCachedInputUsdPerMillion, rate?.longContextCacheWriteUsdPerMillion, rate?.longContextOutputUsdPerMillion], [272_000, 4, 0.2, 5, 15]);
+
+  const result = calculateCodexEquivalentPricing({
+    metrics: metrics(1_000_000, 200_000, 1_000_000),
+    models: [modelUsage("GPT-6.1 Sol", { input: 1_000_000, cached: 200_000, output: 1_000_000 })],
+  });
+  assert.equal(result.usdEquivalent, "11.62");
+  assert.equal(result.apiCredits, "290.5");
+  assert.equal(result.coveragePercent, 100);
+});
+
+test("locally bundled Daybreak model IDs resolve to their published exact rates", () => {
+  assert.equal(resolveCodexPricingRate("gpt-daybreak-blue-latest")?.model, "daybreak-blue");
+  assert.equal(resolveCodexPricingRate("gpt-daybreak-red-latest")?.model, "daybreak-red");
+  const result = calculateCodexEquivalentPricing({
+    metrics: metrics(1_000_000, 0, 1_000_000),
+    models: [
+      modelUsage("gpt-daybreak-blue-latest", { input: 500_000, output: 500_000 }),
+      modelUsage("gpt-daybreak-red-latest", { input: 500_000, output: 500_000 }),
+    ],
+  });
+  assert.equal(result.coveragePercent, 100);
+  assert.equal(result.usdEquivalent, "55.75");
+  assert.equal(result.apiCredits, "1393.75");
 });
 
 test("cached input is a subset of input and is charged only at the cached-input rate", () => {
@@ -274,6 +307,7 @@ test("coverage stays bounded and incomplete categories remain visible", () => {
 
 test("pricing disclosure preserves comparison semantics rather than claiming an actual balance or invoice", () => {
   const result = calculateCodexEquivalentPricing({ metrics: metrics(0, 0, 0), models: [] });
-  assert.match(result.note, /Standard API USD and Work\/Codex credit token rates/);
+  assert.match(result.note, /Standard short-context API USD rates and the published Work\/Codex Standard credit rate card/);
+  assert.match(result.note, /Fast and Ultrafast service-tier multipliers/);
   assert.match(result.note, /not an invoice or account balance/i);
 });

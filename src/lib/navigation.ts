@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  Cpu,
   GitBranch,
   LayoutDashboard,
   ListTree,
@@ -16,6 +17,7 @@ export const navigationItems: NavigationItem[] = [
   { label: "Overview", href: "/", icon: LayoutDashboard },
   { label: "Usage", href: "/?section=usage", icon: BarChart3 },
   { label: "Activity", href: "/?section=activity", icon: ListTree },
+  { label: "Platform", href: "/platform", icon: Cpu },
   { label: "GitHub", href: "/github", icon: GitBranch },
 ];
 

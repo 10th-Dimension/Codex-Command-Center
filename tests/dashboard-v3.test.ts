@@ -141,7 +141,7 @@ test("future subscription seam contains no fabricated implementation", async () 
 });
 
 test("dashboard exposes distinct workspace destinations and maps legacy routes", () => {
-  assert.deepEqual(navigationItems.map((item) => [item.label, item.href]), [["Overview", "/"], ["Usage", "/?section=usage"], ["Activity", "/?section=activity"], ["GitHub", "/github"]]);
+  assert.deepEqual(navigationItems.map((item) => [item.label, item.href]), [["Overview", "/"], ["Usage", "/?section=usage"], ["Activity", "/?section=activity"], ["Platform", "/platform"], ["GitHub", "/github"]]);
   assert.equal(codexWorkspaceMode(), "overview");
   assert.equal(codexWorkspaceMode("usage"), "usage");
   assert.equal(codexWorkspaceMode("sessions"), "usage");

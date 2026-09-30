@@ -47,6 +47,7 @@ export interface CodexQuotaLimit {
 
 export interface CodexResetCreditDetail {
   status: string;
+  resetType?: string;
   grantedAt?: number;
   expiresAt?: number;
   title?: string;
