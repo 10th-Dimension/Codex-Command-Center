@@ -86,7 +86,6 @@ test("command registries separate upstream CLI/TUI source, desktop docs, and loc
   assert.equal(PLATFORM_CAPABILITIES.find(({ id }) => id === "gpt-5.5-retirement")?.status, "announced");
   assert.equal(PLATFORM_CAPABILITIES.find(({ id }) => id === "gpt-5.4-codex-retirement")?.status, "unavailable");
   assert.equal(PLATFORM_CAPABILITIES.find(({ id }) => id === "codex-voice-command")?.accountAvailability, "unknown");
-  assert.equal("effectiveDate" in PLATFORM_SOURCES.dots, false);
   assert.equal("effectiveDate" in PLATFORM_SOURCES.space, false);
 });
 
@@ -97,6 +96,10 @@ test("reset kinds and missing telemetry fields are explicitly distinct and unkno
   assert.match(USAGE_RESET_SEMANTICS.find(({ id }) => id === "purchased-instant")?.field ?? "", /not exposed/);
   assert.match(USAGE_RESET_SEMANTICS.find(({ id }) => id === "credits")?.observation ?? "", /never derived/);
   assert.ok(TELEMETRY_BOUNDARIES.every(({ state }) => state === "unknown" || state === "unavailable"));
-  assert.ok(OTHER_REVIEWED_SURFACES.some(({ title }) => title === "dots"));
   assert.ok(OTHER_REVIEWED_SURFACES.some(({ title }) => title === "ChatGPT Space"));
+});
+
+test("Dots is not presented without an API-backed telemetry contract", () => {
+  assert.equal(Object.hasOwn(PLATFORM_SOURCES, "dots"), false);
+  assert.deepEqual(OTHER_REVIEWED_SURFACES.map(({ title }) => title), ["ChatGPT Space"]);
 });

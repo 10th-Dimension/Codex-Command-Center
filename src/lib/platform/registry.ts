@@ -149,14 +149,6 @@ export const PLATFORM_SOURCES = {
     authority: "official_safety_document",
     verifiedAt: previouslyVerified,
   },
-  dots: {
-    sourceId: "chatgpt-dots-official-docs",
-    sourceType: "help_center",
-    title: "ChatGPT dots documentation",
-    url: "https://learn.chatgpt.com/docs/dots/computers-and-apps",
-    authority: "official_help_center",
-    verifiedAt: previouslyVerified,
-  },
   space: {
     sourceId: "chatgpt-space-official-docs",
     sourceType: "help_center",
@@ -446,7 +438,6 @@ export const TELEMETRY_BOUNDARIES = [
 ] as const;
 
 export const OTHER_REVIEWED_SURFACES = [
-  { title: "dots", status: "available" satisfies PlatformStatus, summary: "Official ChatGPT capability documentation exists; no Codex Command Center telemetry contract was found, so it is not integrated.", sourceId: "dots" satisfies PlatformSourceId },
   { title: "ChatGPT Space", status: "available" satisfies PlatformStatus, summary: "Official shared workspace/docs capability; unrelated to Codex telemetry and kept outside this dashboard.", sourceId: "space" satisfies PlatformSourceId },
 ] as const;
 
