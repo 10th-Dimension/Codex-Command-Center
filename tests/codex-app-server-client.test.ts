@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
+import { isCodexAccountSnapshot } from "../src/lib/overlay/account";
 import {
   CodexAccountService,
   CodexJsonRpcClient,
@@ -103,16 +104,35 @@ test("credits and banked reset credits remain distinct and optional", () => {
     rateLimits: { primary: window(1, 300), secondary: null, credits: { hasCredits: true, unlimited: false, balance: "12.50" } },
     rateLimitResetCredits: {
       availableCount: 4,
-      credits: [{ id: "discard", status: "available", grantedAt: 1_700_000_000, expiresAt: 1_800_000_000, title: "Earned reset", description: "discard" }],
+      credits: [{ id: "discard", status: "available", resetType: "test-banked-reset", grantedAt: 1_700_000_000, expiresAt: 1_800_000_000, title: "Earned reset", description: "discard" }],
     },
   }));
   assert.equal(finite.limits[0].credits?.balance, "12.50");
   assert.equal(finite.resetCredits?.availableCount, 4);
   assert.equal(finite.resetCredits?.details?.length, 1);
+  assert.equal(finite.resetCredits?.details?.[0].resetType, "test-banked-reset");
   assert.equal(finite.resetCredits?.expirations?.[0], 1_800_000_000);
 
   const noDetails = normalize(rateLimits({ rateLimitResetCredits: { availableCount: 3, credits: null } }));
   assert.deepEqual(noDetails.resetCredits, { availableCount: 3 });
+
+  const fetchedEmptyDetails = normalize(rateLimits({ rateLimitResetCredits: { availableCount: 3, credits: [] } }));
+  assert.deepEqual(fetchedEmptyDetails.resetCredits, { availableCount: 3, details: [] });
+});
+
+test("account snapshot validation accepts older/missing reset details and rejects malformed new detail fields", () => {
+  const withoutResetDetail = normalize(rateLimits());
+  assert.equal(isCodexAccountSnapshot(withoutResetDetail), true);
+
+  const withResetDetail = normalize(rateLimits({
+    rateLimitResetCredits: {
+      availableCount: 2,
+      credits: [{ status: "available", resetType: "codexRateLimits", expiresAt: 1_800_000_000 }],
+    },
+  }));
+  assert.equal(isCodexAccountSnapshot(withResetDetail), true);
+  assert.equal(isCodexAccountSnapshot({ ...withResetDetail, resetCredits: { availableCount: 2, details: "invalid" } }), false);
+  assert.equal(isCodexAccountSnapshot({ ...withResetDetail, resetCredits: { availableCount: 2, details: [{ status: "available", resetType: {} }] } }), false);
 });
 
 test("ordinary usage blocks and account display fields are normalized without identity", () => {

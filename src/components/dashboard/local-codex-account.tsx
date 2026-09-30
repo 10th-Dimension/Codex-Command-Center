@@ -42,6 +42,9 @@ export function LocalCodexAccount({ showActivity = true }: Readonly<{ showActivi
 
   const freshness = quotaFreshness(snapshot, now);
   const windows = useMemo(() => snapshot?.limits.flatMap((limit) => limit.windows.map((window) => ({ limit, window }))) ?? [], [snapshot]);
+  const availableResetDetails = snapshot?.resetCredits?.details?.filter((detail) => detail.status.toLowerCase() === "available") ?? [];
+  const resetTypes = [...new Set(availableResetDetails.flatMap((detail) => detail.resetType ? [detail.resetType] : []))];
+  const nextResetExpiry = availableResetDetails.flatMap((detail) => detail.expiresAt && detail.expiresAt * 1_000 > now ? [detail.expiresAt] : []).sort((left, right) => left - right)[0];
   const activity = snapshot?.activity;
 
   return <>
@@ -57,6 +60,8 @@ export function LocalCodexAccount({ showActivity = true }: Readonly<{ showActivi
           <span>{snapshot.planType ? `${snapshot.planType} plan` : "Plan unavailable"}</span>
           <span>{snapshot.ordinaryUsageAllowed === false ? "Included usage blocked" : snapshot.ordinaryUsageAllowed === true ? "Included usage available" : "Availability unknown"}</span>
           {snapshot.resetCredits ? <span>Banked resets: {snapshot.resetCredits.availableCount}</span> : null}
+          {resetTypes.length ? <span>Returned available reset type(s): {resetTypes.join(", ")}</span> : null}
+          {nextResetExpiry ? <span>Earliest returned available reset expires {new Date(nextResetExpiry * 1_000).toLocaleDateString()}</span> : null}
         </div>
         {windows.length ? <div className="quota-window-grid">{windows.map(({ limit, window }, index) => <QuotaWindow key={`${limit.limitId ?? "default"}-${window.slot}-${index}`} limit={limit} window={window} now={now} />)}</div> : <div className="local-account-empty"><Gauge size={15} /><div><b>Quota unavailable</b><p>The authenticated account returned no usage windows.</p></div></div>}
       </>}

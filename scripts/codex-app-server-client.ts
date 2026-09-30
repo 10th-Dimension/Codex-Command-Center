@@ -145,24 +145,27 @@ function normalizeResetCredits(value: unknown): CodexAccountSnapshot["resetCredi
   if (!isObject(value)) return undefined;
   const availableCount = safeNonnegativeInteger(value.availableCount);
   if (availableCount === undefined) return undefined;
-  const details = Array.isArray(value.credits) ? value.credits.slice(0, CODEX_ACCOUNT_MAX_RESET_DETAILS).flatMap((item) => {
+  const returnedDetails = Array.isArray(value.credits) ? value.credits : undefined;
+  const details = returnedDetails?.slice(0, CODEX_ACCOUNT_MAX_RESET_DETAILS).flatMap((item: unknown) => {
     if (!isObject(item)) return [];
     const status = safeString(item.status);
     if (!status) return [];
     const detail: CodexResetCreditDetail = { status };
+    const resetType = safeString(item.resetType);
     const grantedAt = safeNonnegativeInteger(item.grantedAt);
     const expiresAt = safeNonnegativeInteger(item.expiresAt);
     const title = safeString(item.title);
+    if (resetType) detail.resetType = resetType;
     if (grantedAt) detail.grantedAt = grantedAt;
     if (expiresAt) detail.expiresAt = expiresAt;
     if (title) detail.title = title;
     return [detail];
-  }) : [];
+  }) ?? [];
   const expirations = details.flatMap((detail) => detail.expiresAt ? [detail.expiresAt] : []);
   return {
     availableCount,
     ...(expirations.length ? { expirations } : {}),
-    ...(details.length ? { details } : {}),
+    ...(returnedDetails !== undefined ? { details } : {}),
   };
 }
 

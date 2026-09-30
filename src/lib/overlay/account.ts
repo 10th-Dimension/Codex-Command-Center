@@ -12,6 +12,7 @@ export function isCodexAccountSnapshot(value: unknown): value is CodexAccountSna
   if (!["connected", "stale", "unavailable", "error"].includes(String(root.status))) return false;
   if (!["live", "recent", "stale", "unavailable"].includes(String(root.freshness))) return false;
   if (!Array.isArray(root.limits) || root.limits.length > 16) return false;
+  if (root.resetCredits !== undefined && !isCodexResetCredits(root.resetCredits)) return false;
   if (root.activity !== undefined && !isCodexAccountActivity(root.activity)) return false;
   return root.limits.every((limit) => {
     if (!limit || typeof limit !== "object" || Array.isArray(limit)) return false;
@@ -27,6 +28,25 @@ export function isCodexAccountSnapshot(value: unknown): value is CodexAccountSna
         && typeof item.remainingPercent === "number"
         && Number.isFinite(item.remainingPercent);
     });
+  });
+}
+
+function isCodexResetCredits(value: unknown): value is NonNullable<CodexAccountSnapshot["resetCredits"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const resetCredits = value as Record<string, unknown>;
+  if (typeof resetCredits.availableCount !== "number" || !Number.isSafeInteger(resetCredits.availableCount) || resetCredits.availableCount < 0) return false;
+  if (resetCredits.expirations !== undefined && (!Array.isArray(resetCredits.expirations) || resetCredits.expirations.length > 32 ||
+      resetCredits.expirations.some((expiry) => typeof expiry !== "number" || !Number.isSafeInteger(expiry) || expiry < 0))) return false;
+  if (resetCredits.details === undefined) return true;
+  if (!Array.isArray(resetCredits.details) || resetCredits.details.length > 32) return false;
+  return resetCredits.details.every((detail) => {
+    if (!detail || typeof detail !== "object" || Array.isArray(detail)) return false;
+    const item = detail as Record<string, unknown>;
+    return typeof item.status === "string" && item.status.length > 0 && item.status.length <= 120
+      && (item.resetType === undefined || (typeof item.resetType === "string" && item.resetType.length <= 120))
+      && (item.grantedAt === undefined || (typeof item.grantedAt === "number" && Number.isSafeInteger(item.grantedAt) && item.grantedAt >= 0))
+      && (item.expiresAt === undefined || (typeof item.expiresAt === "number" && Number.isSafeInteger(item.expiresAt) && item.expiresAt >= 0))
+      && (item.title === undefined || (typeof item.title === "string" && item.title.length <= 120));
   });
 }
 
