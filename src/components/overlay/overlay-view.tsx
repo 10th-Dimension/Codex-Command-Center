@@ -49,11 +49,11 @@ function OverlayPricing({ pricing }: Readonly<{ pricing?: CodexEquivalentPricing
   const available = pricing?.status === "available" || pricing?.status === "partial";
   const coverageReasons = pricing ? codexPricingCoverageReasons(pricing) : [];
   return <section className={`overlay-pricing ${pricing?.status ?? "unavailable"}`}>
-    <div><span>API-equivalent usage</span><small>{pricing?.status === "partial" ? "Partial coverage" : pricing?.status === "available" ? "All observed models" : "Unavailable"}</small></div>
+    <div><span>API-equivalent usage</span><small>{pricing?.status === "partial" ? "Partial API USD coverage" : pricing?.status === "available" ? "Complete API USD coverage" : "Unavailable"}</small></div>
     <strong>{available && pricing?.usdEquivalent !== undefined ? `$${pricing.usdEquivalent}` : "Unavailable"}</strong>
-    <b>{available && pricing?.apiCredits !== undefined ? `${pricing.apiCredits} credits` : "No priced token samples"}</b>
-    <em>{pricing?.coveragePercent === undefined ? "Priced token coverage —" : `Priced token coverage ${pricing.coveragePercent}%`}</em>
-    {pricing?.status === "partial" && coverageReasons.length ? <small className="pricing-coverage-reasons">{coverageReasons.join(" · ")}</small> : null}
+    <b>{available && pricing?.apiCredits !== undefined ? `${pricing.apiCredits} credits` : (pricing?.creditRateUnavailableTokenCount ?? 0) > 0 ? "Credit equivalent unavailable" : "No priced token samples"}</b>
+    <em>{pricing?.coveragePercent === undefined ? "API USD priced token coverage —" : `API USD priced token coverage ${pricing.coveragePercent}%`}</em>
+    {coverageReasons.length ? <small className="pricing-coverage-reasons">{coverageReasons.join(" · ")}</small> : null}
   </section>;
 }
 

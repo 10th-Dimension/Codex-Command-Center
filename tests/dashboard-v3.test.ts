@@ -202,9 +202,9 @@ test("website and native pricing surfaces share truthful coverage semantics and 
     readFile(new URL("../desktop/overlay/src/App.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/lib/telemetry/pricing.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(website, /Priced token coverage/);
+  assert.match(website, /API USD priced token coverage/);
   assert.match(website, /codexPricingCoverageReasons/);
-  assert.match(webOverlay, /Priced token coverage/);
+  assert.match(webOverlay, /API USD priced token coverage/);
   assert.match(webOverlay, /codexPricingCoverageReasons/);
   assert.doesNotMatch(webOverlay, /<section[^>]*overlay-pricing[^>]*\btitle=/);
   assert.match(nativeOverlay, /Priced token coverage/);

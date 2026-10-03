@@ -205,13 +205,13 @@ function ApiEquivalentCard({ result }: Readonly<{ result: DataResult<CodexEquiva
     return <aside className="ledger-note pricing-card pricing-unavailable"><span>API-equivalent usage</span><strong>Unavailable</strong><p>{result.reason}</p></aside>;
   }
   const pricing = result.data;
-  const statusLabel = pricing.status === "available" ? "Complete coverage" : "Partial coverage";
+  const statusLabel = pricing.status === "available" ? "Complete API USD coverage" : "Partial API USD coverage";
   const coverageReasons = codexPricingCoverageReasons(pricing);
   return <aside className={`ledger-note pricing-card pricing-${pricing.status}`}>
     <div className="pricing-card-heading"><span>API-equivalent usage</span><b>{statusLabel}</b></div>
     <div className="pricing-primary"><div><small>USD equivalent</small><strong>{pricing.usdEquivalent === undefined ? "Unavailable" : `$${pricing.usdEquivalent}`}</strong></div><div><small>Codex credits</small><strong>{pricing.apiCredits === undefined ? "Unavailable" : pricing.apiCredits}</strong></div></div>
-    <div className="pricing-meta"><span>Priced token coverage <b>{pricing.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}%`}</b></span><span>Models <b>{pricing.modelCount}</b></span></div>
-    {pricing.status === "partial" && coverageReasons.length ? <ul className="pricing-coverage-reasons">{coverageReasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
+    <div className="pricing-meta"><span>API USD priced token coverage <b>{pricing.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}%`}</b></span><span>Models <b>{pricing.modelCount}</b></span></div>
+    {coverageReasons.length ? <ul className="pricing-coverage-reasons">{coverageReasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
     {pricing.byModel.length ? <details className="pricing-breakdown"><summary>Inspect model math <span>+</span></summary><div>{pricing.byModel.map((model) => <div className="pricing-model-row" key={model.model}><span><b>{model.displayName}</b><small>{model.model} · {model.eventCount.toLocaleString()} events{model.reason ? ` · ${model.reason}` : ""}</small></span><strong className={model.status === "incomplete" && (model.usdEquivalent !== undefined || model.apiCredits !== undefined) ? "partial" : undefined}>{codexEquivalentModelPriceLabel(model)}</strong></div>)}</div></details> : null}
     <p>{pricing.note} This is a token-rate comparison, not a live account balance or invoice.</p>
   </aside>;

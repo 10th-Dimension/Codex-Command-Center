@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { calculateCodexEquivalentPricing, codexEquivalentModelPriceLabel, CODEX_MODEL_PRICING, resolveCodexPricingRate } from "../src/lib/telemetry/pricing";
+import { calculateCodexEquivalentPricing, codexEquivalentModelPriceLabel, codexPricingCoverageReasons, CODEX_MODEL_PRICING, resolveCodexPricingRate } from "../src/lib/telemetry/pricing";
 
 const available = (value: number) => ({ availability: "available" as const, value, sampleCount: 1 });
 const noSamples = { availability: "no-samples" as const, sampleCount: 0 };
@@ -40,6 +40,9 @@ test("pricing resolves model aliases and strips reasoning-effort suffixes", () =
   assert.equal(resolveCodexPricingRate("gpt-6-sol-xhigh")?.model, "gpt-6-sol");
   assert.equal(resolveCodexPricingRate("6-luna-high")?.model, "gpt-6-luna");
   assert.equal(resolveCodexPricingRate("gpt-5.6-sol-high")?.model, "gpt-5.6-sol");
+  assert.equal(resolveCodexPricingRate("gpt-5.6")?.model, "gpt-5.6-sol");
+  assert.equal(resolveCodexPricingRate("gpt-5.6-cyber")?.model, "daybreak-red");
+  assert.equal(resolveCodexPricingRate("gpt-6-pro"), undefined);
   assert.equal(resolveCodexPricingRate("5.6-luna")?.displayName, "GPT-5.6 Luna");
   assert.equal(resolveCodexPricingRate("GPT-6.1 Sol")?.model, "gpt-6.1-sol");
   assert.equal(resolveCodexPricingRate("6.1 Sol")?.model, "gpt-6.1-sol");
@@ -121,13 +124,106 @@ test("cache writes use the official API write price but are excluded from Codex 
   assert.equal(result.coveragePercent, 100);
 });
 
-test("pre-GPT-5.6 cache writes use the documented ordinary-input API rate", () => {
+test("API cache-write rates stay unavailable when the official price card does not publish them", () => {
+  for (const model of ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]) {
+    const rate = CODEX_MODEL_PRICING.find((item) => item.model === model);
+    assert.equal(rate?.cacheWriteUsdPerMillion, undefined, `${model} must not inherit a cache-write price from its ordinary-input rate`);
+  }
   const result = calculateCodexEquivalentPricing({
     metrics: metrics(1_000_000, 0, 0, 1_000_000),
     models: [modelUsage("gpt-5.5", { input: 1_000_000, write: 1_000_000 })],
   });
-  assert.equal(result.usdEquivalent, "5");
+  assert.equal(result.usdEquivalent, undefined);
   assert.equal(result.apiCredits, "0");
+  assert.equal(result.status, "partial");
+  assert.match(result.byModel[0].reason ?? "", /No complete standard API USD rate/);
+});
+
+test("GPT-5.6 model aliases resolve to their official model prices", () => {
+  assert.equal(CODEX_MODEL_PRICING.find((item) => item.model === "gpt-5.6-sol")?.cacheWriteUsdPerMillion, 5);
+  assert.equal(CODEX_MODEL_PRICING.find((item) => item.model === "daybreak-red")?.cacheWriteUsdPerMillion, 15.625);
+  const sol = calculateCodexEquivalentPricing({
+    metrics: metrics(1_000_000, 0, 0),
+    models: [modelUsage("gpt-5.6", { input: 1_000_000 })],
+  });
+  assert.equal(sol.byModel[0].displayName, "GPT-5.6 Sol");
+  assert.equal(sol.usdEquivalent, "4");
+  assert.equal(sol.apiCredits, "100");
+
+  const cyber = calculateCodexEquivalentPricing({
+    metrics: metrics(1_000_000, 0, 0),
+    models: [modelUsage("gpt-5.6-cyber", { input: 1_000_000 })],
+  });
+  assert.equal(cyber.byModel[0].displayName, "Daybreak Red");
+  assert.equal(cyber.usdEquivalent, "12.5");
+  assert.equal(cyber.apiCredits, "312.5");
+  const cyberWrite = calculateCodexEquivalentPricing({
+    metrics: metrics(1_000_000, 0, 0, 1_000_000),
+    models: [modelUsage("gpt-5.6-cyber", { input: 1_000_000, write: 1_000_000 })],
+  });
+  assert.equal(cyberWrite.usdEquivalent, "15.625");
+});
+
+test("GPT-5.4 keeps its current API USD rate without inventing a Work/Codex credit rate", () => {
+  const rate = CODEX_MODEL_PRICING.find((item) => item.model === "gpt-5.4");
+  assert.deepEqual([rate?.inputUsdPerMillion, rate?.cachedInputUsdPerMillion, rate?.outputUsdPerMillion], [2.5, 0.25, 15]);
+  assert.deepEqual([rate?.inputCreditsPerMillion, rate?.cachedInputCreditsPerMillion, rate?.outputCreditsPerMillion], [undefined, undefined, undefined]);
+
+  const result = calculateCodexEquivalentPricing({
+    metrics: metrics(1_000_000, 0, 0),
+    models: [modelUsage("gpt-5.4", { input: 1_000_000 })],
+  });
+  assert.equal(result.status, "available");
+  assert.equal(result.usdEquivalent, "2.5");
+  assert.equal(result.apiCredits, undefined);
+  assert.equal(result.creditRateUnavailableTokenCount, 1_000_000);
+  assert.match(codexEquivalentModelPriceLabel(result.byModel[0]), /^\$2\.5$/);
+  assert.match(result.byModel[0].reason ?? "", /No current Standard Work\/Codex credit rate/);
+  assert.match(result.note, /missing current credit rate is reported as unavailable/);
+  assert.match(result.note, /GPT-Rosalind-Research API billing begins October 5, 2026/);
+  assert.match(result.note, /hourly model aggregates do not preserve event dates/);
+  assert.match(result.note, /not a date-scoped bill/);
+  assert.match(result.note, /not an invoice or account balance/i);
+  assert.match(codexPricingCoverageReasons(result).join(" "), /total credit equivalent is withheld/);
+});
+
+test("GPT-5.4 Mini keeps its exact API output rate and has no current Work/Codex credit equivalent", () => {
+  const rate = CODEX_MODEL_PRICING.find((item) => item.model === "gpt-5.4-mini");
+  assert.deepEqual([rate?.inputUsdPerMillion, rate?.cachedInputUsdPerMillion, rate?.outputUsdPerMillion], [0.75, 0.075, 4.5]);
+  assert.equal(rate?.outputCreditsPerMillion, undefined);
+
+  const result = calculateCodexEquivalentPricing({
+    metrics: metrics(0, 0, 1_000_000),
+    models: [modelUsage("gpt-5.4-mini", { output: 1_000_000 })],
+  });
+  assert.equal(result.usdEquivalent, "4.5");
+  assert.equal(result.apiCredits, undefined);
+  assert.equal(result.creditRateUnavailableTokenCount, 1_000_000);
+  assert.match(codexPricingCoverageReasons(result).join(" "), /Current Work\/Codex credit rates are unavailable/);
+});
+
+test("GPT-6 Pro Chat is not mapped to Astra token rates", () => {
+  const result = calculateCodexEquivalentPricing({
+    metrics: metrics(1_000_000, 0, 1_000_000),
+    models: [modelUsage("gpt-6-pro", { input: 1_000_000, output: 1_000_000 })],
+  });
+  assert.equal(result.status, "partial");
+  assert.equal(result.usdEquivalent, undefined);
+  assert.equal(result.apiCredits, undefined);
+  assert.match(result.byModel[0].reason ?? "", /priced per message/);
+  assert.match(result.note, /GPT-6 Pro Chat is priced per message/);
+});
+
+test("Rosalind API cache-write pricing is unavailable and does not borrow its ordinary-input price", () => {
+  const rate = CODEX_MODEL_PRICING.find((item) => item.model === "gpt-rosalind-research");
+  assert.equal(rate?.cacheWriteUsdPerMillion, undefined);
+  const result = calculateCodexEquivalentPricing({
+    metrics: metrics(1_000_000, 0, 0, 1_000_000),
+    models: [modelUsage("gpt-rosalind-research", { input: 1_000_000, write: 1_000_000 })],
+  });
+  assert.equal(result.usdEquivalent, undefined);
+  assert.equal(result.apiCredits, "0");
+  assert.equal(result.status, "partial");
 });
 
 test("reasoning tokens remain an output breakdown and are never charged or counted twice", () => {
@@ -309,5 +405,6 @@ test("pricing disclosure preserves comparison semantics rather than claiming an 
   const result = calculateCodexEquivalentPricing({ metrics: metrics(0, 0, 0), models: [] });
   assert.match(result.note, /Standard short-context API USD rates and the published Work\/Codex Standard credit rate card/);
   assert.match(result.note, /Fast and Ultrafast service-tier multipliers/);
+  assert.match(result.note, /API USD estimates use only a published cache-write rate/);
   assert.match(result.note, /not an invoice or account balance/i);
 });
