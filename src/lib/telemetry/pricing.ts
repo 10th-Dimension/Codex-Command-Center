@@ -3,17 +3,17 @@
  * published Work/Codex credit rates. They are comparisons, not account
  * balances or invoices.
  */
-export const CODEX_PRICING_CARD_ID = "openai-api-and-codex-token-rates-2026-09-29";
+export const CODEX_PRICING_CARD_ID = "openai-api-and-codex-token-rates-2026-10-03";
 export const CODEX_PRICING_BASIS = "codex-token-credit-rates" as const;
-export const CODEX_PRICING_NOTE = "Codex auto-review activity is excluded from these estimates and coverage because it has no published per-token rate. Standard short-context API USD rates and the published Work/Codex Standard credit rate card only. Cache reads and writes are separate input subsets; API USD estimates use the published cache-write rate, while Codex does not charge cache writes in credits. Reasoning tokens are included in output and are not added again. Fast and Ultrafast service-tier multipliers, long-context requests, regional processing, and separately metered feature charges are excluded because this aggregate does not preserve the request-level fields needed to apply them. Pricing compares matching complete hourly rollups, so the partial leading model hour is excluded. This is not an invoice or account balance.";
+export const CODEX_PRICING_NOTE = "Codex auto-review activity is excluded from these estimates and coverage because it has no published per-token rate. Standard short-context API USD rates and the published Work/Codex Standard credit rate card only; a missing current credit rate is reported as unavailable. Cache reads and writes are separate input subsets; API USD estimates use only a published cache-write rate, while Codex does not charge cache writes in credits. GPT-Rosalind-Research API billing begins October 5, 2026; hourly model aggregates do not preserve event dates to separate usage around that effective date, so its USD comparison uses the published rate and is not a date-scoped bill. GPT-6 Pro Chat is priced per message and is not estimated from token totals. Reasoning tokens are included in output and are not added again. Fast and Ultrafast service-tier multipliers, long-context requests, regional processing, and separately metered feature charges are excluded because this aggregate does not preserve the request-level fields needed to apply them. Pricing compares matching complete hourly rollups, so the partial leading model hour is excluded. This is not an invoice or account balance.";
 
 export interface CodexModelPricingRate {
   model: string;
   displayName: string;
   aliases: readonly string[];
-  inputCreditsPerMillion: number;
-  cachedInputCreditsPerMillion: number;
-  outputCreditsPerMillion: number;
+  inputCreditsPerMillion?: number;
+  cachedInputCreditsPerMillion?: number;
+  outputCreditsPerMillion?: number;
   inputUsdPerMillion?: number;
   cachedInputUsdPerMillion?: number;
   cacheWriteUsdPerMillion?: number;
@@ -25,28 +25,29 @@ export interface CodexModelPricingRate {
   longContextOutputUsdPerMillion?: number;
 }
 
-type CacheWriteUsdRule = "standard-input" | "premium-1.25x" | "unavailable";
+type CacheWriteUsdRule = "premium-1.25x" | "unavailable";
 
 /** Published token-based Work/Codex credits and standard API USD rates. */
 export const CODEX_MODEL_PRICING: readonly CodexModelPricingRate[] = [
-  rate("gpt-6-astra", "GPT-6 Astra", ["gpt-6-astra", "6-astra", "astra", "gpt-6-pro"], 250, 25, 1250, 10, 1, 50, "premium-1.25x"),
+  rate("gpt-6-astra", "GPT-6 Astra", ["gpt-6-astra", "6-astra", "astra"], 250, 25, 1250, 10, 1, 50, "premium-1.25x"),
   rate("gpt-6.1-sol", "GPT-6.1 Sol", ["gpt-6.1-sol", "6.1-sol", "gpt-6.1-sol-latest"], 50, 2.5, 250, 2, 0.1, 10, "premium-1.25x", {
     thresholdTokens: 272_000, inputUsdPerMillion: 4, cachedInputUsdPerMillion: 0.2,
     cacheWriteUsdPerMillion: 5, outputUsdPerMillion: 15,
   }),
   rate("gpt-6-sol", "GPT-6 Sol", ["gpt-6-sol", "6-sol"], 50, 5, 250, 2, 0.2, 10, "premium-1.25x"),
   rate("gpt-6-luna", "GPT-6 Luna", ["gpt-6-luna", "6-luna"], 2.5, 0.25, 12.5, 0.1, 0.01, 0.5, "premium-1.25x"),
-  rate("gpt-5.6-sol", "GPT-5.6 Sol", ["gpt-5.6-sol", "5.6-sol", "sol"], 100, 10, 500, 4, 0.4, 20, "premium-1.25x"),
+  rate("gpt-5.6-sol", "GPT-5.6 Sol", ["gpt-5.6-sol", "gpt-5.6", "5.6-sol", "sol"], 100, 10, 500, 4, 0.4, 20, "premium-1.25x"),
   rate("gpt-5.6-terra", "GPT-5.6 Terra", ["gpt-5.6-terra", "5.6-terra", "terra"], 50, 5, 300, 2, 0.2, 12, "premium-1.25x"),
   rate("gpt-5.6-luna", "GPT-5.6 Luna", ["gpt-5.6-luna", "5.6-luna", "luna"], 5, 0.5, 30, 0.2, 0.02, 1.2, "premium-1.25x"),
-  rate("gpt-rosalind-research", "GPT-Rosalind-Research", ["gpt-rosalind-research", "rosalind-research"], 125, 12.5, 625, 5, 0.5, 25, "standard-input"),
-  rate("gpt-5.5", "GPT-5.5", ["gpt-5.5", "5.5"], 125, 12.5, 750, 5, 0.5, 30, "standard-input"),
+  rate("gpt-rosalind-research", "GPT-Rosalind-Research", ["gpt-rosalind-research", "rosalind-research"], 125, 12.5, 625, 5, 0.5, 25, "unavailable"),
+  rate("gpt-5.5", "GPT-5.5", ["gpt-5.5", "5.5"], 125, 12.5, 750, 5, 0.5, 30, "unavailable"),
   rate("daybreak-blue", "Daybreak Blue", ["daybreak-blue", "gpt-daybreak-blue-latest"], 100, 10, 500, 4, 0.4, 20, "premium-1.25x"),
-  rate("daybreak-red", "Daybreak Red", ["daybreak-red", "gpt-daybreak-red-latest"], 312.5, 31.25, 1875, 12.5, 1.25, 75, "premium-1.25x"),
-  rate("gpt-5.4", "GPT-5.4", ["gpt-5.4", "5.4"], 62.5, 6.25, 375, 2.5, 0.25, 15, "standard-input"),
-  rate("gpt-5.4-mini", "GPT-5.4 Mini", ["gpt-5.4-mini", "5.4-mini", "gpt-5.4-mini-codex"], 18.75, 1.875, 113, 0.75, 0.075, 4.5, "standard-input"),
-  rate("gpt-5.3-codex", "GPT-5.3-Codex", ["gpt-5.3-codex", "5.3-codex"], 43.75, 4.375, 350, 1.75, 0.175, 14, "standard-input"),
-  rate("gpt-5.2", "GPT-5.2", ["gpt-5.2", "5.2"], 43.75, 4.375, 350, 1.75, 0.175, 14, "standard-input"),
+  rate("daybreak-red", "Daybreak Red", ["daybreak-red", "gpt-daybreak-red-latest", "gpt-5.6-cyber"], 312.5, 31.25, 1875, 12.5, 1.25, 75, "premium-1.25x"),
+  // Keep API rates for legacy models, but GPT-5.4 and Mini have no current Work/Codex token rate.
+  rate("gpt-5.4", "GPT-5.4", ["gpt-5.4", "5.4"], undefined, undefined, undefined, 2.5, 0.25, 15, "unavailable"),
+  rate("gpt-5.4-mini", "GPT-5.4 Mini", ["gpt-5.4-mini", "5.4-mini", "gpt-5.4-mini-codex"], undefined, undefined, undefined, 0.75, 0.075, 4.5, "unavailable"),
+  rate("gpt-5.3-codex", "GPT-5.3-Codex", ["gpt-5.3-codex", "5.3-codex"], 43.75, 4.375, 350, 1.75, 0.175, 14, "unavailable"),
+  rate("gpt-5.2", "GPT-5.2", ["gpt-5.2", "5.2"], 43.75, 4.375, 350, 1.75, 0.175, 14, "unavailable"),
   // Astra for Law has a published Work/Codex credit rate but no public API USD rate.
   rate("gpt-6-astra-law", "GPT-6 Astra Law", ["gpt-6-astra-law", "astra-law"], 312.5, 31.25, 1562.5, undefined, undefined, undefined, "unavailable"),
 ];
@@ -102,6 +103,8 @@ export interface CodexEquivalentPricing {
   rateCardId: string;
   featureChargesIncluded: false;
   apiCredits?: string;
+  /** Tokens whose models do not have a published current Work/Codex credit rate. */
+  creditRateUnavailableTokenCount?: number;
   usdEquivalent?: string;
   observedTokenCount?: number;
   modelAttributedTokenCount?: number;
@@ -127,6 +130,7 @@ export function codexPricingCoverageReasons(pricing: CodexEquivalentPricing) {
   const reasons: string[] = [];
   const formatted = (count: number) => `${count.toLocaleString()} tokens`;
   if (pricing.unpricedModelTokenCount > 0) reasons.push(`Unpriced model usage: ${formatted(pricing.unpricedModelTokenCount)}.`);
+  if ((pricing.creditRateUnavailableTokenCount ?? 0) > 0) reasons.push(`Current Work/Codex credit rates are unavailable for ${formatted(pricing.creditRateUnavailableTokenCount ?? 0)}; the total credit equivalent is withheld.`);
   if ((pricing.unattributedTokenCount ?? 0) > 0) reasons.push(`Unattributed token usage: no trustworthy model was emitted for ${formatted(pricing.unattributedTokenCount ?? 0)}.`);
   if (pricing.tokenFieldsUnavailableTokenCount > 0) reasons.push(`Token fields unavailable: ${formatted(pricing.tokenFieldsUnavailableTokenCount)} could not be priced exactly.`);
   if ((pricing.truncatedModelTokenCount ?? 0) > 0) reasons.push(`Model details beyond the display limit: ${formatted(pricing.truncatedModelTokenCount ?? 0)}.`);
@@ -223,9 +227,9 @@ function rate(
   model: string,
   displayName: string,
   aliases: readonly string[],
-  inputCreditsPerMillion: number,
-  cachedInputCreditsPerMillion: number,
-  outputCreditsPerMillion: number,
+  inputCreditsPerMillion: number | undefined,
+  cachedInputCreditsPerMillion: number | undefined,
+  outputCreditsPerMillion: number | undefined,
   inputUsdPerMillion: number | undefined,
   cachedInputUsdPerMillion: number | undefined,
   outputUsdPerMillion: number | undefined,
@@ -361,6 +365,8 @@ export function calculateCodexEquivalentPricing({
   let pricedCredits = 0n;
   let pricedUsd = 0n;
   let creditCostAvailable = false;
+  let creditCostComplete = true;
+  let creditRateUnavailableTokenCount = 0;
   let usdCostAvailable = false;
   let pricedTokenCount = 0;
   let visibleModelTokenCount = 0;
@@ -389,7 +395,21 @@ export function calculateCodexEquivalentPricing({
     if (!rateValue) {
       unpricedModelCount += 1;
       unpricedModelTokenCount += observedModelTokens;
-      return { ...base, status: "unpriced" as const, pricedTokenCount: 0, reason: "No published rate is available for this model." };
+      if (observedModelTokens > 0) {
+        creditCostComplete = false;
+        creditRateUnavailableTokenCount += observedModelTokens;
+      }
+      const reason = canonicalModel(model.model) === "gpt-6-pro"
+        ? "GPT-6 Pro Chat is priced per message; this token aggregate cannot price it."
+        : "No published token rate is available for this model.";
+      return { ...base, status: "unpriced" as const, pricedTokenCount: 0, reason };
+    }
+
+    const hasPublishedCreditRates = rateValue.inputCreditsPerMillion !== undefined &&
+      rateValue.cachedInputCreditsPerMillion !== undefined && rateValue.outputCreditsPerMillion !== undefined;
+    if (!hasPublishedCreditRates && observedModelTokens > 0) {
+      creditCostComplete = false;
+      creditRateUnavailableTokenCount += observedModelTokens;
     }
 
     const categoriesOverlap = usage.overlap > 0 || (usage.cacheWrite !== undefined && usage.cached + usage.cacheWrite > usage.input) ||
@@ -412,14 +432,14 @@ export function calculateCodexEquivalentPricing({
         output: usage.priceableOutput,
       }
       : undefined;
-    const creditsCost = readyCategories ? charge(readyCategories, fixedRates(rateValue, "credits")) : undefined;
+    const creditsCost = readyCategories && hasPublishedCreditRates ? charge(readyCategories, fixedRates(rateValue, "credits")) : undefined;
     const usdCost = readyCategories ? charge(readyCategories, fixedRates(rateValue, "usd")) : undefined;
     if (creditsCost !== undefined) {
       pricedCredits += creditsCost;
       creditCostAvailable = true;
     }
 
-    const reason = categoriesOverlap
+    const pricingReason = categoriesOverlap
       ? "Cached and cache-write input exceed the observed input total."
       : !hasPriceableSamples && observedModelTokens > 0
         ? "Token category fields were not fully observed for this usage."
@@ -428,7 +448,13 @@ export function calculateCodexEquivalentPricing({
           : missingCategoryTokens > 0
             ? "Some token category fields were not observed for this model."
             : undefined;
-    const status = reason
+    const reason = [
+      pricingReason,
+      !hasPublishedCreditRates && observedModelTokens > 0
+        ? "No current Standard Work/Codex credit rate is published for this model."
+        : undefined,
+    ].filter(Boolean).join(" ") || undefined;
+    const status = pricingReason
       ? unpricedUsdRate || (usdCost === undefined && priceableTokens > 0) ? "unpriced" as const : "incomplete" as const
       : "priced" as const;
 
@@ -504,7 +530,8 @@ export function calculateCodexEquivalentPricing({
     basis: CODEX_PRICING_BASIS,
     rateCardId: CODEX_PRICING_CARD_ID,
     featureChargesIncluded: false,
-    apiCredits: creditCostAvailable ? decimal(pricedCredits) : undefined,
+    apiCredits: creditCostAvailable && creditCostComplete ? decimal(pricedCredits) : undefined,
+    creditRateUnavailableTokenCount,
     usdEquivalent: usdCostAvailable ? decimal(pricedUsd) : undefined,
     observedTokenCount,
     modelAttributedTokenCount: completeModelTokenCount,
