@@ -294,6 +294,29 @@ test("event identity uses event.kind, preserves genuine unknowns, and recognizes
   assert.equal(events[4].eventName, "new.safe.event");
 });
 
+test("custom-tool input deltas do not persist while completed tool results remain available", async () => {
+  const deltaPayload = jsonPayload("ignored-body");
+  deltaPayload.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.push({
+    key: "event.kind",
+    value: anyValue("response.custom_tool_call_input.delta"),
+  });
+
+  const database = new FakeD1();
+  const response = await handleTelemetryIngest(requestFor(deltaPayload), { database, ingestKey, retentionDays: 30 });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-codex-telemetry-accepted"), "0");
+  assert.equal(database.statements.length, 0, "delta-only batches should not issue D1 writes or maintenance queries");
+
+  const completed = await normalizeOtlpRecords([{
+    attributes: { "event.kind": "codex.tool_result", tool_name: "exec_command", success: true },
+    resourceAttributes: {},
+  }], now);
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].eventName, "codex.tool_result");
+  assert.equal(completed[0].toolName, "exec_command");
+  assert.equal(completed[0].success, true);
+});
+
 test("replay preserves the explicit decision category", async () => {
   const [event] = await normalizeOtlpRecords([{
     attributes: { "codex.replay.category": "decision", "event.kind": "codex.policy_event" },

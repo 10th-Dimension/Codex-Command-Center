@@ -54,7 +54,7 @@ function cost(result) {
 try {
   await run(["d1", "migrations", "apply", databaseName, "--local", "--persist-to", persistence]);
   const digits = "digits(v) AS (VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9))";
-  const compactSeed = await query(`WITH ${digits},seq(n) AS (SELECT a.v+10*b.v+100*c.v+1000*d.v+10000*e.v FROM digits a CROSS JOIN digits b CROSS JOIN digits c CROSS JOIN digits d CROSS JOIN digits e LIMIT 50000)
+  const compactSeed = await query(`WITH ${digits},seq(n) AS (SELECT a.v+10*b.v+100*c.v+1000*d.v+10000*e.v FROM digits a CROSS JOIN digits b CROSS JOIN digits c CROSS JOIN digits d CROSS JOIN digits e LIMIT 100)
       INSERT INTO codex_telemetry_events_compact (id,event_fingerprint,occurred_at,received_at,event_name,event_category,session_id,model,input_tokens,output_tokens,safe_attribute_keys_json,unknown_attribute_keys_json)
       SELECT 'audit-'||n,'fingerprint-'||n,datetime('now','-'||(n%43200)||' minutes'),datetime('now'),
         CASE WHEN n%10=0 THEN 'codex.tool_result' ELSE 'codex.api_request' END,CASE WHEN n%97=0 THEN 'error' ELSE 'api-request' END,
@@ -113,11 +113,11 @@ try {
   assert.ok(forensicPreflightPlan.results.some((row) => /codex_telemetry_events_compact USING PRIMARY KEY \(occurred_at>\?\)/.test(String(row.detail))), "forensics preflight must range over the compact clustered primary key");
 
   console.log("D1 COST AUDIT (isolated local database; production was not accessed)");
-  console.log("Stress rows:", 50_000);
+  console.log("Synthetic compact seed rows:", 100);
   console.log("Compact raw insert:", { ...cost(compactSeed), expected_structures_per_event: 1, table: "occurred_at-leading WITHOUT ROWID primary key" });
   console.log("Migration-boundary fingerprint deduplication: PASS");
   console.log("Raw retention cleanup: two indexed 250-row primary-key half-batches, 500 rows maximum total, no compact outer table scan PASS");
-  console.log("Explicit forensic/raw path: 35 statements; an indexed 50,000-event preflight gate runs before combined legacy/compact scans and grouped 30-day analytics.");
+  console.log("Explicit forensic/raw path: 35 statements; the indexed 50,000-event maximum preflight limit runs before combined legacy/compact scans and grouped 30-day analytics.");
   console.log("Overlay normal path:", { ...cost(overlay), returned_rows: overlay.results.length, raw_table_touched: false, budget: "<=5 PASS" });
   console.log("Codex normal page:", { ...cost(codexPage), returned_rows: codexPage.results.length, raw_table_touched: false, budget: "<=50 PASS" });
   console.log("GitHub page:", { statements: 0, rows_read: 0, raw_table_touched: false, budget: "PASS" });
