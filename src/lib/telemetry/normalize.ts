@@ -115,6 +115,10 @@ export async function normalizeOtlpRecords(records: OtlpLogRecord[], receivedAt:
       safeKeys.push(key); if (!KNOWN_KEYS.has(rawKey)) unknownKeys.push(key); if (safeKeys.length >= MAX_KEYS) break;
     }
     const eventKind = identifier(a["event.kind"], 128);
+    // Codex emits one custom-tool input delta for each streamed argument
+    // chunk. These records carry no usage tokens or named tool outcome, so
+    // retaining them only inflates raw storage and can skew duration rollups.
+    if (eventKind === "response.custom_tool_call_input.delta") continue;
     const named = identifier(record.eventName, 128) ?? identifier(first(a, ["event.name", "event_name"]), 128);
     const body = typeof record.body === "string" && record.body.startsWith("codex.") ? record.body : undefined;
     const candidate = named ?? identifier(body, 128) ?? eventKind;
