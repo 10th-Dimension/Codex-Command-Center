@@ -7,7 +7,7 @@ import { telemetryFreshness } from "./lib/freshness";
 import { applyWindowSettings, configureHotkeys, controlRelay, fetchOverlay, getAutostart, getNativeState, hideOverlay, loadSettings, onNativeAction, openDashboard, quitOverlay, recoverOverlay, saveSettings, setAutostart, setCorner, setLayout, startDrag, startResize, type NativeState } from "./lib/native";
 import { defaultDesktopOverlaySettings, needsPresetResize, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, shouldPollRemote, textColorValue, type DesktopOverlaySettings, type OverlayLayout, type OverlayRange } from "./lib/settings";
 import { isUsableOverlaySnapshot, shouldReplaceOverlaySnapshot } from "./lib/snapshot";
-import { prepareOverlayTrend, type DisplayTrendPoint } from "./lib/trend";
+import { measuredInputTokens, prepareOverlayTrend, tokenTrendAreaPath, tokenTrendLinePath, type DisplayTrendPoint } from "./lib/trend";
 
 type RelayState = "checking" | "online" | "offline" | "upstream-error" | "paused";
 type HeaderMenu = "range" | "layout";
@@ -392,11 +392,13 @@ function TokenTrendChart({ points, range, asOf }: Readonly<{ points: OverlaySnap
   const height = 64;
   const top = 2;
   const bottom = height - 2;
-  const inputValues = values.map(inputTokenValue);
-  const maximum = Math.max(1, ...inputValues) * 1.25;
+  const inputValues = values.map(measuredInputTokens);
+  const measuredValues = inputValues.filter((value): value is number => value !== undefined);
+  const maximum = Math.max(1, ...measuredValues) * 1.25;
   const x = (index: number) => index / (values.length - 1) * width;
   const y = (value: number) => bottom - value / maximum * (bottom - top);
-  const inputPath = linePath(inputValues, x, y);
+  const inputPath = tokenTrendLinePath(inputValues, x, y);
+  const inputAreaPath = tokenTrendAreaPath(inputValues, x, y, bottom);
   const activePoint = activeIndex === undefined ? undefined : values[activeIndex];
   const selectAtPointer = (clientX: number, left: number, renderedWidth: number) => {
     if (renderedWidth <= 0) return;
@@ -410,23 +412,17 @@ function TokenTrendChart({ points, range, asOf }: Readonly<{ points: OverlaySnap
       event.preventDefault();
       setActiveIndex((current) => event.key === "Home" ? 0 : event.key === "End" ? values.length - 1 : Math.max(0, Math.min(values.length - 1, (current ?? values.length - 1) + direction)));
     }} onMouseLeave={() => setActiveIndex(undefined)} onMouseMove={(event) => { const rect = event.currentTarget.getBoundingClientRect(); selectAtPointer(event.clientX, rect.left, rect.width); }}>
-      <path className="spark-input-area" d={`${inputPath} L${width},${bottom} L0,${bottom} Z`} />
+      <path className="spark-input-area" d={inputAreaPath} />
       <path className="spark-input-line" d={inputPath} />
+      {inputValues.map((value, index) => value !== undefined && inputValues[index - 1] === undefined && inputValues[index + 1] === undefined
+        ? <circle className="spark-input-point" cx={x(index)} cy={y(value)} key={index} r="1.4" />
+        : null)}
       {activeIndex !== undefined ? <line className="spark-hover-line" x1={x(activeIndex)} x2={x(activeIndex)} y1={top} y2={bottom} /> : null}
     </svg>
     <div className="trend-axis"><span>{formatOverlayTrendLabel(values[0].label)}</span><span>{formatOverlayTrendLabel(values[Math.floor(values.length / 2)].label)}</span><span>{formatOverlayTrendLabel(values[values.length - 1].label)}</span></div>
     {activePoint && activeIndex !== undefined ? <div aria-live="polite" className="trend-tooltip visible">{tokenTrendTooltip(activePoint, activeIndex, values.length)}</div> : null}
     <div className="trend-caption">Measured input tokens · {trend.intervalLabel} · {trend.observedBuckets} observed / {values.length} intervals</div>
   </div>;
-}
-
-function linePath(values: number[], x: (index: number) => number, y: (value: number) => number) {
-  return values.map((value, index) => index ? `C${x(index - 1) + (x(index) - x(index - 1)) / 3},${y(values[index - 1])} ${x(index) - (x(index) - x(index - 1)) / 3},${y(value)} ${x(index)},${y(value)}` : `M${x(index)},${y(value)}`).join(" ");
-}
-
-function inputTokenValue(point: DisplayTrendPoint) {
-  const value = point.inputTokens;
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 function formatOverlayTrendLabel(label: string): string {
