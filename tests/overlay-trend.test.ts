@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { prepareOverlayTrend } from "../desktop/overlay/src/lib/trend";
+import { measuredInputTokens, prepareOverlayTrend, tokenTrendAreaPath, tokenTrendLinePath, type DisplayTrendPoint } from "../desktop/overlay/src/lib/trend";
 
 test("24-hour overlay displays every ten-minute interval without combining measured fields", () => {
   const asOf = "2026-09-25T12:34:00.000Z";
@@ -37,4 +37,27 @@ test("longer overlay ranges retain the server's UTC-day resolution", () => {
   assert.equal(weekly.points.find((point) => point.label === "2026-09-24")?.inputTokens, 42);
   assert.equal(weekly.observedBuckets, 1);
   assert.equal(monthly.observedBuckets, 1);
+});
+
+test("unobserved intervals break the token chart while measured zeroes stay at zero", () => {
+  const points: DisplayTrendPoint[] = [
+    { label: "a", inputTokens: 3, observed: true },
+    { label: "b", inputTokens: 0, observed: true },
+    { label: "c", inputTokens: 0, observed: false },
+    { label: "d", inputTokens: 5, observed: true },
+    { label: "e", observed: true },
+    { label: "f", inputTokens: 0, observed: true },
+  ];
+  const values = points.map(measuredInputTokens);
+  const x = (index: number) => index;
+  const y = (value: number) => 10 - value;
+  const line = tokenTrendLinePath(values, x, y);
+  const area = tokenTrendAreaPath(values, x, y, 10);
+
+  assert.deepEqual(values, [3, 0, undefined, 5, undefined, 0]);
+  assert.equal((line.match(/M/g) ?? []).length, 3);
+  assert.equal((line.match(/C/g) ?? []).length, 1);
+  assert.equal((area.match(/Z/g) ?? []).length, 3);
+  assert.equal(measuredInputTokens({ label: "measured-zero", inputTokens: 0, observed: true }), 0);
+  assert.equal(measuredInputTokens({ label: "missing", inputTokens: 0, observed: false }), undefined);
 });

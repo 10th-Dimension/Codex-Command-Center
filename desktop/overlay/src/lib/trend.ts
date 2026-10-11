@@ -13,6 +13,53 @@ export interface DisplayTrend {
   intervalLabel: string;
 }
 
+export function measuredInputTokens(point: DisplayTrendPoint): number | undefined {
+  const value = point.inputTokens;
+  return point.observed && typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+interface IndexedValue {
+  index: number;
+  value: number;
+}
+
+function trendSegments(values: readonly (number | undefined)[]) {
+  const segments: IndexedValue[][] = [];
+  let segment: IndexedValue[] = [];
+  values.forEach((value, index) => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      segment.push({ index, value });
+      return;
+    }
+    if (segment.length) segments.push(segment);
+    segment = [];
+  });
+  if (segment.length) segments.push(segment);
+  return segments;
+}
+
+function segmentLinePath(segment: readonly IndexedValue[], x: (index: number) => number, y: (value: number) => number) {
+  return segment.map((point, index) => index
+    ? `C${x(segment[index - 1].index) + (x(point.index) - x(segment[index - 1].index)) / 3},${y(segment[index - 1].value)} ${x(point.index) - (x(point.index) - x(segment[index - 1].index)) / 3},${y(point.value)} ${x(point.index)},${y(point.value)}`
+    : `M${x(point.index)},${y(point.value)}`).join(" ");
+}
+
+/** Draw separate paths around missing buckets instead of treating them as measured zeroes. */
+export function tokenTrendLinePath(values: readonly (number | undefined)[], x: (index: number) => number, y: (value: number) => number) {
+  return trendSegments(values).map((segment) => segmentLinePath(segment, x, y)).join(" ");
+}
+
+/** Fill only observed segments; close each segment independently at the chart baseline. */
+export function tokenTrendAreaPath(values: readonly (number | undefined)[], x: (index: number) => number, y: (value: number) => number, baseline: number) {
+  return trendSegments(values).map((segment) => {
+    const first = segment[0];
+    const last = segment[segment.length - 1];
+    return `${segmentLinePath(segment, x, y)} L${x(last.index)},${baseline} L${x(first.index)},${baseline} Z`;
+  }).join(" ");
+}
+
 /** Put sparse materialized rollup rows on their actual time axis without querying raw events. */
 export function prepareOverlayTrend(source: readonly OverlayTrendPoint[], range: OverlayRange, asOf: string): DisplayTrend {
   const now = Date.parse(asOf);
