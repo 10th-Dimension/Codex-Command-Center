@@ -4,6 +4,7 @@ import type { CodexQuotaWindow, OverlaySnapshot, TelemetryBufferHealth } from ".
 import { codexEquivalentModelPriceLabel, codexPricingCoverageReasons } from "../../../src/lib/telemetry/pricing";
 import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../../../src/lib/overlay/account";
 import { telemetryFreshness } from "./lib/freshness";
+import { telemetryBufferStatus } from "./lib/buffer-status";
 import { applyWindowSettings, configureHotkeys, controlRelay, fetchOverlay, getAutostart, getNativeState, hideOverlay, loadSettings, onNativeAction, openDashboard, quitOverlay, recoverOverlay, saveSettings, setAutostart, setCorner, setLayout, startDrag, startResize, type NativeState } from "./lib/native";
 import { defaultDesktopOverlaySettings, needsPresetResize, overlayLayouts, overlayRanges, parseDesktopOverlaySettings, shouldPollRemote, textColorValue, type DesktopOverlaySettings, type OverlayLayout, type OverlayRange } from "./lib/settings";
 import { isUsableOverlaySnapshot, shouldReplaceOverlaySnapshot } from "./lib/snapshot";
@@ -375,9 +376,7 @@ function StatusDot({ state }: Readonly<{ state: string }>) { return <Circle clas
 function HealthChip({ label, status }: Readonly<{ label: string; status: string }>) { return <span className="health-chip"><StatusDot state={status} />{label}</span>; }
 function BufferStatus({ buffer }: Readonly<{ buffer?: TelemetryBufferHealth }>) {
   if (!buffer) return null;
-  const state = buffer.replayState === "replaying" ? "replaying" : buffer.replayState === "degraded" ? "degraded" : buffer.queuedBatches ? "buffering" : "connected";
-  const label = buffer.replayState === "replaying" ? `OTel delivery replaying${buffer.queuedBatches ? ` · ${buffer.queuedBatches}` : ""}` : buffer.queuedBatches ? `OTel delivery buffered · ${buffer.queuedBatches}` : buffer.droppedBatches ? `OTel delivery degraded · ${buffer.droppedBatches} dropped` : "OTel delivery live";
-  const title = `${buffer.queuedBatches} queued batch${buffer.queuedBatches === 1 ? "" : "es"}${buffer.oldestQueuedAgeSeconds === undefined ? "" : ` · oldest ${buffer.oldestQueuedAgeSeconds}s`}${buffer.droppedBatches ? ` · ${buffer.droppedBatches} dropped` : ""}`;
+  const { state, label, title } = telemetryBufferStatus(buffer);
   return <span className="buffer-status" title={title}><StatusDot state={state} />{label}</span>;
 }
 function SectionTitle({ title, note }: Readonly<{ title: string; note?: string }>) { return <div className="section-title"><b>{title}</b>{note ? <span title={note}>{note}</span> : null}</div>; }
