@@ -17,6 +17,8 @@ import {
   type PlatformSourceId,
 } from "@/lib/platform/registry";
 import { resolveCodexPricingRate } from "@/lib/telemetry/pricing";
+import { PlatformIntelligencePanel } from "@/components/platform/platform-intelligence-panel";
+import { PlatformXPosts } from "@/components/platform/platform-x-posts";
 
 const gpt61Price = resolveCodexPricingRate(GPT_61_SOL.id);
 
@@ -26,10 +28,13 @@ export function PlatformPage() {
       <div>
         <span className="platform-eyebrow">OPENAI · CODEX · VERIFIED METADATA</span>
         <h1>Platform intelligence</h1>
-        <p>Official product facts, this machine’s observed Codex baseline, and the limits of what the telemetry can prove—kept separate.</p>
+        <p>Major AI launches and capabilities, official OpenAI product facts, this machine’s observed Codex baseline, and what the telemetry can prove—kept separate.</p>
       </div>
       <div className="platform-verified"><span>Metadata verified</span><time dateTime={PLATFORM_VERIFIED_AT}>{PLATFORM_VERIFIED_AT.replace("T", " ").replace(".000Z", " UTC")}</time><small>Sep 29 local runtime and release audit</small></div>
     </header>
+
+    <PlatformIntelligencePanel />
+    <PlatformXPosts />
 
     <section className="platform-section" aria-labelledby="platform-updates-title">
       <SectionHeading eyebrow="RELEASES, CAPABILITIES & ROLLOUT STATE" title="Product and release intelligence" id="platform-updates-title" />
