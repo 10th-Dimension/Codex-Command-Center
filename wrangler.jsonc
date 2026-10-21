@@ -5,7 +5,7 @@
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
-	"main": "vinext/server/fetch-handler",
+	"main": "src/worker.ts",
 	"assets": {
 		"directory": "dist/client",
 		"not_found_handling": "none",
@@ -31,6 +31,15 @@
 			"migrations_dir": "migrations"
 		}
 	],
+	"kv_namespaces": [
+		{
+			"binding": "PLATFORM_INTELLIGENCE",
+			"id": "312c92051f5e4d358b93a627775d150c"
+		}
+	],
+	"triggers": {
+		"crons": ["0 */6 * * *"]
+	},
 	"vars": {
 		"CODEX_TELEMETRY_RETENTION_DAYS": "30",
 		"GITHUB_OWNER": "10th-Dimension",

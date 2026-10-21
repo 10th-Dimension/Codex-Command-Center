@@ -144,7 +144,9 @@ test("dashboard exposes distinct workspace destinations and maps legacy routes",
   assert.deepEqual(navigationItems.map((item) => [item.label, item.href]), [["Overview", "/"], ["Usage", "/?section=usage"], ["Activity", "/?section=activity"], ["Platform", "/platform"], ["GitHub", "/github"]]);
   assert.equal(codexWorkspaceMode(), "overview");
   assert.equal(codexWorkspaceMode("usage"), "usage");
-  assert.equal(codexWorkspaceMode("sessions"), "usage");
+  assert.equal(codexWorkspaceMode("sessions"), "activity");
+  assert.equal(codexWorkspaceMode("tools"), "activity");
+  assert.equal(codexWorkspaceMode("data-health"), "activity");
   assert.equal(codexWorkspaceMode("activity"), "activity");
   assert.equal(codexWorkspaceMode("forensics"), "activity");
   assert.equal(legacySectionRedirects.usage, "/?section=usage");
