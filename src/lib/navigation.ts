@@ -23,8 +23,8 @@ export const navigationItems: NavigationItem[] = [
 
 export type CodexWorkspaceMode = "overview" | "usage" | "activity";
 
-const usageSections = new Set(["usage", "sessions", "tools", "data-health"]);
-const activitySections = new Set(["activity", "forensics"]);
+const usageSections = new Set(["usage"]);
+const activitySections = new Set(["activity", "sessions", "tools", "forensics", "data-health"]);
 
 export function codexWorkspaceMode(section?: string): CodexWorkspaceMode {
   if (section && usageSections.has(section)) return "usage";

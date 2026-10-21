@@ -17,6 +17,8 @@ import {
   type PlatformSourceId,
 } from "@/lib/platform/registry";
 import { resolveCodexPricingRate } from "@/lib/telemetry/pricing";
+import { PlatformIntelligencePanel } from "@/components/platform/platform-intelligence-panel";
+import { PlatformXPosts } from "@/components/platform/platform-x-posts";
 
 const gpt61Price = resolveCodexPricingRate(GPT_61_SOL.id);
 
@@ -26,10 +28,13 @@ export function PlatformPage() {
       <div>
         <span className="platform-eyebrow">OPENAI · CODEX · VERIFIED METADATA</span>
         <h1>Platform intelligence</h1>
-        <p>Official product facts, this machine’s observed Codex baseline, and the limits of what the telemetry can prove—kept separate.</p>
+        <p>Major AI launches and capabilities, official OpenAI product facts, this machine’s observed Codex baseline, and current telemetry coverage—kept separate.</p>
       </div>
       <div className="platform-verified"><span>Metadata verified</span><time dateTime={PLATFORM_VERIFIED_AT}>{PLATFORM_VERIFIED_AT.replace("T", " ").replace(".000Z", " UTC")}</time><small>Sep 29 local runtime and release audit</small></div>
     </header>
+
+    <PlatformIntelligencePanel />
+    <PlatformXPosts />
 
     <section className="platform-section" aria-labelledby="platform-updates-title">
       <SectionHeading eyebrow="RELEASES, CAPABILITIES & ROLLOUT STATE" title="Product and release intelligence" id="platform-updates-title" />
@@ -120,10 +125,14 @@ export function PlatformPage() {
       </section>
 
       <section className="platform-section" aria-labelledby="platform-observability-title">
-        <SectionHeading eyebrow="NO INFERRED AGENT GRAPH" title="What telemetry can prove" id="platform-observability-title" />
+        <SectionHeading eyebrow="CURRENT DATA COVERAGE" title="Telemetry coverage" id="platform-observability-title" />
         <article className="platform-panel">
-          <ul className="platform-boundary-list">{TELEMETRY_BOUNDARIES.map((item) => <li key={item.name}><span className={`platform-state ${item.state}`}>{item.state.replaceAll("_", " ")}</span><div><b>{item.name}</b><p>{item.detail}</p></div></li>)}</ul>
-          <p className="platform-note">Existing token, session, tool, quota, trend, composition, and pricing history remains on its current ingestion and D1 paths. Product metadata is bundled static data and never written per session or poll.</p>
+          <p className="platform-coverage-explainer">These labels describe the limits of the data source, not a telemetry failure. The regular feed supplies the Usage and Activity summaries; it does not record every execution detail or connect to a Codex Cloud task provider.</p>
+          <details className="platform-details platform-coverage-details">
+            <summary>Why 3 fields are not captured and 1 provider is not connected</summary>
+            <ul className="platform-boundary-list">{TELEMETRY_BOUNDARIES.map((item) => <li key={item.name}><span className={`platform-state ${item.state}`}>{item.state === "not_captured" ? "Not captured" : "Not connected"}</span><div><b>{item.name}</b><p>{item.detail}</p></div></li>)}</ul>
+          </details>
+          <p className="platform-note">Token, session, tool, quota, trend, composition, and pricing history stays on its existing ingestion and D1 paths. The release headline cache uses Cloudflare KV; refreshing it does not write D1. Static capability metadata remains bundled with this app.</p>
         </article>
       </section>
     </div>
