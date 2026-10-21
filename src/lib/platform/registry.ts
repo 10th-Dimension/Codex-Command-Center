@@ -76,13 +76,13 @@ export const PLATFORM_SOURCES = {
     effectiveDate: "2026-09-29",
   },
   codexSource: {
-    sourceId: "openai-codex-tui-slash-command-85eabb59",
+    sourceId: "openai-codex-tui-slash-command-bd5a8365",
     sourceType: "source_code",
-    title: "OpenAI Codex CLI/TUI slash command definitions (upstream main)",
-    url: "https://github.com/openai/codex/blob/85eabb59dcc1ba7ee22de8172f4e90ce3af0e49d/codex-rs/tui/src/slash_command.rs",
-    revision: "85eabb59dcc1ba7ee22de8172f4e90ce3af0e49d",
+    title: "OpenAI Codex CLI/TUI slash command definitions (pinned upstream source)",
+    url: "https://github.com/openai/codex/blob/bd5a836567bf4182f327f08ac4af626525705806/codex-rs/tui/src/slash_command.rs",
+    revision: "bd5a836567bf4182f327f08ac4af626525705806",
     authority: "official_source_code",
-    verifiedAt: previouslyVerified,
+    verifiedAt: "2026-10-21T21:05:41.000Z",
   },
   desktopCommands: {
     sourceId: "codex-desktop-command-reference",
@@ -347,6 +347,7 @@ const cliCommands: readonly CliCommandTuple[] = [
   ["/app", "Open the Codex app integration where supported.", "integration"],
   ["/init", "Create or update project instruction files.", "workspace"],
   ["/compact", "Compact the current conversation context.", "context"],
+  ["/config", "Configure Codex preferences.", "settings"],
   ["/recap", "Summarize recent session activity.", "session"],
   ["/plan", "Set or inspect the current plan.", "workflow"],
   ["/voice", "Start voice interaction.", "input"],
@@ -383,6 +384,8 @@ const cliCommands: readonly CliCommandTuple[] = [
   ["/stop", "Stop or clean up a running task.", "runtime", "normal", ["/clean"]],
   ["/clear", "Clear the current terminal view.", "settings"],
   ["/test-approval", "Exercise approval UI in debug builds.", "safety", "debug"],
+  ["/presets", "Run or save reusable prompts and slash commands.", "workflow"],
+  ["/daybreak", "Turn Daybreak on or off.", "security"],
   ["/subagents", "Inspect child agents associated with the session.", "agents"],
 ];
 

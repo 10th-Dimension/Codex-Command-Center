@@ -67,6 +67,10 @@ test("command registries separate upstream CLI/TUI source, desktop docs, and loc
   for (const command of ["/voice", "/goal", "/agents", "/subagents", "/memories", "/apps", "/plugins", "/setup-default-sandbox", "/approve"]) {
     assert.ok(cliNames.has(command), command);
   }
+  for (const command of ["/config", "/presets", "/daybreak"]) {
+    assert.ok(cliNames.has(command), command);
+  }
+  assert.equal(CODEX_CLI_COMMANDS.length, 63);
   for (const incorrectCommand of ["/multi-agents", "/elevate-sandbox", "/auto-review"]) {
     assert.ok(!cliNames.has(incorrectCommand), incorrectCommand);
   }
@@ -78,6 +82,8 @@ test("command registries separate upstream CLI/TUI source, desktop docs, and loc
   assert.ok(!CODEX_DESKTOP_COMMANDS.some(({ command }) => command === "/plugins"));
   assert.ok(LOCAL_CODEX_RUNTIME.topLevelCommands.includes("app-server"));
   assert.equal(PLATFORM_SOURCES.codexSource.authority, "official_source_code");
+  assert.equal(PLATFORM_SOURCES.codexSource.revision, "bd5a836567bf4182f327f08ac4af626525705806");
+  assert.equal(PLATFORM_SOURCES.codexSource.url?.includes(PLATFORM_SOURCES.codexSource.revision ?? ""), true);
   assert.equal(PLATFORM_SOURCES.devDayEvent.effectiveDate, "2026-09-29");
   assert.equal(PLATFORM_SOURCES.devDayEvent.authority, "official_event");
   assert.equal(PLATFORM_SOURCES.desktopCommands.authority, "official_help_center");
