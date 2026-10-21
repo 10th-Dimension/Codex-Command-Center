@@ -431,10 +431,10 @@ export const USAGE_RESET_SEMANTICS = [
 ] as const;
 
 export const TELEMETRY_BOUNDARIES = [
-  { name: "Served processing tier", state: "unknown", detail: "The current ingestion/model rollups do not capture the API response service_tier." },
-  { name: "Parent/child agent lifecycle", state: "unknown", detail: "An agent name may be observed, but parent IDs, lifecycle, and reliable delegation edges are not materialized." },
-  { name: "Local/cloud/remote execution target", state: "unknown", detail: "No trusted execution-target field is currently normalized for this telemetry source." },
-  { name: "Cloud-task telemetry", state: "unavailable", detail: "No authenticated Codex Cloud task telemetry provider is configured in this application." },
+  { name: "Served processing tier", state: "not_captured", detail: "The current ingestion/model rollups do not capture the API response service_tier." },
+  { name: "Parent/child agent lifecycle", state: "not_captured", detail: "An agent name may be observed, but parent IDs, lifecycle, and reliable delegation edges are not materialized." },
+  { name: "Local/cloud/remote execution target", state: "not_captured", detail: "No trusted execution-target field is currently normalized for this telemetry source." },
+  { name: "Cloud-task telemetry", state: "not_connected", detail: "No authenticated Codex Cloud task telemetry provider is configured in this application." },
 ] as const;
 
 export const OTHER_REVIEWED_SURFACES = [

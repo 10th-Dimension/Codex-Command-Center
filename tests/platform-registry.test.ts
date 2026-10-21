@@ -89,13 +89,13 @@ test("command registries separate upstream CLI/TUI source, desktop docs, and loc
   assert.equal("effectiveDate" in PLATFORM_SOURCES.space, false);
 });
 
-test("reset kinds and missing telemetry fields are explicitly distinct and unknown", () => {
+test("reset kinds and telemetry coverage limits are explicit and distinct", () => {
   assert.deepEqual(USAGE_RESET_SEMANTICS.map(({ id }) => id), ["automatic-window", "banked", "global-promotional", "purchased-instant", "credits"]);
   assert.match(USAGE_RESET_SEMANTICS.find(({ id }) => id === "banked")?.field ?? "", /expiresAt/);
   assert.match(USAGE_RESET_SEMANTICS.find(({ id }) => id === "global-promotional")?.field ?? "", /not exposed/);
   assert.match(USAGE_RESET_SEMANTICS.find(({ id }) => id === "purchased-instant")?.field ?? "", /not exposed/);
   assert.match(USAGE_RESET_SEMANTICS.find(({ id }) => id === "credits")?.observation ?? "", /never derived/);
-  assert.ok(TELEMETRY_BOUNDARIES.every(({ state }) => state === "unknown" || state === "unavailable"));
+  assert.deepEqual(TELEMETRY_BOUNDARIES.map(({ state }) => state), ["not_captured", "not_captured", "not_captured", "not_connected"]);
   assert.ok(OTHER_REVIEWED_SURFACES.some(({ title }) => title === "ChatGPT Space"));
 });
 

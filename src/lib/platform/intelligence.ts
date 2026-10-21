@@ -8,6 +8,7 @@ export interface PlatformIntelligenceStory {
   excerpt: string;
   url: string;
   publishedAt: string;
+  xPostUrl?: string;
 }
 
 export interface PlatformFeedStatus {
@@ -196,7 +197,7 @@ function parseRss(body: string, source: FeedSource, now: Date): PlatformIntellig
     const description = cleanText(readTag(block, "description") || readTag(block, "summary") || readTag(block, "content:encoded"));
 
     if (!title || !url || !publishedAt || !isRecent(publishedAt, now) || !isRelevant(source.id, title, description)) continue;
-    stories.push(makeStory(source, title, description, url, publishedAt));
+    stories.push(makeStory(source, title, description, url, publishedAt, extractOfficialXPostUrl(block)));
   }
 
   return stories;
@@ -226,7 +227,7 @@ function parseApiChangelog(markdown: string, source: FeedSource, now: Date): Pla
 
     const month = new Date(Date.UTC(year, monthIndex, 1)).toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toLowerCase();
     const url = `${source.url.replace(/\.md$/, "")}#${month}-${day}`;
-    stories.push(makeStory(source, title, `${label}${excerpt ? ` · ${excerpt}` : ""}`, url, publishedAt));
+    stories.push(makeStory(source, title, `${label}${excerpt ? ` · ${excerpt}` : ""}`, url, publishedAt, extractOfficialXPostUrl(content.join("\n"))));
   };
 
   for (const line of lines) {
@@ -272,11 +273,31 @@ function isRelevant(sourceId: PlatformFeedSourceId, title: string, description: 
   return product && releaseSignal;
 }
 
-function makeStory(source: FeedSource, titleValue: string, excerptValue: string, url: string, publishedAt: string): PlatformIntelligenceStory {
+function makeStory(source: FeedSource, titleValue: string, excerptValue: string, url: string, publishedAt: string, xPostUrl?: string): PlatformIntelligenceStory {
   const title = truncate(titleValue, 180);
   const excerpt = truncate(cleanText(excerptValue), 340);
   const id = `${source.id}:${url}`;
-  return { id, sourceId: source.id, sourceName: source.name, title, excerpt, url, publishedAt };
+  return { id, sourceId: source.id, sourceName: source.name, title, excerpt, url, publishedAt, ...(xPostUrl ? { xPostUrl } : {}) };
+}
+
+function extractOfficialXPostUrl(value: string): string | undefined {
+  const decoded = decodeXml(value.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1"));
+  const candidates = decoded.match(/https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/[A-Za-z0-9_]+\/status\/\d+(?:\?[^\s"'<>)]*)?/gi) ?? [];
+  for (const candidate of candidates) {
+    try {
+      const url = new URL(candidate.replace(/[.,;]+$/, ""));
+      const host = url.hostname.toLowerCase();
+      if (url.protocol !== "https:" || !["x.com", "www.x.com", "twitter.com", "www.twitter.com"].includes(host)) continue;
+      const match = /^\/(OpenAI|OpenAIDevs)\/status\/(\d+)\/?$/i.exec(url.pathname);
+      if (match) {
+        const handle = match[1].toLowerCase() === "openaidevs" ? "OpenAIDevs" : "OpenAI";
+        return `https://x.com/${handle}/status/${match[2]}`;
+      }
+    } catch {
+      // Ignore malformed or unrelated social URLs in the feed content.
+    }
+  }
+  return undefined;
 }
 
 function dedupeStories(stories: PlatformIntelligenceStory[]): PlatformIntelligenceStory[] {
