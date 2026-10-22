@@ -251,7 +251,7 @@ function OverlayContent({ snapshot, relay, layout, freshness, now }: Readonly<{ 
   </div>;
   return <div className={`overlay-content overlay-content-${layout}`}>
     <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>Snapshot {freshness.label}</span></div>
-    <QuotaPanel account={snapshot.codexAccount} now={now} />
+    <QuotaPanel account={snapshot.codexAccount} now={now} expanded={layout === "expanded"} />
     <PricingPanel pricing={snapshot.pricing} />
     <div className="metric-grid primary"><Metric label="Input" value={summary.inputTokens} /><Metric label="Output" value={summary.outputTokens} /><Metric label="Cached" value={summary.cachedTokens} optionalMini /><Metric label="Reasoning" value={summary.reasoningTokens} /><Metric label="Tool tokens" value={summary.toolTokens} optionalMini /><Metric label="TTFT" value={summary.averageTtftMs} duration /><Metric label="Tools" value={summary.completedTools} /><Metric label="Errors" value={summary.failures} /></div>
     {layout === "expanded" ? <Expanded snapshot={snapshot} now={now} /> : null}
@@ -310,10 +310,10 @@ function MiniQuota({ account, now }: Readonly<{ account?: OverlaySnapshot["codex
   </div>;
 }
 
-function QuotaPanel({ account, now }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number }>) {
+function QuotaPanel({ account, now, expanded = false }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number; expanded?: boolean }>) {
   const windows = primaryWindows(account);
   if (!windows.length) return <div className="quota-panel unavailable"><span>Quota unavailable</span><small>{account?.status === "error" ? "App-server error" : "Local Codex account data unavailable"}</small></div>;
-  return <div className="quota-panel">{windows.slice(0, 2).map((window) => <QuotaRow key={window.slot} window={window} now={now} />)}</div>;
+  return <div className="quota-panel">{windows.slice(0, 2).map((window) => <QuotaRow key={window.slot} window={window} now={now} showDetails={expanded && window.kind === "7d"} />)}</div>;
 }
 
 function PricingPanel({ pricing }: Readonly<{ pricing?: OverlaySnapshot["pricing"] }>) {
@@ -328,10 +328,15 @@ function PricingPanel({ pricing }: Readonly<{ pricing?: OverlaySnapshot["pricing
   </section>;
 }
 
-function QuotaRow({ window, now }: Readonly<{ window: CodexQuotaWindow; now: number }>) {
+function QuotaRow({ window, now, showDetails = false }: Readonly<{ window: CodexQuotaWindow; now: number; showDetails?: boolean }>) {
   const countdown = resetCountdown(window.resetsAt, now);
   const absolute = absoluteResetTime(window.resetsAt);
-  return <div className="quota-row" title={absolute ? `${window.label} resets ${absolute}` : `${window.label} reset unavailable`}><span>{window.label}</span><i><b style={{ width: `${window.remainingPercent}%` }} /></i><strong>{Math.round(window.remainingPercent)}% left</strong><small>{countdown ? `${countdown}` : "—"}</small></div>;
+  const pace = showDetails ? estimateUsagePace(window, now) : undefined;
+  const projected = pace?.projectedExhaustionAt ? new Date(pace.projectedExhaustionAt).toLocaleString() : undefined;
+  const details = showDetails
+    ? [countdown ? `Resets in ${countdown}` : "Reset unavailable", pace ? `Linear pace ${pace.deltaPercent > 0 ? "+" : ""}${Math.round(pace.deltaPercent)}%` : undefined, projected ? `Projected ${projected}` : undefined].filter(Boolean).join(" · ")
+    : countdown ?? "—";
+  return <div className="quota-row" title={absolute ? `${window.label} resets ${absolute}` : `${window.label} reset unavailable`}><span>{window.label}</span><i><b style={{ width: `${window.remainingPercent}%` }} /></i><strong>{Math.round(window.remainingPercent)}% left</strong><small className={showDetails ? "quota-row-details" : undefined}>{details}</small></div>;
 }
 
 function AccountDetails({ account, now }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number }>) {
@@ -339,9 +344,12 @@ function AccountDetails({ account, now }: Readonly<{ account?: OverlaySnapshot["
   const extraLimits = account.limits.slice(1);
   const credits = account.limits.map((limit) => limit.credits).find(Boolean);
   const activity = account.activity;
+  const weeklyWindow = primaryWindows(account).find((window) => window.kind === "7d");
+  const quotaWindows = account.limits.flatMap((limit) => limit.windows.map((window) => ({ limit, window })))
+    .filter(({ window }) => window !== weeklyWindow);
   return <>
     <section><SectionTitle title="Account quota" note={account.planType ? `${account.planType} plan` : undefined} /><div className="account-facts"><span>Included usage<b>{account.ordinaryUsageAllowed === false ? "Blocked" : account.ordinaryUsageAllowed === true ? "Available" : "Unknown"}</b></span><span>Usage credits<b title={credits?.balance ? `${credits.balance} credits` : undefined}>{credits?.unlimited ? "Unlimited" : credits?.balance ? `${formatCreditBalance(credits.balance)} credits` : "Unavailable"}</b></span><span>Banked resets<b>{account.resetCredits ? account.resetCredits.availableCount : "Unavailable"}</b></span></div></section>
-    {account.limits.flatMap((limit) => limit.windows.map((window) => ({ limit, window }))).map(({ limit, window }, index) => <section key={`${limit.limitId ?? "default"}-${window.slot}-${index}`}><SectionTitle title={limit.normalModelSlug ?? limit.limitName ?? window.label} note={window.label} /><QuotaDetail window={window} now={now} /></section>)}
+    {quotaWindows.map(({ limit, window }, index) => <section key={`${limit.limitId ?? "default"}-${window.slot}-${index}`}><SectionTitle title={limit.normalModelSlug ?? limit.limitName ?? window.label} note={window.label} /><QuotaDetail window={window} now={now} /></section>)}
     {extraLimits.length ? <section><SectionTitle title="Additional limit pools" note={`${extraLimits.length}`} /><div className="extra-limits">{extraLimits.map((limit) => <span key={limit.limitId ?? limit.limitName}><b>{limit.limitName ?? limit.limitId ?? "Usage limit"}</b><small>{limit.normalModelSlug ?? "Model association unavailable"}</small></span>)}</div></section> : null}
     {activity ? <section><SectionTitle title="Account Activity" note="OpenAI backend" /><div className="account-facts"><span>Lifetime tokens<b>{numberLabel(activity.lifetimeTokens)}</b></span><span>Current streak<b>{activity.currentStreakDays === undefined ? "Unavailable" : `${activity.currentStreakDays}d`}</b></span><span>Peak daily<b>{numberLabel(activity.peakDailyTokens)}</b></span></div><p className="account-note">Daily activity bucket timezone semantics are backend-defined and are not merged with OTel history.</p></section> : null}
   </>;

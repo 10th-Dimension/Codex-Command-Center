@@ -166,3 +166,6 @@ footer { position: relative; justify-content: space-between; flex-wrap: wrap; ga
 .layout-standard .standard-trend .spark { height: 64px; }
 .layout-standard .standard-trend .trend-caption { display: none; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+.quota-row > small.quota-row-details { grid-column: 1 / -1; justify-self: stretch; line-height: 1.35; white-space: normal; }
+.layout-expanded .quota-row > small.quota-row-details { grid-row: 4; }
