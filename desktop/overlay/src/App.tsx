@@ -245,13 +245,13 @@ function OverlayContent({ snapshot, relay, layout, freshness, now }: Readonly<{ 
   </div>;
   if (layout === "standard") return <div className="overlay-content overlay-content-standard">
     <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>Snapshot {freshness.label}</span></div>
-    <QuotaPanel account={snapshot.codexAccount} now={now} />
+    <QuotaPanel account={snapshot.codexAccount} now={now} showWeeklyDetails />
     <div className="metric-grid standard-metrics"><Metric label="Input" value={summary.inputTokens} /><Metric label="Output" value={summary.outputTokens} /><Metric label="Tools" value={summary.completedTools} /><Metric label="Errors" value={summary.failures} /></div>
     <section className="standard-trend"><SectionTitle title="Token trend" note={`${snapshot.range.toUpperCase()} · ${snapshot.range === "24h" ? "10m" : "1d"}`} /><TokenTrendChart points={snapshot.tokenTrend} range={snapshot.range} asOf={snapshot.generatedAt} /></section>
   </div>;
   return <div className={`overlay-content overlay-content-${layout}`}>
     <div className="identity-row"><Identity session={session} /><span className={`freshness ${freshness.state}`}>Snapshot {freshness.label}</span></div>
-    <QuotaPanel account={snapshot.codexAccount} now={now} expanded={layout === "expanded"} />
+    <QuotaPanel account={snapshot.codexAccount} now={now} showWeeklyDetails={layout === "expanded"} />
     <PricingPanel pricing={snapshot.pricing} />
     <div className="metric-grid primary"><Metric label="Input" value={summary.inputTokens} /><Metric label="Output" value={summary.outputTokens} /><Metric label="Cached" value={summary.cachedTokens} optionalMini /><Metric label="Reasoning" value={summary.reasoningTokens} /><Metric label="Tool tokens" value={summary.toolTokens} optionalMini /><Metric label="TTFT" value={summary.averageTtftMs} duration /><Metric label="Tools" value={summary.completedTools} /><Metric label="Errors" value={summary.failures} /></div>
     {layout === "expanded" ? <Expanded snapshot={snapshot} now={now} /> : null}
@@ -310,10 +310,10 @@ function MiniQuota({ account, now }: Readonly<{ account?: OverlaySnapshot["codex
   </div>;
 }
 
-function QuotaPanel({ account, now, expanded = false }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number; expanded?: boolean }>) {
+function QuotaPanel({ account, now, showWeeklyDetails = false }: Readonly<{ account?: OverlaySnapshot["codexAccount"]; now: number; showWeeklyDetails?: boolean }>) {
   const windows = primaryWindows(account);
   if (!windows.length) return <div className="quota-panel unavailable"><span>Quota unavailable</span><small>{account?.status === "error" ? "App-server error" : "Local Codex account data unavailable"}</small></div>;
-  return <div className="quota-panel">{windows.slice(0, 2).map((window) => <QuotaRow key={window.slot} window={window} now={now} showDetails={expanded && window.kind === "7d"} />)}</div>;
+  return <div className="quota-panel">{windows.slice(0, 2).map((window) => <QuotaRow key={window.slot} window={window} now={now} showDetails={showWeeklyDetails && window.kind === "7d"} />)}</div>;
 }
 
 function PricingPanel({ pricing }: Readonly<{ pricing?: OverlaySnapshot["pricing"] }>) {
