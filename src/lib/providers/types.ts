@@ -458,12 +458,6 @@ export interface CodexTelemetrySnapshot {
 
 export interface CodexTelemetryForensics {
   activity: CodexActivityRecord[];
-  recentErrors: CodexActivityRecord[];
-  categories: CodexTelemetryBreakdown[];
-  approvals: CodexTelemetryBreakdown[];
-  sandboxPolicies: CodexTelemetryBreakdown[];
-  mcpServers: CodexTelemetryBreakdown[];
-  networkDecisions: CodexTelemetryBreakdown[];
   loadedAt: string;
 }
 

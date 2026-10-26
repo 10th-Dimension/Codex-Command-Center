@@ -22,6 +22,7 @@ interface MaintenanceResult {
 
 interface MaintenanceState {
   lastCompletedAt?: number;
+  lastAttemptAt?: number;
   inFlight?: Promise<MaintenanceResult>;
   cleanupBacklog?: boolean;
 }
@@ -95,6 +96,8 @@ async function runMaintenance(database: D1DatabaseLike, retentionDays: number, n
   maintenanceStates.set(database, state);
   if (state.inFlight) return state.inFlight;
   if (state.lastCompletedAt !== undefined && now.getTime() - state.lastCompletedAt < intervalMs) return emptyMaintenance();
+  if (state.lastAttemptAt !== undefined && now.getTime() - state.lastAttemptAt < intervalMs) return emptyMaintenance();
+  state.lastAttemptAt = now.getTime();
 
   const pending = (async () => {
     let schemaUnavailable = false;

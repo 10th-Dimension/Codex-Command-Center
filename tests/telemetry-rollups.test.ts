@@ -35,6 +35,7 @@ class SnapshotD1 implements D1DatabaseLike {
   prepare(sql: string) { const statement = new Statement(this, sql); this.statements.push(statement); return statement; }
   async batch<T>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> { return statements.map((statement) => this.execute(statement as Statement) as D1ResultLike<T>); }
   execute(statement: Statement): D1ResultLike {
+    if (statement.sql.startsWith("INSERT INTO codex_snapshot_refresh_lease")) return { success: true, meta: { changes: 1 } };
     if (statement.sql.includes("FROM codex_rollup_hourly")) return { success: true, results: this.hourlyRows };
     if (statement.sql.includes("FROM codex_rollup_model_hourly")) return { success: true, results: this.modelRows.slice(0, 8) };
     if (statement.sql.includes("FROM codex_rollup_reasoning_hourly")) return { success: true, results: [{ label: "xhigh", count: 2 }] };

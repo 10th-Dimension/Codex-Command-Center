@@ -148,7 +148,7 @@ function ActivityWorkspace({ data, usage, summary, latest, detailOpen }: Readonl
     <div className="command-details">
       <SessionsDetail open={detailOpen("sessions")} telemetry={telemetry} />
       <ToolsDetail open={detailOpen("tools")} summary={summary} usage={usage} />
-      <Detail title="Forensics" open={detailOpen("forensics") || Boolean(data.forensics)}>{data.forensics ? <Forensics result={data.forensics} /> : <div className="forensics-gate"><ShieldCheck size={18} /><div><b>Raw telemetry is not loaded by default.</b><p>This explicit action runs the bounded 30-day forensic query path and refuses windows above 50,000 raw events. Normal page and overlay reads never use it.</p></div><Link href={`/?range=${data.range}&section=forensics&forensics=1`}>Load forensics</Link></div>}</Detail>
+      <Detail title="Forensics" open={detailOpen("forensics") || Boolean(data.forensics)}>{data.forensics ? <Forensics result={data.forensics} /> : <div className="forensics-gate"><ShieldCheck size={18} /><div><b>Raw telemetry is not loaded by default.</b><p>Load the latest 25 privacy-filtered events from the last 30 days. Older retained events remain available for explicit forensic analysis.</p></div><Link prefetch={false} href={`/?range=${data.range}&section=forensics&forensics=1`}>Load forensics</Link></div>}</Detail>
       <DataHealthDetail open={detailOpen("data-health")} telemetry={telemetry} />
     </div>
   </>;
@@ -269,7 +269,7 @@ function GitHubSectionNav({ section }: Readonly<{ section?: string }>) {
 
 function Forensics({ result }: Readonly<{ result: NonNullable<CodexData["forensics"]> }>) {
   if (result.status === "unavailable") return <EmptyState compact title="Forensics unavailable" description={result.reason} />;
-  return <><div className="forensics-loaded"><AlertTriangle size={14} /><span>Explicit raw read completed at {formatDate(result.data.loadedAt)}. It will not repeat unless this URL is loaded again.</span></div>{result.data.activity.length ? <div className="compact-list">{result.data.activity.slice(0, 25).map((event) => <EventRecord event={event} key={event.id} />)}</div> : <EmptyState compact title="No forensic events" description="No retained raw events were returned." />}</>;
+  return <><div className="forensics-loaded"><AlertTriangle size={14} /><span>{result.data.activity.length} recent retained events loaded at {formatDate(result.data.loadedAt)}.{result.meta?.bounds?.truncated ? " Older events are omitted." : ""} Reloading this URL loads them again.</span></div>{result.data.activity.length ? <div className="compact-list">{result.data.activity.slice(0, 25).map((event) => <EventRecord event={event} key={event.id} />)}</div> : <EmptyState compact title="No forensic events" description="No retained raw events were returned." />}</>;
 }
 function EventRecord({ event }: Readonly<{ event: CodexActivityRecord }>) { return <div><span><b>{event.eventName}</b><small>{event.category} · {event.model ?? "model unavailable"}</small></span><span>{event.toolName ?? event.status ?? "No additional safe dimension"}</span><time>{formatAge(event.occurredAt)}</time></div>; }
 function RangeLinks({ range, section }: Readonly<{ range: DashboardRange; section?: string }>) { return <div className="command-range">{(["24h", "7d", "30d"] as DashboardRange[]).map((item) => {
