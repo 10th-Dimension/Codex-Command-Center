@@ -126,8 +126,8 @@ try {
   await query(`INSERT INTO codex_dashboard_snapshot(range,generated_at,payload_json) VALUES
     ('24h',datetime('now'),${quoted}),('7d',datetime('now'),replace(${quoted},'\"24h\"','\"7d\"')),('30d',datetime('now'),replace(${quoted},'\"24h\"','\"30d\"'))`);
 
-  const overlay = await query("SELECT range,generated_at,payload_json FROM codex_dashboard_snapshot WHERE range='24h' LIMIT 1");
-  const codexPage = await query("SELECT range,generated_at,payload_json FROM codex_dashboard_snapshot WHERE range IN ('24h','7d','30d')");
+  let overlay = await query("SELECT range,generated_at,payload_json FROM codex_dashboard_snapshot WHERE range='24h' LIMIT 1");
+  let codexPage = await query("SELECT range,generated_at,payload_json FROM codex_dashboard_snapshot WHERE range IN ('24h','7d','30d')");
   const forensicPlan = await query("EXPLAIN QUERY PLAN SELECT model,COUNT(*) FROM codex_telemetry_events_all WHERE occurred_at>=datetime('now','-30 days') GROUP BY model");
   const forensicPreflightPlan = await query("EXPLAIN QUERY PLAN SELECT id FROM codex_telemetry_events_all WHERE occurred_at>=datetime('now','-30 days') ORDER BY occurred_at DESC LIMIT 50001");
 
@@ -154,7 +154,7 @@ try {
   const auditNow = new Date("2026-10-26T12:00:00.000Z");
   await query("DROP INDEX idx_codex_session_summary_last_seen");
   const oldSessionSql = "SELECT *,COUNT(*) OVER() AS range_session_count FROM codex_session_summary WHERE last_seen_at>='2026-10-25T12:00:00.000Z' ORDER BY last_seen_at DESC LIMIT 20";
-  const oldSession = await query(oldSessionSql);
+  let oldSession = await query(oldSessionSql);
   const oldSessionPlan = await query(`EXPLAIN QUERY PLAN ${oldSessionSql}`);
   assert.ok(oldSessionPlan.results.some((row) => /SCAN codex_session_summary/.test(row.detail)));
   await query("CREATE INDEX idx_codex_session_summary_last_seen ON codex_session_summary(last_seen_at DESC)");
@@ -180,6 +180,14 @@ try {
   platform = await getPlatformProxy({ configPath, persist: { path: join(persistence, "v3") }, remoteBindings: false });
   const applicationDatabase = platform.env.DB;
   assert.equal((await applicationDatabase.prepare("SELECT COUNT(*) AS n FROM codex_session_summary").first()).n, 50000, "D1 API and CLI must share the synthetic database");
+  // Measure both versions with the same API. CLI output omits these counters.
+  await applicationDatabase.prepare("DROP INDEX idx_codex_session_summary_last_seen").run();
+  oldSession = await applicationDatabase.prepare(oldSessionSql).all();
+  await applicationDatabase.prepare("CREATE INDEX idx_codex_session_summary_last_seen ON codex_session_summary(last_seen_at DESC)").run();
+  overlay = await applicationDatabase.prepare("SELECT range,generated_at,payload_json FROM codex_dashboard_snapshot WHERE range='24h' LIMIT 1").all();
+  codexPage = await applicationDatabase.prepare("SELECT range,generated_at,payload_json FROM codex_dashboard_snapshot WHERE range IN ('24h','7d','30d')").all();
+  assert.ok(overlay.meta?.rows_read > 0 && overlay.meta.rows_read <= 5, "overlay measured local reads must meet its budget");
+  assert.ok(codexPage.meta?.rows_read > 0 && codexPage.meta.rows_read <= 50, "Codex page measured local reads must meet its budget");
   const rebuilt = instrumentedDatabase(applicationDatabase);
   for (const range of ["24h", "7d", "30d"]) {
     const snapshot = await buildMaterializedSnapshot(rebuilt, range, auditNow);
@@ -188,9 +196,8 @@ try {
   assert.equal(rebuilt.executions.length, 12);
   assert.ok(rebuilt.executions.every((item) => !item.sql.includes("codex_telemetry_events")));
   const sessionRead = rebuilt.executions.find((item) => item.sql.includes("FROM codex_session_summary"));
-  if (oldSession.meta?.rows_read > 0 && sessionRead.rows_read > 0) {
-    assert.ok(sessionRead.rows_read < oldSession.meta.rows_read / 10, "indexed session rebuild must reduce measured local rows read");
-  }
+  assert.ok(oldSession.meta?.rows_read > 0 && sessionRead.rows_read > 0, "D1 API must expose nonzero local read measurements");
+  assert.ok(sessionRead.rows_read < oldSession.meta.rows_read / 10, "indexed session rebuild must reduce measured local rows read by more than 10x on this fixture");
   const afterSessionPlan = await applicationDatabase.prepare("EXPLAIN QUERY PLAN SELECT s.*,(SELECT COUNT(*) FROM codex_session_summary WHERE last_seen_at>='2026-10-25T12:00:00.000Z') AS range_session_count FROM codex_session_summary s WHERE last_seen_at>='2026-10-25T12:00:00.000Z' ORDER BY last_seen_at DESC LIMIT 20").all();
   assert.ok(afterSessionPlan.results.some((row) => /COVERING INDEX idx_codex_session_summary_last_seen/.test(row.detail)));
   assert.ok(!afterSessionPlan.results.some((row) => /TEMP B-TREE|SCAN /.test(row.detail)));
@@ -205,6 +212,7 @@ try {
   const activityDatabase = instrumentedDatabase(applicationDatabase);
   assert.ok((await readTelemetryForensicActivity(activityDatabase, new Date())).activity.length <= 25);
   assert.equal(activityDatabase.executions.length, 1);
+  assert.ok(activityDatabase.executions[0].rows_read > 0 && activityDatabase.executions[0].rows_read <= 128, "visible forensics must read bounded local candidates, not scan retained history");
 
   console.log("D1 COST AUDIT (isolated local database; production was not accessed)");
   console.log("Synthetic compact seed rows:", 100);
