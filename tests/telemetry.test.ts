@@ -88,6 +88,7 @@ class FakeD1 implements D1DatabaseLike {
       return { success: true, meta: { changes: 1 } };
     }
     if (sql.startsWith("INSERT INTO codex_rollup_")) this.rollupInsertCount += 1;
+    if (sql.startsWith("INSERT INTO codex_snapshot_refresh_lease") || sql.startsWith("INSERT INTO codex_dashboard_snapshot")) return { success: true, meta: { changes: 1 } };
     if (statement.sql.includes("FROM codex_dashboard_snapshot")) return { success: true, results: this.snapshotRows };
     if (sql.startsWith("DELETE")) { this.deleted += 1; if (statement.sql.includes("codex_telemetry_events")) this.rawDeleteCount += 1; this.lastDeleteCutoff = String(statement.values[0]); return { success: true, meta: { changes: 0 } }; }
     return { success: true, results: [] };
@@ -472,6 +473,29 @@ test("retention cleanup follows the 30-day snapshot without slowing 24-hour refr
   assert.equal(database.deleted, 12, "30-day refresh resumes bounded retention cleanup");
 });
 
+test("maintenance failures back off within an isolate without dropping subsequent ingests", async () => {
+  class TransientD1 extends SnapshotTrackingD1 {
+    attempts = 0;
+    execute(statement: FakeStatement): D1ResultLike {
+      if (statement.sql.startsWith("SELECT range,generated_at FROM codex_dashboard_snapshot")) {
+        this.attempts += 1;
+        if (this.attempts === 1) throw new Error("transient storage failure");
+      }
+      return super.execute(statement);
+    }
+  }
+  const database = new TransientD1();
+  let current = Date.parse(now);
+  const options = { database, ingestKey, retentionDays: 30, now: () => new Date(current) };
+  assert.equal((await handleTelemetryIngest(requestFor(jsonPayload("codex.first")), options)).status, 503);
+  assert.equal((await handleTelemetryIngest(requestFor(jsonPayload("codex.second")), options)).status, 200);
+  assert.equal(database.attempts, 1);
+  current += 60000;
+  assert.equal((await handleTelemetryIngest(requestFor(jsonPayload("codex.third")), options)).status, 200);
+  assert.equal(database.attempts, 2);
+  assert.equal(database.insertedValues.length, 3);
+});
+
 test("a full raw-retention batch keeps draining on the next maintenance pass", async () => {
   const database = new BacklogD1();
   let current = Date.parse(now);
@@ -592,7 +616,7 @@ test("ingestion exposes bounded write-amplification diagnostics without creating
   const response = await handleTelemetryIngest(requestFor(jsonPayload()), { database, ingestKey, retentionDays: 30, now: () => new Date(now) });
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("x-codex-telemetry-accepted"), "1");
-  assert.equal(response.headers.get("x-codex-telemetry-d1-rows-written"), "13", "controlled metadata fixture measures one raw insert, three grouped rollups, four rollup cleanup statements, three snapshots, and two bounded raw cleanup statements");
+  assert.equal(response.headers.get("x-codex-telemetry-d1-rows-written"), "16", "controlled metadata fixture includes three durable claims as well as raw, rollup, snapshot, and cleanup writes");
   assert.ok(Number(response.headers.get("x-codex-telemetry-rollup-upserts")) > 0);
   assert.equal(response.headers.get("x-codex-telemetry-ingest-requests"), "1");
   assert.equal(database.insertedValues.length, 1);

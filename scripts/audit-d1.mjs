@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { buildMaterializedSnapshot, refreshStaleMaterializedSnapshots } from "../src/lib/telemetry/rollups.ts";
+import { readTelemetryForensicActivity } from "../src/lib/telemetry/database.ts";
 
 const databaseName = "codex-command-center-telemetry";
 const persistence = await mkdtemp(join(tmpdir(), "codex-d1-audit-"));
@@ -48,6 +50,39 @@ function cost(result) {
     statements: 1,
     rows_read: result.meta?.rows_read ?? "not exposed by local Wrangler",
     rows_written: result.meta?.rows_written ?? "not exposed by local Wrangler",
+  };
+}
+
+// Exercise the actual application SQL against the isolated local D1 instance.
+// Only synthetic bound values are expanded here; no remote execution is allowed.
+function instrumentedDatabase() {
+  const executions = [];
+  return {
+    executions,
+    prepare(sql) {
+      let values = [];
+      const execute = async () => {
+        let index = 0;
+        const bound = sql.replaceAll("?", () => {
+          const value = values[index++];
+          if (value === null) return "NULL";
+          if (typeof value === "number" && Number.isFinite(value)) return String(value);
+          if (typeof value === "string") return `'${value.replaceAll("'", "''")}'`;
+          throw new Error("Unsupported local audit binding");
+        });
+        assert.equal(index, values.length);
+        const result = await query(bound);
+        executions.push({ sql, ...cost(result), returned_rows: result.results.length });
+        return result;
+      };
+      const statement = { bind(...args) { values = args; return statement; }, all: execute, run: execute };
+      return statement;
+    },
+    async batch(statements) {
+      const results = [];
+      for (const statement of statements) results.push(await statement.all());
+      return results;
+    },
   };
 }
 
@@ -112,17 +147,70 @@ try {
   assert.ok(forensicPreflightPlan.results.some((row) => /idx_codex_telemetry_events_occurred_at/.test(String(row.detail))), "forensics preflight must index the legacy branch");
   assert.ok(forensicPreflightPlan.results.some((row) => /codex_telemetry_events_compact USING PRIMARY KEY \(occurred_at>\?\)/.test(String(row.detail))), "forensics preflight must range over the compact clustered primary key");
 
+  // Read amplification occurs during rebuilds too, not just snapshot GETs.
+  await query(`WITH RECURSIVE seq(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM seq WHERE n<49999)
+    INSERT INTO codex_session_summary(session_id,first_seen_at,last_seen_at,event_count)
+    SELECT 'session-'||n,'2026-10-01T00:00:00.000Z',CASE WHEN n<2000 THEN '2026-10-26T11:00:00.000Z' ELSE '2026-10-01T00:00:00.000Z' END,1 FROM seq`);
+  const auditNow = new Date("2026-10-26T12:00:00.000Z");
+  await query("DROP INDEX idx_codex_session_summary_last_seen");
+  const oldSessionSql = "SELECT *,COUNT(*) OVER() AS range_session_count FROM codex_session_summary WHERE last_seen_at>='2026-10-25T12:00:00.000Z' ORDER BY last_seen_at DESC LIMIT 20";
+  const oldSession = await query(oldSessionSql);
+  const oldSessionPlan = await query(`EXPLAIN QUERY PLAN ${oldSessionSql}`);
+  assert.ok(oldSessionPlan.results.some((row) => /SCAN codex_session_summary/.test(row.detail)));
+  await query("CREATE INDEX idx_codex_session_summary_last_seen ON codex_session_summary(last_seen_at DESC)");
+  await query(`WITH RECURSIVE seq(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM seq WHERE n<4463)
+    INSERT INTO codex_rollup_hourly(hour_start,event_count,input_tokens,input_samples)
+    SELECT strftime('%Y-%m-%dT%H:%M:%fZ','2026-10-26T12:00:00Z','-'||(n*10)||' minutes'),1,10,1 FROM seq`);
+  await query(`INSERT INTO codex_rollup_model_hourly(hour_start,model,event_count,input_tokens)
+    SELECT substr(hour_start,1,13)||':00:00.000Z',model,SUM(event_count),SUM(input_tokens)
+    FROM codex_rollup_hourly CROSS JOIN (SELECT 'gpt-6-sol' AS model UNION ALL SELECT 'gpt-6-luna' UNION ALL SELECT 'gpt-6-astra')
+    GROUP BY substr(hour_start,1,13),model`);
+  await query(`INSERT INTO codex_rollup_reasoning_hourly(hour_start,reasoning_effort,event_count)
+    SELECT substr(hour_start,1,13)||':00:00.000Z',reasoning_effort,SUM(event_count)
+    FROM codex_rollup_hourly CROSS JOIN (SELECT 'low' AS reasoning_effort UNION ALL SELECT 'medium' UNION ALL SELECT 'high')
+    GROUP BY substr(hour_start,1,13),reasoning_effort`);
+  const rebuilt = instrumentedDatabase();
+  for (const range of ["24h", "7d", "30d"]) {
+    const snapshot = await buildMaterializedSnapshot(rebuilt, range, auditNow);
+    assert.equal(snapshot.summary.sessions, range === "30d" ? 50000 : 2000);
+  }
+  assert.equal(rebuilt.executions.length, 12);
+  assert.ok(rebuilt.executions.every((item) => !item.sql.includes("codex_telemetry_events")));
+  const sessionRead = rebuilt.executions.find((item) => item.sql.includes("FROM codex_session_summary"));
+  if (oldSession.meta?.rows_read > 0 && sessionRead.rows_read > 0) {
+    assert.ok(sessionRead.rows_read < oldSession.meta.rows_read / 10, "indexed session rebuild must reduce measured local rows read");
+  }
+  const afterSessionPlan = await query("EXPLAIN QUERY PLAN SELECT s.*,(SELECT COUNT(*) FROM codex_session_summary WHERE last_seen_at>='2026-10-25T12:00:00.000Z') AS range_session_count FROM codex_session_summary s WHERE last_seen_at>='2026-10-25T12:00:00.000Z' ORDER BY last_seen_at DESC LIMIT 20");
+  assert.ok(afterSessionPlan.results.some((row) => /COVERING INDEX idx_codex_session_summary_last_seen/.test(row.detail)));
+  assert.ok(!afterSessionPlan.results.some((row) => /TEMP B-TREE|SCAN /.test(row.detail)));
+  // Invalidate only this disposable database's snapshots to exercise claims.
+  await query("DELETE FROM codex_dashboard_snapshot");
+  const refreshing = instrumentedDatabase();
+  assert.deepEqual((await refreshStaleMaterializedSnapshots(refreshing, auditNow)).refreshed, ["24h", "7d", "30d"]);
+  const beforeFresh = refreshing.executions.length;
+  assert.deepEqual((await refreshStaleMaterializedSnapshots(refreshing, auditNow)).refreshed, []);
+  assert.equal(refreshing.executions.length - beforeFresh, 1);
+  assert.ok(!refreshing.executions.at(-1).sql.includes("payload_json"));
+  const activityDatabase = instrumentedDatabase();
+  assert.ok((await readTelemetryForensicActivity(activityDatabase, new Date())).activity.length <= 25);
+  assert.equal(activityDatabase.executions.length, 1);
+
   console.log("D1 COST AUDIT (isolated local database; production was not accessed)");
   console.log("Synthetic compact seed rows:", 100);
   console.log("Compact raw insert:", { ...cost(compactSeed), expected_structures_per_event: 1, table: "occurred_at-leading WITHOUT ROWID primary key" });
   console.log("Migration-boundary fingerprint deduplication: PASS");
   console.log("Raw retention cleanup: two indexed 250-row primary-key half-batches, 500 rows maximum total, no compact outer table scan PASS");
-  console.log("Explicit forensic/raw path: 35 statements; the indexed 50,000-event maximum preflight limit runs before combined legacy/compact scans and grouped 30-day analytics.");
-  console.log("Overlay normal path:", { ...cost(overlay), returned_rows: overlay.results.length, raw_table_touched: false, budget: "<=5 PASS" });
-  console.log("Codex normal page:", { ...cost(codexPage), returned_rows: codexPage.results.length, raw_table_touched: false, budget: "<=50 PASS" });
+  console.log("Visible forensic action: one indexed query, at most 26 candidates per generation; full 35-statement analytics reader remains separately available with a 50,000-event preflight and consistent 30-day bounds.");
+  console.log("Overlay normal path:", { ...cost(overlay), returned_rows: overlay.results.length, raw_table_touched: false, returned_row_guard: "<=5 PASS" });
+  console.log("Codex normal page:", { ...cost(codexPage), returned_rows: codexPage.results.length, raw_table_touched: false, returned_row_guard: "<=50 PASS" });
   console.log("GitHub page:", { statements: 0, rows_read: 0, raw_table_touched: false, budget: "PASS" });
   console.log("Forensic example plan (explicit only):", forensicPlan.results);
-  console.log("Local metadata can differ from billed production D1 metrics; source-boundary assertions and returned-row bounds are authoritative architectural guards.");
+  console.log("Session rebuild before:", { ...cost(oldSession), plan: oldSessionPlan.results });
+  console.log("Snapshot rebuild statements (24h, 7d, 30d):", rebuilt.executions);
+  console.log("Session rebuild after plan:", afterSessionPlan.results);
+  console.log("Refresh and claim cost, including a fresh repeat:", refreshing.executions);
+  console.log("Visible forensic cost:", activityDatabase.executions);
+  console.log("Local rows_read metadata may be absent or zero/unimplemented and differs from billed production metrics. Returned rows prove only result bounds. Query plans and rebuild costs are reported separately; no production saving is claimed by this audit.");
 } finally {
   await rm(persistence, { recursive: true, force: true });
 }

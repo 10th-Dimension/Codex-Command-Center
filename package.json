@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-tests.mjs",
     "check:migrations": "node scripts/check-migrations.mjs",
-    "audit:d1": "node scripts/audit-d1.mjs",
+    "audit:d1": "node --import tsx scripts/audit-d1.mjs",
     "backfill:codex-rollups": "node --import tsx scripts/backfill-codex-rollups.mjs",
     "repair:pricing-attribution": "node scripts/repair-pricing-attribution.mjs",
     "telemetry:relay": "tsx scripts/telemetry-relay.ts",

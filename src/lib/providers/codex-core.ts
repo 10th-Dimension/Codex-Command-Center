@@ -9,7 +9,7 @@ import type {
   ProviderHealth,
 } from "@/lib/providers/types";
 import type { D1DatabaseLike } from "@/lib/telemetry/database";
-import { readTelemetryForensics, TelemetryForensicsLimitError } from "@/lib/telemetry/database";
+import { readTelemetryForensicActivity } from "@/lib/telemetry/database";
 import {
   readMaterializedSnapshots,
   type CodexMaterializedSnapshot,
@@ -247,20 +247,13 @@ export function createCodexTelemetryProvider(dependencies: CodexProviderDependen
       const runtime = await dependencies.getRuntime();
       if (!runtime.database) return unavailable("Codex telemetry storage is not available in this runtime.");
       try {
-        const data = await readTelemetryForensics(runtime.database, now());
+        const data = await readTelemetryForensicActivity(runtime.database, now());
         const loadedAt = now().toISOString();
         return connected({
           activity: data.activity,
-          recentErrors: data.recentErrors,
-          categories: data.categories,
-          approvals: data.approvals,
-          sandboxPolicies: data.sandboxPolicies,
-          mcpServers: data.mcpServers,
-          networkDecisions: data.networkDecisions,
           loadedAt,
-        }, loadedAt, { description: "Explicit 30-day forensic read", limit: 100, truncated: data.activity.length === 100 });
-      } catch (error) {
-        if (error instanceof TelemetryForensicsLimitError) return unavailable(error.message, "api");
+        }, loadedAt, { description: "Latest retained forensic events within 30 days", limit: 25, truncated: data.truncated });
+      } catch {
         return unavailable("Codex forensics could not be loaded safely.", "api");
       }
     },

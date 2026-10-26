@@ -511,7 +511,10 @@ export async function buildMaterializedSnapshot(database: D1DatabaseLike, range:
     SELECT *,COUNT(*) OVER() AS model_count,SUM(input_tokens+output_tokens) OVER() AS model_token_count
     FROM grouped ORDER BY CASE WHEN label='codex-auto-review' THEN 0 ELSE 1 END,count DESC LIMIT 65`).bind(pricingCutoff),
     database.prepare("SELECT reasoning_effort AS label,SUM(event_count) AS count FROM codex_rollup_reasoning_hourly WHERE hour_start>=? GROUP BY reasoning_effort ORDER BY count DESC LIMIT 8").bind(cutoff),
-    database.prepare("SELECT *,COUNT(*) OVER() AS range_session_count FROM codex_session_summary WHERE last_seen_at>=? ORDER BY last_seen_at DESC LIMIT 20").bind(cutoff),
+    // Count through the covering time index once; fetch only the newest 20
+    // complete rows. A window count forces every matching wide row into a sort.
+    database.prepare(`SELECT s.*,(SELECT COUNT(*) FROM codex_session_summary WHERE last_seen_at>=?) AS range_session_count
+      FROM codex_session_summary s WHERE last_seen_at>=? ORDER BY last_seen_at DESC LIMIT 20`).bind(cutoff, cutoff),
   ]);
   if (results.length !== 4) throw new Error("Telemetry snapshot batch returned an unexpected result count.");
   const hourly = resultRows(results[0] as unknown as D1ResultLike<HourlyRow>);
@@ -585,13 +588,14 @@ export async function buildMaterializedSnapshot(database: D1DatabaseLike, range:
   return snapshot;
 }
 
-export async function writeMaterializedSnapshot(database: D1DatabaseLike, snapshot: CodexMaterializedSnapshot): Promise<D1MutationResult> {
+export async function writeMaterializedSnapshot(database: D1DatabaseLike, snapshot: CodexMaterializedSnapshot, leaseToken?: string): Promise<D1MutationResult> {
   const payload = JSON.stringify(snapshot);
   if (payload.length > 262_144) throw new Error("Telemetry snapshot exceeded its privacy-safe size bound.");
   const result = await database.prepare(`INSERT INTO codex_dashboard_snapshot (range,generated_at,source_updated_at,payload_json)
-    VALUES (?,?,?,?) ON CONFLICT(range) DO UPDATE SET generated_at=excluded.generated_at,
+    SELECT ?,?,?,? ${leaseToken ? "WHERE EXISTS (SELECT 1 FROM codex_snapshot_refresh_lease WHERE range=? AND token=?)" : "WHERE 1"}
+    ON CONFLICT(range) DO UPDATE SET generated_at=excluded.generated_at,
     source_updated_at=excluded.source_updated_at,payload_json=excluded.payload_json`)
-    .bind(snapshot.range, snapshot.generatedAt, snapshot.sourceUpdatedAt ?? null, payload).run();
+    .bind(snapshot.range, snapshot.generatedAt, snapshot.sourceUpdatedAt ?? null, payload, ...(leaseToken ? [snapshot.range, leaseToken] : [])).run();
   if (!result.success) throw new Error("Telemetry snapshot write failed.");
   return {
     changes: result.meta?.changes ?? 0,
@@ -600,7 +604,7 @@ export async function writeMaterializedSnapshot(database: D1DatabaseLike, snapsh
 }
 
 export async function refreshStaleMaterializedSnapshots(database: D1DatabaseLike, now: Date) {
-  const state = await database.prepare("SELECT range,generated_at,payload_json FROM codex_dashboard_snapshot WHERE range IN ('24h','7d','30d')").all<SnapshotRow>();
+  const state = await database.prepare("SELECT range,generated_at FROM codex_dashboard_snapshot WHERE range IN ('24h','7d','30d')").all<Pick<SnapshotRow, "range" | "generated_at">>();
   const existing = new Map(resultRows(state).map((row) => [row.range, row]));
   const refreshed: TelemetryRange[] = [];
   let rowsWritten = 0;
@@ -609,12 +613,29 @@ export async function refreshStaleMaterializedSnapshots(database: D1DatabaseLike
     const row = existing.get(range);
     const generated = row ? Date.parse(row.generated_at) : Number.NaN;
     if (Number.isFinite(generated) && now.getTime() - generated < SNAPSHOT_TTL_MS[range]) continue;
-    const written = await writeMaterializedSnapshot(database, await buildMaterializedSnapshot(database, range, now));
+    const token = crypto.randomUUID();
+    // The freshness test and claim are one atomic statement. An isolate that
+    // read stale metadata before another published must also lose its claim.
+    // Keep failed claims for one minute to bound retries during an outage.
+    const claim = await database.prepare(`INSERT INTO codex_snapshot_refresh_lease(range,token,expires_at)
+      SELECT ?,?,? WHERE NOT EXISTS (SELECT 1 FROM codex_dashboard_snapshot WHERE range=? AND julianday(generated_at)>julianday(?))
+      ON CONFLICT(range) DO UPDATE SET token=excluded.token,expires_at=excluded.expires_at
+      WHERE codex_snapshot_refresh_lease.expires_at<=?`)
+      .bind(range, token, now.getTime() + 60_000, range, new Date(now.getTime() - SNAPSHOT_TTL_MS[range]).toISOString(), now.getTime()).run();
+    if (!claim.success) throw new Error("Telemetry snapshot claim failed.");
+    if ((claim.meta?.changes ?? 0) === 0) continue;
+    if (typeof claim.meta?.rows_written === "number") {
+      rowsWrittenObserved = true;
+      rowsWritten += claim.meta.rows_written;
+    }
+    const written = await writeMaterializedSnapshot(database, await buildMaterializedSnapshot(database, range, now), token);
     if (written.rowsWritten !== undefined) {
       rowsWrittenObserved = true;
       rowsWritten += written.rowsWritten;
     }
-    refreshed.push(range);
+    // An expired lease may have been taken by a new owner. Its token fences
+    // this writer, preventing an older build from replacing a newer snapshot.
+    if (written.changes > 0) refreshed.push(range);
   }
   return { refreshed, ...(rowsWrittenObserved ? { rowsWritten } : {}) };
 }
