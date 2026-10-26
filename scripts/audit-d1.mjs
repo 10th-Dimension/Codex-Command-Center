@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { buildMaterializedSnapshot, refreshStaleMaterializedSnapshots } from "../src/lib/telemetry/rollups.ts";
 import { readTelemetryForensicActivity } from "../src/lib/telemetry/database.ts";
+import { getPlatformProxy } from "wrangler";
 
 const databaseName = "codex-command-center-telemetry";
 const persistence = await mkdtemp(join(tmpdir(), "codex-d1-audit-"));
 const wranglerCli = join(process.cwd(), "node_modules", "wrangler", "bin", "wrangler.js");
+let platform;
 
 function run(argumentsList, capture = false) {
   return new Promise((resolve, reject) => {
@@ -54,33 +56,31 @@ function cost(result) {
 }
 
 // Exercise the actual application SQL against the isolated local D1 instance.
-// Only synthetic bound values are expanded here; no remote execution is allowed.
-function instrumentedDatabase() {
+// Use the prepared-statement API: CLI execution does not preserve all mutation
+// metadata consumed by the application's claim and publication guards.
+function instrumentedDatabase(database) {
   const executions = [];
   return {
     executions,
     prepare(sql) {
       let values = [];
-      const execute = async () => {
-        let index = 0;
-        const bound = sql.replaceAll("?", () => {
-          const value = values[index++];
-          if (value === null) return "NULL";
-          if (typeof value === "number" && Number.isFinite(value)) return String(value);
-          if (typeof value === "string") return `'${value.replaceAll("'", "''")}'`;
-          throw new Error("Unsupported local audit binding");
-        });
-        assert.equal(index, values.length);
-        const result = await query(bound);
+      const execute = async (method) => {
+        const result = await database.prepare(sql).bind(...values)[method]();
         executions.push({ sql, ...cost(result), returned_rows: result.results.length });
         return result;
       };
-      const statement = { bind(...args) { values = args; return statement; }, all: execute, run: execute };
+      const statement = {
+        sql,
+        bind(...args) { values = args; return statement; },
+        prepared: () => database.prepare(sql).bind(...values),
+        all: () => execute("all"),
+        run: () => execute("run"),
+      };
       return statement;
     },
     async batch(statements) {
-      const results = [];
-      for (const statement of statements) results.push(await statement.all());
+      const results = await database.batch(statements.map((statement) => statement.prepared()));
+      results.forEach((result, index) => executions.push({ sql: statements[index].sql, ...cost(result), returned_rows: result.results.length }));
       return results;
     },
   };
@@ -169,7 +169,18 @@ try {
     SELECT substr(hour_start,1,13)||':00:00.000Z',reasoning_effort,SUM(event_count)
     FROM codex_rollup_hourly CROSS JOIN (SELECT 'low' AS reasoning_effort UNION ALL SELECT 'medium' UNION ALL SELECT 'high')
     GROUP BY substr(hour_start,1,13),reasoning_effort`);
-  const rebuilt = instrumentedDatabase();
+  // A minimal local-only configuration avoids loading application secrets,
+  // assets, or optional remote bindings. Share only the disposable D1 state.
+  const configPath = join(persistence, "audit-wrangler.json");
+  await writeFile(configPath, JSON.stringify({
+    name: "codex-d1-audit",
+    compatibility_date: "2026-09-10",
+    d1_databases: [{ binding: "DB", database_name: databaseName, database_id: "8d2ed842-ae1e-49d5-b722-411690425ddb" }],
+  }));
+  platform = await getPlatformProxy({ configPath, persist: { path: join(persistence, "v3") }, remoteBindings: false });
+  const applicationDatabase = platform.env.DB;
+  assert.equal((await applicationDatabase.prepare("SELECT COUNT(*) AS n FROM codex_session_summary").first()).n, 50000, "D1 API and CLI must share the synthetic database");
+  const rebuilt = instrumentedDatabase(applicationDatabase);
   for (const range of ["24h", "7d", "30d"]) {
     const snapshot = await buildMaterializedSnapshot(rebuilt, range, auditNow);
     assert.equal(snapshot.summary.sessions, range === "30d" ? 50000 : 2000);
@@ -180,18 +191,18 @@ try {
   if (oldSession.meta?.rows_read > 0 && sessionRead.rows_read > 0) {
     assert.ok(sessionRead.rows_read < oldSession.meta.rows_read / 10, "indexed session rebuild must reduce measured local rows read");
   }
-  const afterSessionPlan = await query("EXPLAIN QUERY PLAN SELECT s.*,(SELECT COUNT(*) FROM codex_session_summary WHERE last_seen_at>='2026-10-25T12:00:00.000Z') AS range_session_count FROM codex_session_summary s WHERE last_seen_at>='2026-10-25T12:00:00.000Z' ORDER BY last_seen_at DESC LIMIT 20");
+  const afterSessionPlan = await applicationDatabase.prepare("EXPLAIN QUERY PLAN SELECT s.*,(SELECT COUNT(*) FROM codex_session_summary WHERE last_seen_at>='2026-10-25T12:00:00.000Z') AS range_session_count FROM codex_session_summary s WHERE last_seen_at>='2026-10-25T12:00:00.000Z' ORDER BY last_seen_at DESC LIMIT 20").all();
   assert.ok(afterSessionPlan.results.some((row) => /COVERING INDEX idx_codex_session_summary_last_seen/.test(row.detail)));
   assert.ok(!afterSessionPlan.results.some((row) => /TEMP B-TREE|SCAN /.test(row.detail)));
   // Invalidate only this disposable database's snapshots to exercise claims.
-  await query("DELETE FROM codex_dashboard_snapshot");
-  const refreshing = instrumentedDatabase();
+  await applicationDatabase.prepare("DELETE FROM codex_dashboard_snapshot").run();
+  const refreshing = instrumentedDatabase(applicationDatabase);
   assert.deepEqual((await refreshStaleMaterializedSnapshots(refreshing, auditNow)).refreshed, ["24h", "7d", "30d"]);
   const beforeFresh = refreshing.executions.length;
   assert.deepEqual((await refreshStaleMaterializedSnapshots(refreshing, auditNow)).refreshed, []);
   assert.equal(refreshing.executions.length - beforeFresh, 1);
   assert.ok(!refreshing.executions.at(-1).sql.includes("payload_json"));
-  const activityDatabase = instrumentedDatabase();
+  const activityDatabase = instrumentedDatabase(applicationDatabase);
   assert.ok((await readTelemetryForensicActivity(activityDatabase, new Date())).activity.length <= 25);
   assert.equal(activityDatabase.executions.length, 1);
 
@@ -212,5 +223,6 @@ try {
   console.log("Visible forensic cost:", activityDatabase.executions);
   console.log("Local rows_read metadata may be absent or zero/unimplemented and differs from billed production metrics. Returned rows prove only result bounds. Query plans and rebuild costs are reported separately; no production saving is claimed by this audit.");
 } finally {
+  await platform?.dispose();
   await rm(persistence, { recursive: true, force: true });
 }
