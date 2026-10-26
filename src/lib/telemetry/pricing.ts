@@ -3,7 +3,7 @@
  * published Work/Codex credit rates. They are comparisons, not account
  * balances or invoices.
  */
-export const CODEX_PRICING_CARD_ID = "openai-api-and-codex-token-rates-2026-10-03";
+export const CODEX_PRICING_CARD_ID = "openai-api-and-codex-token-rates-2026-10-26";
 export const CODEX_PRICING_BASIS = "codex-token-credit-rates" as const;
 export const CODEX_PRICING_NOTE = "Codex auto-review activity is excluded from these estimates and coverage because it has no published per-token rate. Standard short-context API USD rates and the published Work/Codex Standard credit rate card only; a missing current credit rate is reported as unavailable. Cache reads and writes are separate input subsets; API USD estimates use only a published cache-write rate, while Codex does not charge cache writes in credits. GPT-Rosalind-Research API billing begins October 5, 2026; hourly model aggregates do not preserve event dates to separate usage around that effective date, so its USD comparison uses the published rate and is not a date-scoped bill. GPT-6 Pro Chat is priced per message and is not estimated from token totals. Reasoning tokens are included in output and are not added again. Fast and Ultrafast service-tier multipliers, long-context requests, regional processing, and separately metered feature charges are excluded because this aggregate does not preserve the request-level fields needed to apply them. Pricing compares matching complete hourly rollups, so the partial leading model hour is excluded. This is not an invoice or account balance.";
 
@@ -33,6 +33,10 @@ export const CODEX_MODEL_PRICING: readonly CodexModelPricingRate[] = [
   rate("gpt-6.1-sol", "GPT-6.1 Sol", ["gpt-6.1-sol", "6.1-sol", "gpt-6.1-sol-latest"], 50, 2.5, 250, 2, 0.1, 10, "premium-1.25x", {
     thresholdTokens: 272_000, inputUsdPerMillion: 4, cachedInputUsdPerMillion: 0.2,
     cacheWriteUsdPerMillion: 5, outputUsdPerMillion: 15,
+  }),
+  rate("gpt-6.1-terra", "GPT-6.1 Terra", ["gpt-6.1-terra", "6.1-terra"], 25, 1.25, 125, 1, 0.05, 5, "premium-1.25x", {
+    thresholdTokens: 272_000, inputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.1,
+    cacheWriteUsdPerMillion: 2.5, outputUsdPerMillion: 7.5,
   }),
   rate("gpt-6-sol", "GPT-6 Sol", ["gpt-6-sol", "6-sol"], 50, 5, 250, 2, 0.2, 10, "premium-1.25x"),
   rate("gpt-6-luna", "GPT-6 Luna", ["gpt-6-luna", "6-luna"], 2.5, 0.25, 12.5, 0.1, 0.01, 0.5, "premium-1.25x"),

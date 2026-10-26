@@ -21,6 +21,7 @@ import { PlatformIntelligencePanel } from "@/components/platform/platform-intell
 import { PlatformXPosts } from "@/components/platform/platform-x-posts";
 
 const gpt61Price = resolveCodexPricingRate(GPT_61_SOL.id);
+const terraPrice = resolveCodexPricingRate("gpt-6.1-terra");
 
 export function PlatformPage() {
   return <div className="platform-page">
@@ -44,7 +45,7 @@ export function PlatformPage() {
     </section>
 
     <section className="platform-section" aria-labelledby="platform-model-title">
-      <SectionHeading eyebrow="MODEL CATALOG" title="GPT-6.1 Sol and this installed bundle" id="platform-model-title" />
+      <SectionHeading eyebrow="MODEL CATALOG" title="GPT-6.1 models and this installed bundle" id="platform-model-title" />
       <article className="platform-panel platform-model-card">
         <div className="platform-panel-heading"><div><span className="platform-status available">API documented</span><span className="platform-status unknown">Not observed in local bundle</span></div><SourceLink sourceId="apiModel" /></div>
         <h3>{GPT_61_SOL.displayName} <code>{GPT_61_SOL.id}</code></h3>
@@ -64,6 +65,19 @@ export function PlatformPage() {
           <p>API cache writes: ${gpt61Price.cacheWriteUsdPerMillion?.toFixed(2)} per 1M; Codex does not charge cache writes in credits. Above {formatTokens(GPT_61_SOL.longContextThresholdTokens)} input tokens, the API documents Standard rates of $4 input, $0.20 cached input, $5 cache writes, and $15 output per million for the full request. Aggregate telemetry lacks per-request context lengths, so that tier is not applied to historical estimates.</p>
           <p>Work/Codex credit rates come from OpenAI’s credit-based Work/Codex rate card. Eligibility and rate cards vary by plan and workspace, so this dashboard cannot determine whether that card applies to this account; personal-plan credit purchase prices and balances remain account-specific.</p>
           <SourceLink sourceId="workRateCard" /> <SourceLink sourceId="apiPricing" />
+        </div> : <p className="platform-unavailable">Pricing metadata is unavailable.</p>}
+      </article>
+      <article className="platform-panel platform-model-card">
+        <div className="platform-panel-heading"><div><span className="platform-status available">API documented</span><span className="platform-status unknown">Account access varies</span></div><a href="https://developers.openai.com/api/docs/models/gpt-6.1-terra">OpenAI model documentation</a></div>
+        <h3>GPT-6.1 Terra <code>gpt-6.1-terra</code></h3>
+        <p>Published API and Work/Codex Standard rates, verified October 26, 2026. Account and installed-client availability depend on the active environment.</p>
+        {terraPrice ? <div className="platform-rate-grid">
+          <div><b>Rate</b><b>Input / 1M</b><b>Cached input / 1M</b><b>Output / 1M</b>
+            <span>API Standard, short context</span><span>${terraPrice.inputUsdPerMillion?.toFixed(2)}</span><span>${terraPrice.cachedInputUsdPerMillion?.toFixed(2)}</span><span>${terraPrice.outputUsdPerMillion?.toFixed(2)}</span>
+            <span>Work/Codex Standard credits</span><span>{terraPrice.inputCreditsPerMillion}</span><span>{terraPrice.cachedInputCreditsPerMillion}</span><span>{terraPrice.outputCreditsPerMillion}</span>
+          </div>
+          <p>API 30-minute cache writes: ${terraPrice.cacheWriteUsdPerMillion?.toFixed(2)} per 1M. Above 272,000 input tokens, API Standard rates are $2 input, $0.10 cached input, $2.50 cache writes, and $7.50 output per million. Aggregate estimates do not apply the long-context tier because per-request context lengths are unavailable.</p>
+          <a href="https://learn.chatgpt.com/docs/pricing">Work/Codex pricing</a> <SourceLink sourceId="apiPricing" />
         </div> : <p className="platform-unavailable">Pricing metadata is unavailable.</p>}
       </article>
       <details className="platform-panel platform-details">

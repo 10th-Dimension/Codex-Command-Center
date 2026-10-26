@@ -88,6 +88,22 @@ test("GPT-6.1 Sol uses its official Standard API and Work/Codex credit rate-card
   assert.equal(result.coveragePercent, 100);
 });
 
+test("GPT-6.1 Terra prices mixed token categories using published rates", () => {
+  const rate = resolveCodexPricingRate("openai/gpt-6.1-terra-xhigh");
+  assert.equal(rate?.model, "gpt-6.1-terra");
+  assert.deepEqual([rate?.inputUsdPerMillion, rate?.cachedInputUsdPerMillion, rate?.cacheWriteUsdPerMillion, rate?.outputUsdPerMillion], [1, 0.05, 1.25, 5]);
+  assert.deepEqual([rate?.inputCreditsPerMillion, rate?.cachedInputCreditsPerMillion, rate?.outputCreditsPerMillion], [25, 1.25, 125]);
+  assert.deepEqual([rate?.longContextThresholdTokens, rate?.longContextInputUsdPerMillion, rate?.longContextCachedInputUsdPerMillion, rate?.longContextCacheWriteUsdPerMillion, rate?.longContextOutputUsdPerMillion], [272_000, 2, 0.1, 2.5, 7.5]);
+  const result = calculateCodexEquivalentPricing({
+    metrics: metrics(1_000_000, 200_000, 1_000_000, 100_000),
+    models: [modelUsage("gpt-6.1-terra", { input: 1_000_000, cached: 200_000, write: 100_000, output: 1_000_000 })],
+  });
+  assert.equal(result.status, "available");
+  assert.equal(result.coveragePercent, 100);
+  assert.equal(result.usdEquivalent, "5.835");
+  assert.equal(result.apiCredits, "142.75");
+});
+
 test("locally bundled Daybreak model IDs resolve to their published exact rates", () => {
   assert.equal(resolveCodexPricingRate("gpt-daybreak-blue-latest")?.model, "daybreak-blue");
   assert.equal(resolveCodexPricingRate("gpt-daybreak-red-latest")?.model, "daybreak-red");
