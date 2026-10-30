@@ -6,7 +6,7 @@ import { LocalCodexAccount } from "@/components/dashboard/local-codex-account";
 import { RefreshButton } from "@/components/dashboard/refresh-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusPill } from "@/components/ui/status-pill";
-import { compactNumber, selectTrend, selectUsage, type DashboardRange } from "@/lib/dashboard/analytics";
+import { compactNumber, measuredValue, selectTrend, selectUsage, type DashboardRange } from "@/lib/dashboard/analytics";
 import { codexWorkspaceMode, type CodexWorkspaceMode } from "@/lib/navigation";
 import type { getCodexPageData, getGitHubPageData } from "@/lib/dashboard/queries";
 import type { CodexActivityRecord, CodexTelemetrySessionSummary, CodexUsageSnapshot, DataResult, IssueRecord, PullRequestRecord } from "@/lib/providers/types";
@@ -24,9 +24,6 @@ export function CodexCommandPage({ data, section }: Readonly<{ data: CodexData; 
   const usage = usageResult.status === "connected" ? usageResult.data : undefined;
   const summary = telemetry.rollupSummaries?.[data.range];
   const latest = telemetry.sessions.status === "connected" ? telemetry.sessions.data[0] : undefined;
-  const totalTokens = sumMeasured([usage?.inputTokens, usage?.outputTokens, usage?.cachedInputTokens, usage?.cacheWriteTokens, usage?.reasoningTokens, usage?.toolTokens]);
-  const activeBuckets = trend.status === "connected" ? trend.data.filter((point) => point.events > 0).length : undefined;
-  const peakEvents = trend.status === "connected" && trend.data.length ? Math.max(...trend.data.map((point) => point.events)) : undefined;
   const modelCount = telemetry.models.status === "connected" ? telemetry.models.data.length : undefined;
   const mode = codexWorkspaceMode(section);
   const detailOpen = (name: string) => section === name;
@@ -34,30 +31,30 @@ export function CodexCommandPage({ data, section }: Readonly<{ data: CodexData; 
   return <div className="command-page fade-in-up">
     <header className="command-hero command-hero-modern">
       <CodexHeroCopy mode={mode} />
-      <div className="command-actions"><RangeLinks range={data.range} section={rangeSection} /><Link className="command-secondary-action" href="/overlay">Open overlay</Link><RefreshButton /></div>
+      <div className="command-actions"><RangeLinks range={data.range} section={rangeSection} /><Link prefetch={false} className="command-secondary-action" href="/overlay">Open overlay</Link><RefreshButton /></div>
     </header>
     <section className="command-health-strip command-health-strip-modern">
       <StatusPill status={telemetry.health.status} />
-      <span><span className="status-dot text-emerald-300" /> Snapshot reads only</span>
-      <span>Last telemetry: {formatAge(telemetry.lastReceivedAt)}</span>
+      <span><span className="status-dot text-cyan-300" /> Snapshot view</span>
+      <span>Last signal: {formatAge(telemetry.lastReceivedAt)}</span>
       <span>Snapshot: {summary?.generatedAt ? formatAge(summary.generatedAt) : "Unavailable"}</span>
-      <span className="ml-auto"><ShieldCheck size={13} /> Privacy-filtered · no prompt content</span>
+      <span className="ml-auto"><ShieldCheck size={13} /> Private telemetry</span>
     </section>
 
-    {mode === "overview" ? <OverviewWorkspace data={data} usageResult={usageResult} trend={trend} usage={usage} summary={summary} latest={latest} totalTokens={totalTokens} activeBuckets={activeBuckets} peakEvents={peakEvents} modelCount={modelCount} /> : null}
-    {mode === "usage" ? <UsageWorkspace data={data} usageResult={usageResult} pricingResult={pricingResult} trend={trend} usage={usage} summary={summary} latest={latest} totalTokens={totalTokens} activeBuckets={activeBuckets} peakEvents={peakEvents} modelCount={modelCount} detailOpen={detailOpen} /> : null}
+    {mode === "overview" ? <OverviewWorkspace data={data} usageResult={usageResult} trend={trend} usage={usage} summary={summary} latest={latest} modelCount={modelCount} /> : null}
+    {mode === "usage" ? <UsageWorkspace data={data} usageResult={usageResult} pricingResult={pricingResult} trend={trend} usage={usage} summary={summary} latest={latest} modelCount={modelCount} detailOpen={detailOpen} /> : null}
     {mode === "activity" ? <ActivityWorkspace data={data} usage={usage} summary={summary} latest={latest} detailOpen={detailOpen} /> : null}
   </div>;
 }
 
 function CodexHeroCopy({ mode }: Readonly<{ mode: CodexWorkspaceMode }>) {
   const copy = mode === "usage"
-    ? { icon: BarChart3, kicker: "Usage analytics", title: "Measured usage, clearly explained.", description: "Daily account history, token composition, model mix, and API-equivalent math in one focused workspace." }
+    ? { icon: BarChart3, kicker: "Usage analytics", title: "Understand your usage.", description: "Explore reported token fields, account history, and model activity." }
     : mode === "activity"
-      ? { icon: ListTree, kicker: "Activity & diagnostics", title: "Operational activity, without the noise.", description: "Sessions, tools, health, and an explicit bounded forensic path—kept separate from everyday analytics." }
-      : { icon: Activity, kicker: "Workspace overview", title: "Codex, at a glance.", description: "Current quota, measured telemetry, live operational context, and the latest session in a concise workspace view." };
+      ? { icon: ListTree, kicker: "Activity & diagnostics", title: "Every operation in context.", description: "Trace recent sessions, tool outcomes, and the health of your telemetry." }
+      : { icon: Activity, kicker: "Workspace overview", title: "Your workspace, in focus.", description: "A clearer view of your Codex activity. The signals that matter, with room to think." };
   const Icon = copy.icon;
-  return <div className="command-hero-copy"><div className="command-kicker"><span className="command-kicker-mark"><Icon size={12} /></span><span>{copy.kicker}</span><span className="command-kicker-status"><span className="status-dot" /> bounded snapshot</span></div><h1>{copy.title}</h1><p>{copy.description}</p></div>;
+  return <div className="command-hero-copy"><div className="command-kicker"><span className="command-kicker-mark"><Icon size={12} /></span><span>{copy.kicker}</span></div><h1>{copy.title}</h1><p>{copy.description}</p></div>;
 }
 
 interface WorkspaceProps {
@@ -67,20 +64,15 @@ interface WorkspaceProps {
   usage?: CodexUsageSnapshot;
   summary?: CodexSummary;
   latest?: CodexTelemetrySessionSummary;
-  totalTokens?: number;
-  activeBuckets?: number;
-  peakEvents?: number;
   modelCount?: number;
 }
 
-function StatRibbon({ data, summary, totalTokens, activeBuckets, peakEvents, modelCount }: Readonly<Pick<WorkspaceProps, "data" | "summary" | "totalTokens" | "activeBuckets" | "peakEvents" | "modelCount">>) {
-  return <section className="command-stat-grid command-stat-grid-ribbon">
-    <Metric href={`/?range=${data.range}&section=usage`} label="Events observed" value={summary?.events} note={`${data.range.toUpperCase()} window`} />
-    <Metric href={`/?range=${data.range}&section=sessions`} label="Sessions" value={summary?.sessions} note="materialized summaries" />
-    <Metric href={`/?range=${data.range}&section=usage`} label="Measured tokens" value={totalTokens} note="emitted samples only" />
-    <Metric href={`/?range=${data.range}&section=usage`} label="Peak bucket" value={peakEvents} note="events in one bucket" />
-    <Metric href={`/?range=${data.range}&section=usage`} label="Active buckets" value={activeBuckets} note="non-zero observations" />
-    <Metric href={`/?range=${data.range}&section=usage`} label="Models" value={modelCount} note="bounded distribution" />
+function StatRibbon({ data, usage, summary, modelCount }: Readonly<WorkspaceProps>) {
+  return <section className="command-stat-grid command-stat-grid-ribbon workspace-summary">
+    <Metric href={`/?range=${data.range}&section=usage`} label="Input tokens" value={usage ? measuredValue(usage.inputTokens) : undefined} note="Reported input field" />
+    <Metric href={`/?range=${data.range}&section=usage`} label="Output tokens" value={usage ? measuredValue(usage.outputTokens) : undefined} note="Reported output field" />
+    <Metric href={`/?range=${data.range}&section=sessions`} label="Sessions observed" value={summary?.sessions} note={`${data.range.toUpperCase()} reporting window`} />
+    <Metric href={`/?range=${data.range}&section=usage`} label="Models observed" value={modelCount} note="Within returned snapshot" />
   </section>;
 }
 
@@ -88,20 +80,20 @@ function OverviewWorkspace(props: Readonly<WorkspaceProps>) {
   const { data, usageResult, trend, summary, latest } = props;
   const telemetry = data.snapshot;
   return <>
-    <LocalCodexAccount showActivity={false} />
     <StatRibbon {...props} />
     {usageResult.status === "unavailable" ? <section className="command-unavailable-panel"><EmptyState title="Rollup analytics unavailable" description={usageResult.reason} /></section> : null}
     <section className="command-overview-grid">
       <Panel className="overview-activity-panel" title="Token activity" icon={Activity} note={data.range.toUpperCase()}>
-        <div className="overview-panel-intro"><span>Measured tokens by time bucket</span><small>{summary?.events.toLocaleString() ?? "—"} events · open Usage for the full ledger</small></div>
-        <TokenTrend compact interactive={false} result={trend} />
+        <div className="overview-panel-intro"><span>Reported tokens over time</span><small>{summary?.events.toLocaleString() ?? "—"} events · open Usage for the full ledger</small></div>
+        <TokenTrend result={trend} />
       </Panel>
-      <Panel className="overview-live-panel" title="Live operations" icon={Activity} note="observed state"><LiveOperations telemetry={telemetry} latest={latest} summary={summary} /></Panel>
-      <Panel className="overview-composition-panel" title="Measured composition" icon={Boxes} note="token fields"><TokenComposition result={usageResult} /></Panel>
-      <Panel className="overview-model-panel" title="Model mix" icon={Bot} note="top 5"><Distribution result={telemetry.models} /></Panel>
+      <Panel className="overview-live-panel" title="Session pulse" icon={Activity} note="latest snapshot"><LiveOperations telemetry={telemetry} latest={latest} summary={summary} /></Panel>
+      <Panel className="overview-composition-panel" title="Token measurements" icon={Boxes} note="independent fields"><TokenComposition result={usageResult} /></Panel>
+      <Panel className="overview-model-panel" title="Model activity" icon={Bot} note="top 5"><Distribution result={telemetry.models} /></Panel>
       <Panel className="overview-reasoning-panel" title="Reasoning effort" icon={Boxes} note="top 5"><Distribution result={telemetry.reasoningEfforts} /></Panel>
       <Panel className="overview-session-panel" title="Latest session" icon={Clock3} note={latest ? formatAge(latest.lastSeenAt) : "no session"}><LatestSession latest={latest} /></Panel>
     </section>
+    <LocalCodexAccount showActivity={false} />
   </>;
 }
 
@@ -109,23 +101,23 @@ function UsageWorkspace(props: Readonly<WorkspaceProps & { pricingResult: DataRe
   const { data, usageResult, pricingResult, trend, usage, summary, detailOpen } = props;
   const telemetry = data.snapshot;
   return <>
-    <LocalCodexAccount />
     <StatRibbon {...props} />
     {usageResult.status === "unavailable" ? <section className="command-unavailable-panel"><EmptyState title="Rollup analytics unavailable" description={usageResult.reason} /></section> : null}
     <section className="command-overview-grid command-usage-grid">
       <Panel className="usage-activity-panel" title="Measured token trend" icon={BarChart3} note={data.range.toUpperCase()}>
         <div className="overview-panel-intro"><span>Exact measured fields by time bucket</span><small>{summary?.events.toLocaleString() ?? "—"} events · hover or focus for values</small></div>
         <TokenTrend result={trend} />
-        <div className="activity-map-heading"><span>Activity density</span><small>Each cell is an observed time bucket</small></div>
+        <div className="activity-map-heading"><span>Activity density</span><small>Grouped intervals · intensity reflects events</small></div>
         <ActivityHeatmap result={trend} />
       </Panel>
-      <Panel className="usage-composition-panel" title="Token composition" icon={Boxes} note="exact ratios"><TokenComposition result={usageResult} /></Panel>
-      <Panel className="usage-model-panel" title="Model mix" icon={Bot} note="top 5"><Distribution result={telemetry.models} /></Panel>
+      <Panel className="usage-composition-panel" title="Token measurements" icon={Boxes} note="independent fields"><TokenComposition result={usageResult} /></Panel>
+      <Panel className="usage-model-panel" title="Model activity" icon={Bot} note="top 5"><Distribution result={telemetry.models} /></Panel>
       <Panel className="usage-reasoning-panel" title="Reasoning effort" icon={Boxes} note="top 5"><Distribution result={telemetry.reasoningEfforts} /></Panel>
     </section>
     <MeasuredLedger result={usageResult} pricing={pricingResult} range={data.range} />
+    <LocalCodexAccount />
     <div className="command-details">
-      <Detail title="Usage & performance" open={detailOpen("usage")}><div className="detail-grid"><Fact label="Cache writes" value={usage ? metricLabel(usage.cacheWriteTokens) : "Unavailable"} /><Fact label="Average duration" value={duration(summary?.averageDurationMs)} /><Fact label="Approvals" value={compactNumber(summary?.approvals)} /><Fact label="Warnings" value={compactNumber(summary?.warnings)} /></div><p className="detail-note">Sessions, tools, forensics, and data health are grouped on the Activity page so this workspace stays focused on usage. <Link className="detail-link" href={`/?range=${data.range}&section=activity`}>Open Activity</Link></p></Detail>
+      <Detail title="Usage & performance" open={detailOpen("usage")}><div className="detail-grid"><Fact label="Cache writes" value={usage ? metricLabel(usage.cacheWriteTokens) : "Unavailable"} /><Fact label="Average duration" value={duration(summary?.averageDurationMs)} /><Fact label="Approvals" value={compactNumber(summary?.approvals)} /><Fact label="Warnings" value={compactNumber(summary?.warnings)} /></div><p className="detail-note">Sessions, tools, forensics, and data health are grouped on the Activity page so this workspace stays focused on usage. <Link prefetch={false} className="detail-link" href={`/?range=${data.range}&section=activity`}>Open Activity</Link></p></Detail>
     </div>
   </>;
 }
@@ -142,7 +134,7 @@ function ActivityWorkspace({ data, usage, summary, latest, detailOpen }: Readonl
       <Metric label="Warnings" value={summary?.warnings} note="observed warnings" />
     </section>
     <section className="command-overview-grid command-activity-grid">
-      <Panel className="activity-live-panel" title="Live operations" icon={Activity} note="privacy-safe"><LiveOperations telemetry={telemetry} latest={latest} summary={summary} /></Panel>
+      <Panel className="activity-live-panel" title="Session pulse" icon={Activity} note="privacy-safe"><LiveOperations telemetry={telemetry} latest={latest} summary={summary} /></Panel>
       <Panel className="activity-session-panel" title="Latest session" icon={Clock3} note={latest ? formatAge(latest.lastSeenAt) : "no session"}><LatestSession latest={latest} /></Panel>
     </section>
     <div className="command-details">
@@ -175,7 +167,7 @@ function LiveOperations({ telemetry, latest, summary }: Readonly<{ telemetry: Co
   return <div className="live-operations">
     <div className={`live-observed-card ${telemetry.health.status}`}><span className="live-observed-dot" /><div><strong>{latest ? "Session observed" : "No session observed"}</strong><small>{latest ? `${latest.models[0] ?? "Model unavailable"} · ${latest.reasoningEfforts[0] ?? "effort unavailable"}` : "No bounded session summary was emitted."}</small></div><time>{formatAge(lastObserved)}</time></div>
     <dl className="live-facts"><Fact label="Telemetry" value={telemetry.health.status} /><Fact label="Latest events" value={summary?.events.toLocaleString() ?? "Unavailable"} /><Fact label="Approval events" value={compactNumber(summary?.approvals)} /><Fact label="Failed tools" value={compactNumber(summary?.failedTools)} warning={Boolean(summary?.failedTools)} /></dl>
-    <div className="live-note"><ShieldCheck size={14} /><span>Privacy-safe live context only. Pending approvals, prompts, commands, and agent graph details are not emitted into this bounded surface.</span></div>
+    <div className="live-note"><ShieldCheck size={14} /><span>Latest observed activity. This snapshot does not establish whether an agent is running now.</span></div>
   </div>;
 }
 
@@ -263,7 +255,7 @@ function GitHubSectionNav({ section }: Readonly<{ section?: string }>) {
   return <nav aria-label="GitHub sections" className="command-subnav">{items.map((item) => {
     const active = item.section ? section === item.section : !section;
     const href = item.section ? `/github?section=${item.section}` : "/github";
-    return <Link aria-current={active ? "page" : undefined} className={active ? "active" : ""} href={href} key={item.label}>{item.label}</Link>;
+    return <Link prefetch={false} aria-current={active ? "page" : undefined} className={active ? "active" : ""} href={href} key={item.label}>{item.label}</Link>;
   })}</nav>;
 }
 
@@ -272,18 +264,18 @@ function Forensics({ result }: Readonly<{ result: NonNullable<CodexData["forensi
   return <><div className="forensics-loaded"><AlertTriangle size={14} /><span>{result.data.activity.length} recent retained events loaded at {formatDate(result.data.loadedAt)}.{result.meta?.bounds?.truncated ? " Older events are omitted." : ""} Reloading this URL loads them again.</span></div>{result.data.activity.length ? <div className="compact-list">{result.data.activity.slice(0, 25).map((event) => <EventRecord event={event} key={event.id} />)}</div> : <EmptyState compact title="No forensic events" description="No retained raw events were returned." />}</>;
 }
 function EventRecord({ event }: Readonly<{ event: CodexActivityRecord }>) { return <div><span><b>{event.eventName}</b><small>{event.category} · {event.model ?? "model unavailable"}</small></span><span>{event.toolName ?? event.status ?? "No additional safe dimension"}</span><time>{formatAge(event.occurredAt)}</time></div>; }
-function RangeLinks({ range, section }: Readonly<{ range: DashboardRange; section?: string }>) { return <div className="command-range">{(["24h", "7d", "30d"] as DashboardRange[]).map((item) => {
+function RangeLinks({ range, section }: Readonly<{ range: DashboardRange; section?: string }>) { return <div className="command-range" role="group" aria-label="Reporting window">{(["24h", "7d", "30d"] as DashboardRange[]).map((item) => {
   const query = new URLSearchParams({ range: item });
   if (section) query.set("section", section);
-  return <Link className={range === item ? "active" : ""} href={`/?${query.toString()}`} key={item}>{item.toUpperCase()}</Link>;
+  return <Link prefetch={false} aria-current={range === item ? "true" : undefined} className={range === item ? "active" : ""} href={`/?${query.toString()}`} key={item}>{item.toUpperCase()}</Link>;
 })}</div>; }
 function Metric({ label, value, text, note, href, tooltip }: Readonly<{ label: string; value?: number; text?: string; note?: string; href?: string; tooltip?: string }>) {
   const exact = text ?? (value === undefined ? "Unavailable" : value.toLocaleString("en-US"));
   const body = <><span>{label}</span><strong>{text ?? compactNumber(value)}</strong>{note ? <small>{note}</small> : null}</>;
   const props = { className: `command-metric ${href ? "command-metric-link" : ""}`, "data-tooltip": tooltip ?? `${label}: ${exact}`, title: tooltip ?? `${label}: ${exact}` };
-  return href ? <Link {...props} href={href}>{body}</Link> : <article {...props}>{body}</article>;
+  return href ? <Link prefetch={false} {...props} href={href}>{body}</Link> : <article {...props}>{body}</article>;
 }
-function Panel({ title, icon: Icon, note, className, children }: Readonly<{ title: string; icon: typeof Activity; note?: string; className?: string; children: React.ReactNode }>) { return <section className={`panel command-panel ${className ?? ""}`}><header><span><Icon size={14} />{title}</span>{note ? <small>{note}</small> : null}</header>{children}</section>; }
+function Panel({ title, icon: Icon, note, className, children }: Readonly<{ title: string; icon: typeof Activity; note?: string; className?: string; children: React.ReactNode }>) { return <section className={`panel command-panel ${className ?? ""}`}><header><h2><Icon size={14} />{title}</h2>{note ? <small>{note}</small> : null}</header>{children}</section>; }
 function Fact({ label, value, warning }: Readonly<{ label: string; value: string; warning?: boolean }>) { return <div className={warning ? "warning" : ""}><dt>{label}</dt><dd>{value}</dd></div>; }
 function Detail({ title, open, children }: Readonly<{ title: string; open?: boolean; children: React.ReactNode }>) { return <details className="command-detail" open={open}><summary>{title}<span>+</span></summary><div>{children}</div></details>; }
 function Record({ title, meta }: Readonly<{ title: string; meta: string }>) { return <div className="command-record"><b>{title}</b><span>{meta}</span></div>; }
@@ -291,7 +283,6 @@ function Queue<T extends PullRequestRecord | IssueRecord>({ result, kind }: Read
 function CompactRecords<T>({ result, select }: Readonly<{ result: DataResult<T[]>; select: (item: T) => { title: string; meta: string } }>) { if (result.status === "unavailable") return <EmptyState compact description={result.reason} />; if (!result.data.length) return <EmptyState compact title="Nothing open" description="The provider returned no records for this section." />; return <div className="compact-list">{result.data.slice(0, 20).map((item, index) => { const record = select(item); return <div key={index}><span><b>{record.title}</b><small>{record.meta}</small></span></div>; })}</div>; }
 function connectedLength<T>(result: DataResult<T[]>) { return result.status === "connected" ? result.data.length : undefined; }
 function metricLabel(metric: { availability: string; value?: number }) { return metric.availability === "available" ? compactNumber(metric.value) : metric.availability === "no-samples" ? "No samples" : "Unavailable"; }
-function sumMeasured(metrics: Array<{ availability: string; value?: number } | undefined>) { const values = metrics.flatMap((metric) => metric?.availability === "available" && metric.value !== undefined ? [metric.value] : []); return values.length ? values.reduce((total, value) => total + value, 0) : undefined; }
 function duration(value?: number) { return value === undefined ? "Unavailable" : value < 1_000 ? `${Math.round(value)}ms` : `${(value / 1_000).toFixed(1)}s`; }
 function formatAge(value?: string) { if (!value) return "Unavailable"; const age = Date.now() - Date.parse(value); if (!Number.isFinite(age)) return "Unavailable"; if (age < 60_000) return `${Math.max(0, Math.round(age / 1_000))}s ago`; if (age < 3_600_000) return `${Math.round(age / 60_000)}m ago`; if (age < 86_400_000) return `${Math.round(age / 3_600_000)}h ago`; return `${Math.round(age / 86_400_000)}d ago`; }
 function formatDate(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "Unavailable" : new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date); }
