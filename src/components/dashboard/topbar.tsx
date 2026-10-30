@@ -42,7 +42,8 @@ export function Topbar() {
         <Link prefetch={false} aria-current={activityActive ? "page" : undefined} className={activityActive ? "active" : ""} href={sectionHref("activity")}><ListTree size={14} />Activity</Link>
         <Link prefetch={false} aria-current={platformActive ? "page" : undefined} className={platformActive ? "active" : ""} href="/platform"><Cpu size={14} />Platform</Link>
         <span className="command-nav-label">Delivery</span>
-        <Link prefetch={false} aria-current={pathname.startsWith("/github") ? "page" : undefined} className={pathname.startsWith("/github") ? "active" : ""} href="/github"><GitBranch size={14} />GitHub</Link>
+        {/* Use document navigation across this provider workspace: the Worker RSC transition can stall. */}
+        <Link prefetch={false} onNavigate={(event) => { event.preventDefault(); window.location.assign(new URL("/github", window.location.origin).href); }} aria-current={pathname.startsWith("/github") ? "page" : undefined} className={pathname.startsWith("/github") ? "active" : ""} href="/github"><GitBranch size={14} />GitHub</Link>
       </nav>
       <div className="workspace-sidebar-footer"><span className="workspace-monogram">CC</span><div><b>Personal workspace</b><small>Private · read only</small></div></div>
       <button aria-label="Open settings" className="settings-gear" onClick={() => setSettingsOpen(true)} type="button"><Settings size={16} /><span>Workspace settings</span></button>
