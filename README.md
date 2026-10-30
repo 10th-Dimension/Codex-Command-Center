@@ -4,6 +4,8 @@ Codex Command Center is an open-source observability and developer-operations da
 
 The product is designed as one cohesive command center: the website is the deep Usage and Operations workspace, while Codex Live is its always-available companion. The shared visual language carries measured KPI cards, density and trend views, exact-value hover details, one blended API-equivalent credits/USD counter, model and reasoning breakdowns, latest-session context, delivery health, and privacy-safe observed operations from the full dashboard into the compact Windows surface. The implementation uses the repository's own provider contracts, bounded materialized snapshots, and native overlay host; it does not read raw telemetry for normal views, fabricate live agent state, or turn an account balance into a guessed bill.
 
+The website uses a neutral dark workspace with cyan interaction accents, responsive navigation, and field-selectable token charts. Token measurements are displayed independently with their sample counts: the dashboard does not add potentially overlapping input, cached, reasoning, and tool fields into a composition total. Chart field selection is browser-local, navigation prefetch is disabled, and the existing materialized-snapshot read budgets and ingestion cadence are unchanged.
+
 The project has two related product surfaces and one shared server/provider architecture:
 
 - **Codex Command Center website:** the full Next.js 16 observability dashboard, deployed through vinext on Cloudflare Workers.

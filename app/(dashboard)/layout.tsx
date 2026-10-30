@@ -1,4 +1,5 @@
 import { DashboardShell } from "@/components/dashboard/dashboard-shell";
+import "./workspace.css";
 
 export const dynamic = "force-dynamic";
 

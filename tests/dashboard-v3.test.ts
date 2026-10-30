@@ -62,6 +62,7 @@ test("trend labels are readable and localizable without exposing raw ISO timesta
   assert.equal(formatTrendLabel("2026-09-21T15:00:00.000Z", "America/Los_Angeles"), "Sep 21, 2026 · 8:00 AM");
   assert.equal(formatTrendLabel("2026-09-21", "America/Los_Angeles"), "Sep 21, 2026");
   assert.equal(formatTrendAxisLabel("2026-09-21T15:00:00.000Z", "America/Los_Angeles"), "8:00 AM");
+  assert.equal(formatTrendAxisLabel("2026-09-21T15:00:00.000Z – 2026-09-21T15:20:00.000Z", "America/Los_Angeles"), "8:00 AM");
   assert.doesNotMatch(formatTrendLabel("2026-09-21T15:00:00.000Z", "America/Los_Angeles"), /T15:00:00\.000Z/);
 });
 
@@ -174,22 +175,19 @@ test("Codex page gates raw forensics and keeps the overview bounded", async () =
   assert.match(source, /Dashboard writes/);
   const overviewWorkspace = source.match(/function OverviewWorkspace[\s\S]*?function UsageWorkspace/)?.[0] ?? "";
   const usageWorkspace = source.match(/function UsageWorkspace[\s\S]*?function ActivityWorkspace/)?.[0] ?? "";
-  assert.match(overviewWorkspace, /<TokenTrend compact interactive=\{false\} result=\{trend\} \/>/);
+  assert.match(overviewWorkspace, /<TokenTrend result=\{trend\} \/>/);
   assert.doesNotMatch(overviewWorkspace, /ActivityHeatmap/);
   assert.match(usageWorkspace, /<ActivityHeatmap result=\{trend\} \/>/);
   assert.match(analytics, /ActivityHeatmap/);
   assert.match(analytics, /TokenComposition/);
   assert.match(analytics, /data-tooltip/);
-  assert.match(analytics, /chart-point/);
-  assert.match(analytics, /chart-point-label/);
-  assert.match(analytics, /token-chart-visual/);
-  assert.match(analytics, /token-chart-tooltip/);
-  assert.match(analytics, /activity-cell-number/);
+  assert.match(analytics, /activity intervals/);
   assert.match(analytics, /activity-heatmap-tooltip/);
-  assert.match(analytics, /local time follows this computer/);
-  assert.match(source, /Measured tokens by time bucket/);
-  assert.match(analytics, /Measured token activity by time bucket/);
-  assert.match(analytics, /exact returned time bucket/);
+  assert.match(analytics, /browser-local time/);
+  assert.match(source, /Reported tokens over time/);
+  assert.match(analytics, /missing measurements are gaps/);
+  assert.match(analytics, /aria-pressed/);
+  assert.doesNotMatch(analytics, /stackTokenSeries|tokenCompositionSegments/);
   assert.match(analytics, /formatTrendLabel/);
   assert.doesNotMatch(analytics, /<title>\{activityTooltip/);
   assert.doesNotMatch(analytics, /Hover or focus a numbered point for the exact local-time bucket/);
