@@ -31,7 +31,7 @@ test("longer overlay ranges retain the server's UTC-day resolution", () => {
   const weekly = prepareOverlayTrend(source, "7d", "2026-09-25T12:34:00.000Z");
   const monthly = prepareOverlayTrend(source, "30d", "2026-09-25T12:34:00.000Z");
 
-  assert.equal(weekly.points.length, 8);
+  assert.equal(weekly.points.length, 7);
   assert.equal(monthly.points.length, 31);
   assert.equal(weekly.intervalLabel, "UTC-day buckets");
   assert.equal(weekly.points.find((point) => point.label === "2026-09-24")?.inputTokens, 42);
@@ -60,4 +60,17 @@ test("unobserved intervals break the token chart while measured zeroes stay at z
   assert.equal((area.match(/Z/g) ?? []).length, 3);
   assert.equal(measuredInputTokens({ label: "measured-zero", inputTokens: 0, observed: true }), 0);
   assert.equal(measuredInputTokens({ label: "missing", inputTokens: 0, observed: false }), undefined);
+});
+
+test("seven-day chart displays seven UTC dates without an extra oldest empty day", () => {
+  const source = Array.from({ length: 7 }, (_, i) => ({ label: `2026-10-${24+i}`, inputTokens: i + 10 }));
+  const display = prepareOverlayTrend(source, "7d", "2026-10-30T19:54:00Z");
+  assert.equal(display.points.length, 7);
+  assert.equal(display.observedBuckets, 7);
+  assert.equal(display.points[0].label, "2026-10-24");
+  assert.equal(display.points[6].label, "2026-10-30");
+  assert.ok(display.points.every(point => point.observed));
+  const gap = prepareOverlayTrend(source.filter(point => point.label !== "2026-10-27"), "7d", "2026-10-30T19:54:00Z");
+  assert.equal(gap.points[3].observed, false);
+  assert.equal(measuredInputTokens(gap.points[3]), undefined);
 });
