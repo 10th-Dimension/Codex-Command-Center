@@ -68,7 +68,7 @@ export function prepareOverlayTrend(source: readonly OverlayTrendPoint[], range:
   if (!Number.isFinite(now)) return { points: [], observedBuckets: 0, intervalLabel };
 
   const end = Math.floor(now / interval) * interval;
-  const count = range === "24h" ? 144 : range === "7d" ? 8 : 31;
+  const count = range === "24h" ? 144 : range === "7d" ? 7 : 31;
   const start = end - (count - 1) * interval;
   const byBucket = new Map<number, OverlayTrendPoint>();
   for (const point of source) {
