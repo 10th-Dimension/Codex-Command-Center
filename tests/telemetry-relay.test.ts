@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
+import { createServer as createHttpsServer, request } from "node:https";
+import type { Server } from "node:net";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { checkServerIdentity } from "node:tls";
+import { fileURLToPath } from "node:url";
 
 import { ACCOUNT_MAX_BYTES, ACCOUNT_RELAY_PATH, createTelemetryRelay, isSafeCodexAccountPayload, isSafeOverlayPayload, isUsableOverlayPayload, OVERLAY_UPSTREAM_PATH, TELEMETRY_RELAY_HEALTH_PATH, TELEMETRY_RELAY_HOST } from "../scripts/telemetry-relay";
 import { TelemetrySpool } from "../scripts/telemetry-spool";
+import { loadRelaySecurity } from "../scripts/relay-security";
 
 // Keep the suite isolated from the user's running Codex Live relay. The
 // production relay intentionally uses a durable per-user spool, while tests
@@ -14,6 +20,11 @@ import { TelemetrySpool } from "../scripts/telemetry-spool";
 const testStateDirectory = await mkdtemp(join(tmpdir(), "codex-relay-suite-"));
 const previousLocalAppData = process.env.LOCALAPPDATA;
 process.env.LOCALAPPDATA = testStateDirectory;
+const setupScript = fileURLToPath(new URL("../scripts/initialize-relay-security.ps1", import.meta.url));
+const securityDirectory = join(testStateDirectory, "identity");
+execFileSync("pwsh", ["-NoProfile", "-File", setupScript, "-Directory", securityDirectory]);
+const security = await loadRelaySecurity(securityDirectory);
+const ca = await readFile(join(securityDirectory, "relay-ca.pem"));
 test.after(async () => {
   if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
   else process.env.LOCALAPPDATA = previousLocalAppData;
@@ -47,7 +58,37 @@ const accountSnapshot = {
   limits: [{ limitId: "codex", windows: [{ slot: "primary" as const, kind: "5h" as const, label: "5-hour", durationMins: 300, usedPercent: 33, remainingPercent: 67, resetsAt: 2_000_000_000 }] }],
 };
 
-function listen(server: ReturnType<typeof createServer>) {
+function createTestRelay(configuration: Parameters<typeof createTelemetryRelay>[0], options?: Parameters<typeof createTelemetryRelay>[2]) {
+  return createTelemetryRelay(configuration, security, options);
+}
+
+function requestRelay(url: string, init: { method?: string; headers?: HeadersInit; body?: string | Uint8Array } = {}, useDefaultAuth = true) {
+  const pathname = new URL(url).pathname;
+  const headers = new Headers(init.headers);
+  if (useDefaultAuth && !headers.has("authorization") && init.method !== "OPTIONS") {
+    const role = pathname === "/v1/logs" ? "exporter" : pathname === "/v1/account" ? "browser" : "overlay";
+    headers.set("authorization", `Bearer ${security.tokens[role]}`);
+  }
+  return new Promise<Response>((resolve, reject) => {
+    const req = request(url, {
+      ca, agent: false, method: init.method, headers: Object.fromEntries(headers),
+      checkServerIdentity: (_host, cert) => checkServerIdentity(TELEMETRY_RELAY_HOST, cert),
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("error", reject);
+      res.on("end", () => {
+        const status = res.statusCode ?? 500;
+        const body = status === 204 ? null : Uint8Array.from(Buffer.concat(chunks));
+        resolve(new Response(body, { status, headers: new Headers(res.headers as Record<string, string>) }));
+      });
+    });
+    req.on("error", reject);
+    req.end(init.body);
+  });
+}
+
+function listen(server: Server) {
   return new Promise<number>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, TELEMETRY_RELAY_HOST, () => {
@@ -58,18 +99,18 @@ function listen(server: ReturnType<typeof createServer>) {
   });
 }
 
-function close(server: ReturnType<typeof createServer>) {
+function close(server: Server) {
   return new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
 test("relay health check is local, bounded, and does not contact the upstream", async () => {
   let calls = 0;
-  const relay = createTelemetryRelay(relayConfiguration, {
+  const relay = createTestRelay(relayConfiguration, {
     fetchImpl: async () => { calls += 1; return new Response(); },
   });
   const relayPort = await listen(relay);
   try {
-    const response = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}${TELEMETRY_RELAY_HEALTH_PATH}`);
+    const response = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}${TELEMETRY_RELAY_HEALTH_PATH}`);
     assert.equal(response.status, 200);
     const health = await response.json() as { status: string; service: string; telemetryBuffer: { queuedBatches: number; replayState: string }; diagnostics: { ingestRequests: number } };
     assert.equal(health.status, "ok");
@@ -78,10 +119,58 @@ test("relay health check is local, bounded, and does not contact the upstream", 
     assert.equal(health.diagnostics.ingestRequests, 0);
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.equal(calls, 0);
-    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/health/extra`)).status, 404);
+    assert.equal((await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/health/extra`)).status, 404);
   } finally {
     await close(relay);
   }
+});
+
+test("the relay denies missing or cross-role credentials before forwarding or reading private data", async () => {
+  let upstream = 0;
+  let accountReads = 0;
+  const relay = createTestRelay(relayConfiguration, {
+    fetchImpl: async () => { upstream += 1; return Response.json(overlaySnapshot); },
+    accountProvider: { getSnapshot: () => { accountReads += 1; return accountSnapshot; } },
+  });
+  const base = `https://${TELEMETRY_RELAY_HOST}:${await listen(relay)}`;
+  const logs = { method: "POST", headers: { "content-type": "application/json" }, body: '{"resourceLogs":[]}' };
+  const account = { headers: { origin: "https://command-center.example" } };
+  try {
+    assert.equal((await requestRelay(`${base}/v1/logs`, logs, false)).status, 401);
+    assert.equal((await requestRelay(`${base}/v1/logs`, { ...logs, headers: { ...logs.headers, authorization: `Bearer ${security.tokens.browser}` } })).status, 401);
+    assert.equal((await requestRelay(`${base}/v1/overlay`, { headers: { authorization: `Bearer ${security.tokens.browser}` } })).status, 401);
+    assert.equal((await requestRelay(`${base}/health`, {}, false)).status, 401);
+    assert.equal((await requestRelay(`${base}/v1/account`, account, false)).status, 401);
+    assert.equal((await requestRelay(`${base}/v1/account`, { headers: { ...account.headers, authorization: `Bearer ${security.tokens.exporter}` } })).status, 401);
+    assert.equal((await requestRelay(`${base}/v1/overlay`, { headers: { host: "rebinding.example" } })).status, 421);
+    assert.equal(upstream, 0);
+    assert.equal(accountReads, 0);
+    assert.equal((await requestRelay(`${base}/v1/account`, account)).status, 200);
+    assert.equal((await requestRelay(`${base}/v1/overlay`)).status, 200);
+  } finally {
+    await close(relay);
+  }
+});
+
+test("a port squatter cannot receive authenticated requests without the installed relay identity", async () => {
+  let requests = 0;
+  const fakeHealth = (_request: unknown, response: import("node:http").ServerResponse) => {
+    requests += 1;
+    response.end('{"status":"ok","service":"codex-telemetry-relay"}');
+  };
+  const otherIdentity = join(testStateDirectory, "other-identity");
+  execFileSync("pwsh", ["-NoProfile", "-File", setupScript, "-Directory", otherIdentity]);
+  const foreign = await loadRelaySecurity(otherIdentity);
+  for (const server of [createServer(fakeHealth), createHttpsServer({ cert: foreign.cert, key: foreign.key }, fakeHealth)]) {
+    const base = `https://${TELEMETRY_RELAY_HOST}:${await listen(server)}`;
+    try {
+      await assert.rejects(requestRelay(`${base}/health`));
+      await assert.rejects(requestRelay(`${base}/v1/logs`, { method: "POST", body: "synthetic private marker" }));
+    } finally {
+      await close(server);
+    }
+  }
+  assert.equal(requests, 0);
 });
 
 test("local relay binds to loopback and forwards OTLP with Access and ingestion headers", async () => {
@@ -94,7 +183,7 @@ test("local relay binds to loopback and forwards OTLP with Access and ingestion 
     response.end(JSON.stringify({ partialSuccess: {} }));
   });
   const collectorPort = await listen(collector);
-  const relay = createTelemetryRelay({
+  const relay = createTestRelay({
     TELEMETRY_COLLECTOR_URL: `http://${TELEMETRY_RELAY_HOST}:${collectorPort}/api/telemetry/ingest`,
     TELEMETRY_INGEST_KEY: "test-ingest-key",
     CF_ACCESS_CLIENT_ID: "test-access-id",
@@ -104,12 +193,19 @@ test("local relay binds to loopback and forwards OTLP with Access and ingestion 
 
   try {
     const payload = JSON.stringify({ resourceLogs: [] });
-    const response = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/logs`, { method: "POST", headers: { "content-type": "application/json" }, body: payload });
+    const response = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/logs`, { method: "POST", headers: { "content-type": "application/json" }, body: payload });
     assert.equal(response.status, 200);
     assert.equal(captured?.headers.get("cf-access-client-id"), "test-access-id");
     assert.equal(captured?.headers.get("cf-access-client-secret"), "test-access-secret");
     assert.equal(captured?.headers.get("x-codex-telemetry-key"), "test-ingest-key");
     assert.equal(captured?.body, payload);
+    const protobuf = Uint8Array.of(10, 0);
+    const binary = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/logs`, {
+      method: "POST", headers: { "content-type": "application/x-protobuf" }, body: protobuf,
+    });
+    assert.equal(binary.status, 200);
+    assert.equal(captured?.headers.get("content-type"), "application/x-protobuf");
+    assert.deepEqual(Buffer.from(captured?.body ?? ""), Buffer.from(protobuf));
     const address = relay.address();
     assert.ok(address && typeof address !== "string");
     assert.equal(address.address, TELEMETRY_RELAY_HOST);
@@ -121,7 +217,7 @@ test("local relay binds to loopback and forwards OTLP with Access and ingestion 
 
 test("relay rejects unsupported media types before forwarding", async () => {
   let calls = 0;
-  const relay = createTelemetryRelay({
+  const relay = createTestRelay({
     TELEMETRY_COLLECTOR_URL: "http://127.0.0.1:9/api/telemetry/ingest",
     TELEMETRY_INGEST_KEY: "test-ingest-key",
     CF_ACCESS_CLIENT_ID: "test-access-id",
@@ -129,7 +225,7 @@ test("relay rejects unsupported media types before forwarding", async () => {
   }, { fetchImpl: async () => { calls += 1; return new Response(); } });
   const relayPort = await listen(relay);
   try {
-    const response = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/logs`, { method: "POST", headers: { "content-type": "text/plain" }, body: "no" });
+    const response = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/logs`, { method: "POST", headers: { "content-type": "text/plain" }, body: "no" });
     assert.equal(response.status, 415);
     assert.equal(calls, 0);
   } finally {
@@ -145,14 +241,14 @@ test("relay logging statements cannot reference secret configuration", async () 
 test("overlay read endpoint uses only the fixed upstream path and Access headers", async () => {
   let requestUrl = "";
   let requestHeaders = new Headers();
-  const relay = createTelemetryRelay(relayConfiguration, { fetchImpl: async (input, init) => {
+  const relay = createTestRelay(relayConfiguration, { fetchImpl: async (input, init) => {
     requestUrl = String(input);
     requestHeaders = new Headers(init?.headers);
     return Response.json(overlaySnapshot);
   } });
   const relayPort = await listen(relay);
   try {
-    const response = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=7d`);
+    const response = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=7d`);
     assert.equal(response.status, 200);
     assert.equal(new URL(requestUrl).pathname, OVERLAY_UPSTREAM_PATH);
     assert.equal(new URL(requestUrl).search, "?range=7d");
@@ -167,23 +263,23 @@ test("overlay read endpoint uses only the fixed upstream path and Access headers
 test("overlay relay serves local cache and enforces the minimum upstream refresh interval", async () => {
   let calls = 0;
   let clock = 1_000;
-  const relay = createTelemetryRelay(relayConfiguration, {
+  const relay = createTestRelay(relayConfiguration, {
     now: () => clock,
     overlayRefreshMs: 1,
     fetchImpl: async () => { calls += 1; return Response.json({ ...overlaySnapshot, generatedAt: new Date(clock).toISOString() }); },
   });
   const relayPort = await listen(relay);
   try {
-    const first = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
+    const first = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
     assert.equal(first.headers.get("x-codex-overlay-cache"), "upstream");
     assert.equal((await first.clone().json() as typeof overlaySnapshot & { overlayCache: string }).overlayCache, "upstream");
     clock += 14_999;
-    const cached = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
+    const cached = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
     assert.equal(cached.headers.get("x-codex-overlay-cache"), "fresh");
     assert.equal((await cached.clone().json() as typeof overlaySnapshot & { overlayCache: string }).overlayCache, "fresh");
     assert.equal(calls, 1);
     clock += 1;
-    const refreshed = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
+    const refreshed = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
     assert.equal(refreshed.headers.get("x-codex-overlay-cache"), "upstream");
     assert.equal((await refreshed.clone().json() as typeof overlaySnapshot & { overlayCache: string }).overlayCache, "upstream");
     assert.equal(calls, 2);
@@ -195,7 +291,7 @@ test("overlay relay serves local cache and enforces the minimum upstream refresh
 test("overlay relay serves the last safe snapshot when a stale refresh is offline", async () => {
   let clock = 1_000;
   let online = true;
-  const relay = createTelemetryRelay(relayConfiguration, {
+  const relay = createTestRelay(relayConfiguration, {
     now: () => clock,
     overlayRefreshMs: 15_000,
     fetchImpl: async () => {
@@ -205,10 +301,10 @@ test("overlay relay serves the last safe snapshot when a stale refresh is offlin
   });
   const relayPort = await listen(relay);
   try {
-    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=7d`)).status, 200);
+    assert.equal((await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=7d`)).status, 200);
     online = false;
     clock += 15_001;
-    const stale = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=7d`);
+    const stale = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=7d`);
     assert.equal(stale.status, 200);
     assert.equal(stale.headers.get("x-codex-overlay-cache"), "stale");
     assert.deepEqual(await stale.json(), { ...overlaySnapshot, overlayCache: "stale", codexAccount: { status: "unavailable", freshness: "unavailable", limits: [] }, telemetryBuffer: { queuedBatches: 0, queuedBytes: 0, droppedBatches: 0, replayState: "idle" } });
@@ -230,7 +326,7 @@ test("overlay relay does not let a safe degraded envelope replace a usable cache
     modelDistribution: [],
     reasoningDistribution: [],
   };
-  const relay = createTelemetryRelay(relayConfiguration, {
+  const relay = createTestRelay(relayConfiguration, {
     now: () => clock,
     overlayRefreshMs: 15_000,
     fetchImpl: async () => {
@@ -240,12 +336,12 @@ test("overlay relay does not let a safe degraded envelope replace a usable cache
   });
   const relayPort = await listen(relay);
   try {
-    const first = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
+    const first = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
     assert.equal(first.status, 200);
     assert.equal(isUsableOverlayPayload(overlaySnapshot), true);
     degraded = true;
     clock += 15_001;
-    const recovered = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
+    const recovered = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
     assert.equal(recovered.status, 200);
     assert.equal(recovered.headers.get("x-codex-overlay-cache"), "stale");
     const body = await recovered.json() as typeof overlaySnapshot & { overlayCache: string; windowSummary: { inputTokens?: number } };
@@ -259,13 +355,13 @@ test("overlay relay does not let a safe degraded envelope replace a usable cache
 
 test("overlay endpoint validates range, method, and rejects arbitrary proxy paths", async () => {
   let calls = 0;
-  const relay = createTelemetryRelay(relayConfiguration, { fetchImpl: async () => { calls += 1; return Response.json(overlaySnapshot); } });
+  const relay = createTestRelay(relayConfiguration, { fetchImpl: async () => { calls += 1; return Response.json(overlaySnapshot); } });
   const relayPort = await listen(relay);
   try {
-    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=weekly`)).status, 400);
-    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h&url=https://example.com`)).status, 400);
-    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay`, { method: "POST" })).status, 405);
-    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay/admin?range=24h`)).status, 400);
+    assert.equal((await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=weekly`)).status, 400);
+    assert.equal((await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h&url=https://example.com`)).status, 400);
+    assert.equal((await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay`, { method: "POST" })).status, 405);
+    assert.equal((await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay/admin?range=24h`)).status, 400);
     assert.equal(calls, 0);
   } finally {
     await close(relay);
@@ -273,17 +369,17 @@ test("overlay endpoint validates range, method, and rejects arbitrary proxy path
 });
 
 test("overlay endpoint handles unavailable, timed-out, and invalid upstream responses", async () => {
-  const cases: Array<Parameters<typeof createTelemetryRelay>[1]> = [
+  const cases: Array<Parameters<typeof createTelemetryRelay>[2]> = [
     { fetchImpl: async () => { throw new Error("offline"); } },
     { fetchImpl: async (_input, init) => new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("timeout")), { once: true })), overlayTimeoutMs: 5 },
     { fetchImpl: async () => new Response("not-json", { status: 200, headers: { "content-type": "text/plain" } }) },
     { fetchImpl: async () => Response.json({ ...overlaySnapshot, prompt: "must not pass" }) },
   ];
   for (const options of cases) {
-    const relay = createTelemetryRelay(relayConfiguration, options);
+    const relay = createTestRelay(relayConfiguration, options);
     const relayPort = await listen(relay);
     try {
-      const response = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
+      const response = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`);
       assert.equal(response.status, 502);
       assert.deepEqual(await response.json(), { error: "overlay_upstream_unavailable" });
     } finally {
@@ -309,7 +405,7 @@ test("relay buffers a retryable collector failure durably and exposes only safe 
   let attempts = 0;
   try {
     const spool = new TelemetrySpool({ directory, retryMinimumMs: 60_000, retryMaximumMs: 60_000 });
-    const relay = createTelemetryRelay({
+    const relay = createTestRelay({
       ...relayConfiguration,
       TELEMETRY_COLLECTOR_URL: "https://command-center.example/api/telemetry/ingest",
     }, {
@@ -324,10 +420,10 @@ test("relay buffers a retryable collector failure durably and exposes only safe 
     const relayPort = await listen(relay);
     try {
       const payload = JSON.stringify({ resourceLogs: [] });
-      const buffered = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/logs`, { method: "POST", headers: { "content-type": "application/json" }, body: payload });
+      const buffered = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/logs`, { method: "POST", headers: { "content-type": "application/json" }, body: payload });
       assert.equal(buffered.status, 202);
       assert.equal(buffered.headers.get("x-codex-telemetry-buffered"), "true");
-      const health = await (await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}${TELEMETRY_RELAY_HEALTH_PATH}`)).json() as { telemetryBuffer: { queuedBatches: number; replayState: string }; diagnostics: { bufferedRequests: number } };
+      const health = await (await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}${TELEMETRY_RELAY_HEALTH_PATH}`)).json() as { telemetryBuffer: { queuedBatches: number; replayState: string }; diagnostics: { bufferedRequests: number } };
       assert.equal(health.telemetryBuffer.queuedBatches, 1);
       assert.equal(health.telemetryBuffer.replayState, "buffering");
       assert.equal(health.diagnostics.bufferedRequests, 1);
@@ -356,35 +452,37 @@ test("relay buffers a retryable collector failure durably and exposes only safe 
 });
 
 test("account endpoint returns only the bounded local snapshot and rejects unsupported methods", async () => {
-  const relay = createTelemetryRelay(relayConfiguration, { accountProvider: { getSnapshot: () => accountSnapshot } });
+  const relay = createTestRelay(relayConfiguration, { accountProvider: { getSnapshot: () => accountSnapshot } });
   const relayPort = await listen(relay);
   try {
-    const response = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}`);
+    const response = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}`, { headers: { origin: "https://command-center.example" } });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), accountSnapshot);
     assert.equal(Number(response.headers.get("content-length") ?? 0) <= ACCOUNT_MAX_BYTES, true);
-    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}`, { method: "POST" })).status, 405);
-    assert.equal((await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}/extra`)).status, 405);
+    assert.equal((await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}`)).status, 403);
+    assert.equal((await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}`, { method: "POST" })).status, 405);
+    assert.equal((await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}/extra`)).status, 405);
   } finally {
     await close(relay);
   }
 });
 
 test("account endpoint CORS allows only the configured Command Center origin", async () => {
-  const relay = createTelemetryRelay(relayConfiguration, { accountProvider: { getSnapshot: () => accountSnapshot } });
+  const relay = createTestRelay(relayConfiguration, { accountProvider: { getSnapshot: () => accountSnapshot } });
   const relayPort = await listen(relay);
   try {
-    const allowed = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}`, { headers: { origin: "https://command-center.example" } });
+    const allowed = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}`, { headers: { origin: "https://command-center.example" } });
     assert.equal(allowed.status, 200);
     assert.equal(allowed.headers.get("access-control-allow-origin"), "https://command-center.example");
     assert.notEqual(allowed.headers.get("access-control-allow-origin"), "*");
 
-    const preflight = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}`, { method: "OPTIONS", headers: { origin: "https://command-center.example", "access-control-request-method": "GET", "access-control-request-private-network": "true" } });
+    const preflight = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}`, { method: "OPTIONS", headers: { origin: "https://command-center.example", "access-control-request-method": "GET", "access-control-request-private-network": "true" } });
     assert.equal(preflight.status, 204);
     assert.equal(preflight.headers.get("access-control-allow-methods"), "GET");
+    assert.equal(preflight.headers.get("access-control-allow-headers"), "Authorization");
     assert.equal(preflight.headers.get("access-control-allow-private-network"), "true");
 
-    const rejected = await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}`, { headers: { origin: "https://evil.example" } });
+    const rejected = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}${ACCOUNT_RELAY_PATH}`, { headers: { origin: "https://evil.example" } });
     assert.equal(rejected.status, 403);
     assert.equal(rejected.headers.has("access-control-allow-origin"), false);
   } finally {
@@ -395,16 +493,16 @@ test("account endpoint CORS allows only the configured Command Center origin", a
 test("local account data is attached after upstream validation without changing overlay caching", async () => {
   let remainingPercent = 67;
   let calls = 0;
-  const relay = createTelemetryRelay(relayConfiguration, {
+  const relay = createTestRelay(relayConfiguration, {
     accountProvider: { getSnapshot: () => ({ ...accountSnapshot, limits: [{ ...accountSnapshot.limits[0], windows: [{ ...accountSnapshot.limits[0].windows[0], remainingPercent }] }] }) },
     fetchImpl: async () => { calls += 1; return Response.json(overlaySnapshot); },
   });
   const relayPort = await listen(relay);
   try {
-    const first = await (await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`)).json() as typeof overlaySnapshot & { codexAccount: typeof accountSnapshot };
+    const first = await (await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`)).json() as typeof overlaySnapshot & { codexAccount: typeof accountSnapshot };
     assert.equal(first.codexAccount.limits[0].windows[0].remainingPercent, 67);
     remainingPercent = 66;
-    const second = await (await fetch(`http://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`)).json() as typeof first;
+    const second = await (await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/overlay?range=24h`)).json() as typeof first;
     assert.equal(second.codexAccount.limits[0].windows[0].remainingPercent, 66);
     assert.equal(calls, 1);
     assert.equal(Buffer.byteLength(JSON.stringify(second), "utf8") < 262_144, true);

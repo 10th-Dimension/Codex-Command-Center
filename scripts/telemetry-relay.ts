@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer } from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createCodexAccountService, discoverCodexExecutable, unavailableCodexAccount, type CodexAccountProvider } from "./codex-app-server-client";
 import { defaultTelemetrySpoolDirectory, TelemetrySpool, type TelemetryBufferHealth, type TelemetrySpoolContentType, type TelemetrySpoolReplayResult } from "./telemetry-spool";
 import { sanitizeTelemetryPayload } from "./telemetry-spool-payload";
+import { allowsRelayRequest, loadRelaySecurity, type RelaySecurity } from "./relay-security";
 import type { CodexAccountSnapshot, OverlayCacheState } from "../src/lib/overlay/contracts";
 
 export const TELEMETRY_RELAY_HOST = "127.0.0.1";
@@ -185,7 +186,7 @@ function readRequestBody(request: IncomingMessage) {
   });
 }
 
-export function createTelemetryRelay(configuration: RelayConfiguration, options: {
+export function createTelemetryRelay(configuration: RelayConfiguration, security: RelaySecurity, options: {
   fetchImpl?: typeof fetch;
   overlayTimeoutMs?: number;
   overlayRefreshMs?: number;
@@ -262,6 +263,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
         ...(replay ? { "x-codex-telemetry-replay": "1" } : {}),
       },
       body: Uint8Array.from(body),
+      redirect: "error",
       signal: AbortSignal.timeout(15_000),
     });
     const upstreamBody = new Uint8Array(await upstream.arrayBuffer());
@@ -394,11 +396,24 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
     return true;
   }
 
-  const server = createServer(async (request, response) => {
+  function authorize(request: IncomingMessage, response: ServerResponse, role: keyof RelaySecurity["tokens"]) {
+    if (allowsRelayRequest(request.headers.authorization, security.tokens[role])) return true;
+    response.writeHead(401, { "content-type": "application/json", "www-authenticate": "Bearer" });
+    response.end(JSON.stringify({ error: "unauthorized" }));
+    return false;
+  }
+
+  const server = createServer({ cert: security.cert, key: security.key, minVersion: "TLSv1.2" }, async (request, response) => {
     response.setHeader("cache-control", "no-store");
     response.setHeader("x-content-type-options", "nosniff");
+    if (request.headers.host !== `${TELEMETRY_RELAY_HOST}:${request.socket.localPort}`) {
+      response.writeHead(421);
+      response.end();
+      return;
+    }
 
     if (request.method === "GET" && request.url === TELEMETRY_RELAY_HEALTH_PATH) {
+      if (!authorize(request, response, "overlay")) return;
       const buffer = await spool.health();
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({
@@ -435,6 +450,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
       }
       response.writeHead(204, {
         "access-control-allow-methods": "GET",
+        "access-control-allow-headers": "Authorization",
         ...(request.headers["access-control-request-private-network"] === "true" ? { "access-control-allow-private-network": "true" } : {}),
         "access-control-max-age": "600",
       });
@@ -443,12 +459,12 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
     }
 
     if (request.url === ACCOUNT_RELAY_PATH && request.method === "GET") {
-      const origin = request.headers.origin;
-      if (origin && !setAccountCors(request, response)) {
+      if (!setAccountCors(request, response)) {
         response.writeHead(403, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: "origin_not_allowed" }));
         return;
       }
+      if (!authorize(request, response, "browser")) return;
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify(accountSnapshot()));
       return;
@@ -461,6 +477,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
     }
 
     if (request.method === "GET" && request.url?.startsWith(OVERLAY_RELAY_PATH)) {
+      if (!authorize(request, response, "overlay")) return;
       const range = parseOverlayRequestUrl(request.url);
       if (!range) {
         response.writeHead(400, { "content-type": "application/json" });
@@ -500,6 +517,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
       response.end(JSON.stringify({ error: "not_found" }));
       return;
     }
+    if (!authorize(request, response, "exporter")) return;
 
     const declaredLength = Number(request.headers["content-length"]);
     if (Number.isFinite(declaredLength) && declaredLength > TELEMETRY_RELAY_MAX_BYTES) {
@@ -565,9 +583,11 @@ export function createTelemetryRelay(configuration: RelayConfiguration, options:
     if (replayTimer) clearTimeout(replayTimer);
     replayTimer = undefined;
   });
-  void spool.ready().then(async () => {
-    if (await spool.hasPending()) scheduleReplay(Math.max(0, spool.nextRetryAt() - now()));
-  }).catch(() => undefined);
+  server.once("listening", () => {
+    void spool.ready().then(async () => {
+      if (server.listening && await spool.hasPending()) scheduleReplay(Math.max(0, spool.nextRetryAt() - now()));
+    }).catch(() => undefined);
+  });
   return server;
 }
 
@@ -587,17 +607,18 @@ function stopWithParent(server: ReturnType<typeof createServer>, closeOwned: () 
 
 async function main() {
   const configuration = await loadRelayEnvironment();
+  const security = await loadRelaySecurity();
   const accountService = createCodexAccountService({
     discoverExecutable: () => discoverCodexExecutable({ ...process.env, CODEX_CLI_PATH: configuration.CODEX_CLI_PATH }),
   });
-  accountService.start();
-  const server = createTelemetryRelay(configuration, {
+  const server = createTelemetryRelay(configuration, security, {
     accountProvider: accountService,
     spool: new TelemetrySpool({ directory: defaultTelemetrySpoolDirectory() }),
   });
   stopWithParent(server, () => accountService.close());
   server.listen(TELEMETRY_RELAY_PORT, TELEMETRY_RELAY_HOST, () => {
-    console.log(`Codex telemetry relay listening on loopback port ${TELEMETRY_RELAY_PORT}.`);
+    accountService.start();
+    console.log(`Codex telemetry relay listening with HTTPS on loopback port ${TELEMETRY_RELAY_PORT}.`);
   });
 }
 

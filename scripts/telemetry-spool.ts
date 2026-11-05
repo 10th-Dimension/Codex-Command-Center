@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { sanitizeTelemetryPayload } from "./telemetry-spool-payload";
 
 export const TELEMETRY_SPOOL_MAX_BYTES = 64 * 1024 * 1024;
 export const TELEMETRY_SPOOL_MAX_FILES = 512;
@@ -11,6 +12,7 @@ export const TELEMETRY_SPOOL_RETRY_MAXIMUM_MS = 60_000;
 
 const SPOOL_STATE_FILE = ".state.json";
 const ENTRY_PATTERN = /^entry-(\d+)-(\d+)\.json$/;
+const INCOMPLETE_ENTRY_PATTERN = /^entry-\d+-\d+\.json\.tmp-\d+-\d+-[a-z0-9]{0,6}$/;
 const CONTENT_TYPES = new Set([
   "application/json",
   "application/x-protobuf",
@@ -67,7 +69,7 @@ interface PersistedSpoolState {
 }
 
 interface SerializedSpoolEntry {
-  version: 1;
+  version: 2;
   id: string;
   contentType: TelemetrySpoolContentType;
   enqueuedAt: string;
@@ -102,7 +104,7 @@ function stateFile(directory: string) {
 
 async function writeAtomically(path: string, contents: string) {
   const temporary = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  await writeFile(temporary, contents, { encoding: "utf8", flag: "wx" });
+  await writeFile(temporary, contents, { encoding: "utf8", flag: "wx", mode: 0o600 });
   try {
     await rename(temporary, path);
   } catch (error) {
@@ -154,30 +156,28 @@ export class TelemetrySpool {
   }
 
   private async initialize() {
-    await mkdir(this.directory, { recursive: true });
+    await mkdir(this.directory, { recursive: true, mode: 0o700 });
     await this.loadState();
     const files = (await readdir(this.directory, { withFileTypes: true }))
-      .filter((entry) => entry.isFile() && ENTRY_PATTERN.test(entry.name))
-      .map((entry) => entry.name)
-      .sort((left, right) => left.localeCompare(right));
+      .filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
 
-    for (const file of files) {
+    // Uncommitted writes can contain legacy raw bytes and were never queued.
+    for (const file of files.filter((name) => INCOMPLETE_ENTRY_PATTERN.test(name))) {
+      await rm(join(this.directory, file), { force: true });
+    }
+
+    for (const file of files.filter((name) => ENTRY_PATTERN.test(name))) {
       const path = join(this.directory, file);
-      try {
-        const item = await this.readEntry(path);
-        if (!item) {
-          await rm(path, { force: true });
-          this.state.droppedBatches += 1;
-          continue;
-        }
-        this.entries.push(item);
-        this.queuedBytes += item.fileBytes;
-        const sequence = Number(ENTRY_PATTERN.exec(file)?.[2] ?? 0);
-        this.state.nextSequence = Math.max(this.state.nextSequence, sequence + 1);
-      } catch {
-        await rm(path, { force: true }).catch(() => undefined);
+      const item = await this.readEntry(path);
+      if (!item) {
+        await rm(path, { force: true });
         this.state.droppedBatches += 1;
+        continue;
       }
+      this.entries.push(item);
+      this.queuedBytes += item.fileBytes;
+      const sequence = Number(ENTRY_PATTERN.exec(file)?.[2] ?? 0);
+      this.state.nextSequence = Math.max(this.state.nextSequence, sequence + 1);
     }
     await this.persistState();
     this.replayState = this.entries.length ? "buffering" : "idle";
@@ -211,11 +211,31 @@ export class TelemetrySpool {
   }
 
   private async readEntry(path: string): Promise<SpoolEntry | undefined> {
-    const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
-    if (!isRecord(parsed) || parsed.version !== 1 || typeof parsed.id !== "string" || !isContentType(parsed.contentType) || typeof parsed.enqueuedAt !== "string" || !Number.isFinite(Date.parse(parsed.enqueuedAt)) || typeof parsed.bodyBase64 !== "string" || !isBase64(parsed.bodyBase64)) return undefined;
-    const body = Buffer.from(parsed.bodyBase64, "base64");
+    const contents = await readFile(path, "utf8");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(contents);
+    } catch {
+      return undefined;
+    }
+    if (!isRecord(parsed) || (parsed.version !== 1 && parsed.version !== 2) || typeof parsed.id !== "string" || !isContentType(parsed.contentType) || typeof parsed.enqueuedAt !== "string" || !Number.isFinite(Date.parse(parsed.enqueuedAt)) || typeof parsed.bodyBase64 !== "string" || !isBase64(parsed.bodyBase64)) return undefined;
+    let body = Buffer.from(parsed.bodyBase64, "base64");
     const bodyBytes = safeInteger(parsed.bodyBytes, -1);
     if (bodyBytes !== body.byteLength || bodyBytes > TELEMETRY_SPOOL_MAX_ENTRY_BODY_BYTES) return undefined;
+    if (parsed.version === 1) {
+      const sanitized = await sanitizeTelemetryPayload(parsed.contentType, body, parsed.enqueuedAt, true);
+      if (!sanitized || sanitized.body.byteLength > TELEMETRY_SPOOL_MAX_ENTRY_BODY_BYTES) return undefined;
+      body = Buffer.from(sanitized.body);
+      const migrated: SerializedSpoolEntry = {
+        version: 2,
+        id: parsed.id,
+        contentType: parsed.contentType,
+        enqueuedAt: parsed.enqueuedAt,
+        bodyBytes: body.byteLength,
+        bodyBase64: body.toString("base64"),
+      };
+      await writeAtomically(path, `${JSON.stringify(migrated)}\n`);
+    }
     const fileStats = await stat(path);
     return {
       id: parsed.id,
@@ -293,7 +313,7 @@ export class TelemetrySpool {
     const enqueuedAt = new Date(this.now()).toISOString();
     const id = `entry-${String(this.now()).padStart(16, "0")}-${String(sequence).padStart(12, "0")}`;
     const serialized: SerializedSpoolEntry = {
-      version: 1,
+      version: 2,
       id,
       contentType,
       enqueuedAt,

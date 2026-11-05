@@ -149,9 +149,9 @@ function jsonRecord(event: NormalizedTelemetryEvent) {
 
 function jsonPayload(events: NormalizedTelemetryEvent[]) {
   return textEncoder.encode(JSON.stringify({
-    resourceLogs: [{
+    resourceLogs: events.length ? [{
       scopeLogs: [{ logRecords: events.map(jsonRecord) }],
-    }],
+    }] : [],
   }));
 }
 
@@ -179,13 +179,12 @@ function protobufPayload(events: NormalizedTelemetryEvent[]) {
   return concat([fieldMessage(1, resourceLogs)]);
 }
 
-export async function sanitizeTelemetryPayload(contentType: TelemetrySpoolContentType, body: Uint8Array, receivedAt: string): Promise<SanitizedTelemetryPayload | undefined> {
+export async function sanitizeTelemetryPayload(contentType: TelemetrySpoolContentType, body: Uint8Array, receivedAt: string, replay = false): Promise<SanitizedTelemetryPayload | undefined> {
   try {
     const records = contentType === "application/json"
       ? decodeOtlpJson(JSON.parse(new TextDecoder().decode(body)))
       : decodeOtlpProtobuf(body);
-    const events = await normalizeOtlpRecords(records, receivedAt);
-    if (!events.length) return { contentType, body: Uint8Array.from(body) };
+    const events = await normalizeOtlpRecords(records, receivedAt, { replay });
     return {
       contentType,
       body: contentType === "application/json" ? jsonPayload(events) : protobufPayload(events),

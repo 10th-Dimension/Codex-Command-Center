@@ -73,7 +73,7 @@ export function PlatformIntelligencePanel() {
           <div className="platform-intelligence-story-meta"><span>{story.sourceName}</span><time dateTime={story.publishedAt}>{new Date(story.publishedAt).toLocaleDateString()}</time></div>
           <h3>{safeStoryLink(story.url) ? <a href={safeStoryLink(story.url) ?? undefined} target="_blank" rel="noreferrer">{story.title}</a> : story.title}</h3>
           {story.excerpt && <p>{story.excerpt}</p>}
-          {safeXPostLink(story.xPostUrl) && <PlatformXPost url={safeXPostLink(story.xPostUrl) ?? ""} />}
+          {story.xPostUrl && <PlatformXPost url={story.xPostUrl} />}
         </article>)}
       </div> : null}
       {!loading && snapshot && snapshot.stories.length === 0 && <p className="platform-unavailable">No matching product headlines have been returned by these sources yet. Use Refresh now to check them.</p>}
@@ -96,19 +96,6 @@ function safeStoryLink(value: string): string | null {
     )) return url.toString();
   } catch {
     // Invalid or unexpected source URLs are not rendered as links.
-  }
-  return null;
-}
-
-function safeXPostLink(value: string | undefined): string | null {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    const host = url.hostname.toLowerCase();
-    if (url.protocol === "https:" && ["x.com", "www.x.com", "twitter.com", "www.twitter.com"].includes(host)
-      && /^\/(OpenAI|OpenAIDevs)\/status\/\d+\/?$/i.test(url.pathname)) return url.toString();
-  } catch {
-    // Unexpected URLs are not rendered as embedded posts.
   }
   return null;
 }
