@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -162,4 +162,101 @@ test("privacy-safe protobuf replay keeps the protobuf content type and event sha
   assert.equal(records.length, 1);
   assert.equal(records[0].eventName, "codex.api_request");
   assert.equal(records[0].body, undefined);
+});
+
+test("filtered-only JSON and protobuf batches never keep raw fields", async () => {
+  const marker = "discarded private marker";
+  const delta = "response.custom_tool_call_input.delta";
+  const now = "2026-09-17T12:00:00.000Z";
+  const json = { resourceLogs: [{ scopeLogs: [{ logRecords: [{
+    body: { stringValue: marker },
+    attributes: [{ key: "event.kind", value: { stringValue: delta } }],
+  }] }] }], extra: marker };
+  const attribute = [...stringField(1, "event.kind"), ...bytesField(2, stringField(1, delta))];
+  const record = [...bytesField(5, stringField(1, marker)), ...bytesField(6, attribute)];
+  const protobuf = Uint8Array.from(bytesField(1, bytesField(2, bytesField(2, record))));
+  assert.equal(decodeOtlpJson(json)[0]?.body, marker);
+  assert.equal(decodeOtlpProtobuf(protobuf)[0]?.body, marker);
+
+  const filteredJson = await sanitizeTelemetryPayload("application/json", Buffer.from(JSON.stringify(json)), now);
+  const filteredProtobuf = await sanitizeTelemetryPayload("application/x-protobuf", protobuf, now);
+  assert.ok(filteredJson && filteredProtobuf);
+  assert.deepEqual(JSON.parse(Buffer.from(filteredJson.body).toString()), { resourceLogs: [] });
+  assert.deepEqual(decodeOtlpProtobuf(filteredProtobuf.body), []);
+  assert.equal(Buffer.from(filteredProtobuf.body).includes(marker), false);
+});
+
+test("legacy spool entries are scrubbed on disk before replay while preserving safe fingerprints", async () => {
+  await withDirectory(async (directory) => {
+    const now = "2026-09-17T12:00:00.000Z";
+    const legacyRaw = Buffer.from('{"resourceLogs":[],"prompt":"legacy private marker"}');
+    const payload = Buffer.from(JSON.stringify({ resourceLogs: [{ scopeLogs: [{ logRecords: [{
+      eventName: "codex.api_request",
+      attributes: [{ key: "call_id", value: { stringValue: "correlation" } }],
+    }] }] }] }));
+    const safe = await sanitizeTelemetryPayload("application/json", payload, now);
+    assert.ok(safe);
+    const [rawPath, safePath] = await Promise.all([legacyRaw, safe.body].map(async (body, index) => {
+      const id = `entry-0000000000000001-00000000000${index}`;
+      const path = join(directory, `${id}.json`);
+      await writeFile(path, JSON.stringify({
+        version: 1, id, enqueuedAt: now, contentType: "application/json",
+        bodyBytes: body.byteLength, bodyBase64: Buffer.from(body).toString("base64"),
+      }));
+      return path;
+    }));
+    const incomplete = "entry-0000000000000001-000000000002.json.tmp-123-1789646400000-old123";
+    await writeFile(join(directory, incomplete), legacyRaw);
+    const spool = new TelemetrySpool({ directory });
+    assert.equal((await spool.health()).queuedBatches, 2);
+    assert.equal((await readdir(directory)).includes(incomplete), false);
+    const rawEntry = JSON.parse(await readFile(rawPath, "utf8"));
+    assert.equal(rawEntry.version, 2);
+    assert.deepEqual(JSON.parse(Buffer.from(rawEntry.bodyBase64, "base64").toString()), { resourceLogs: [] });
+    const safeEntry = JSON.parse(await readFile(safePath, "utf8"));
+    assert.equal(safeEntry.version, 2);
+    const replayed: string[] = [];
+    assert.equal(await spool.replay(async (item) => {
+      replayed.push(Buffer.from(item.body).toString());
+      return "delivered";
+    }, true), 2);
+    assert.equal(replayed[0], '{"resourceLogs":[]}');
+    const normalize = (body: string) => normalizeOtlpRecords(decodeOtlpJson(JSON.parse(body)), now, { replay: true });
+    const [original] = await normalize(Buffer.from(safe.body).toString());
+    const [migrated] = await normalize(replayed[1]);
+    assert.equal(migrated.fingerprint, original.fingerprint);
+    assert.equal(migrated.callIdHash, original.callIdHash);
+  });
+});
+
+test("a failed legacy rewrite preserves the original for a later scrub", async (t) => {
+  await withDirectory(async (directory) => {
+    const clock = 1_789_646_400_000;
+    const random = 0.5;
+    t.mock.method(Date, "now", () => clock);
+    t.mock.method(Math, "random", () => random);
+    const id = "entry-0000000000000001-000000000000";
+    const path = join(directory, `${id}.json`);
+    const raw = Buffer.from('{"resourceLogs":[],"prompt":"legacy private marker"}');
+    const original = JSON.stringify({
+      version: 1, id, enqueuedAt: new Date(clock).toISOString(), contentType: "application/json",
+      bodyBytes: raw.byteLength, bodyBase64: raw.toString("base64"),
+    });
+    await writeFile(path, original);
+    const blocked = `${path}.tmp-${process.pid}-${clock}-${random.toString(36).slice(2, 8)}`;
+    await mkdir(blocked);
+
+    const spool = new TelemetrySpool({ directory });
+    let delivered = false;
+    await assert.rejects(spool.replay(async () => { delivered = true; return "delivered"; }, true));
+    assert.equal(delivered, false);
+    assert.equal(await readFile(path, "utf8"), original);
+    await rmdir(blocked);
+
+    const restarted = new TelemetrySpool({ directory });
+    assert.equal(await restarted.replay(async (item) => {
+      assert.equal(Buffer.from(item.body).toString(), '{"resourceLogs":[]}');
+      return "delivered";
+    }, true), 1);
+  });
 });

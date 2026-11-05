@@ -1,8 +1,7 @@
 use std::{
     ffi::{OsStr, OsString},
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     io::{Read, Write},
-    net::{SocketAddr, TcpStream},
     path::PathBuf,
     process::{Child, Command, Stdio},
     str::FromStr,
@@ -34,11 +33,8 @@ use windows_sys::Win32::{
     },
 };
 
-const RELAY_OVERLAY_URL: &str = "http://127.0.0.1:14318/v1/overlay";
-const RELAY_HEALTH_REQUEST: &[u8] =
-    b"GET /health HTTP/1.1\r\nHost: 127.0.0.1:14318\r\nConnection: close\r\n\r\n";
-const RELAY_HEALTH_MARKER: &str = "\"service\":\"codex-telemetry-relay\"";
-const RELAY_ADDRESS: &str = "127.0.0.1:14318";
+const RELAY_OVERLAY_URL: &str = "https://127.0.0.1:14318/v1/overlay";
+const RELAY_HEALTH_URL: &str = "https://127.0.0.1:14318/health";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DASHBOARD_URL: &str = "https://codex-command-center.chasewilcox93.workers.dev";
@@ -110,26 +106,51 @@ fn state_payload(state: &OverlayNativeState) -> NativeStatePayload {
     }
 }
 
+fn local_relay_identity() -> Result<(reqwest::Certificate, String), String> {
+    let base = ["LOCALAPPDATA", "XDG_STATE_HOME", "APPDATA"]
+        .into_iter()
+        .find_map(std::env::var_os)
+        .map(PathBuf::from)
+        .or_else(|| std::env::home_dir().map(|home| home.join(".local").join("state")))
+        .ok_or("relay_security_unavailable")?;
+    let directory = base.join("Codex Command Center").join("relay-security");
+    let ca = fs::read(directory.join("relay-ca.pem")).map_err(|_| "relay_security_unavailable")?;
+    let ca = reqwest::Certificate::from_pem(&ca).map_err(|_| "relay_security_unavailable")?;
+    let token = fs::read_to_string(directory.join("overlay.token"))
+        .map_err(|_| "relay_security_unavailable")?;
+    let token = token.trim();
+    if token.len() != 64
+        || !token
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err("relay_security_unavailable".into());
+    }
+    Ok((ca, token.to_owned()))
+}
+
 fn relay_is_healthy() -> bool {
-    let address = match RELAY_ADDRESS.parse::<SocketAddr>() {
-        Ok(address) => address,
-        Err(_) => return false,
-    };
-    let mut stream = match TcpStream::connect_timeout(&address, Duration::from_millis(400)) {
-        Ok(stream) => stream,
-        Err(_) => return false,
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-    if stream.write_all(RELAY_HEALTH_REQUEST).is_err() {
+    let Ok((ca, token)) = local_relay_identity() else {
         return false;
-    }
-    let mut response = Vec::with_capacity(512);
-    if stream.take(2_048).read_to_end(&mut response).is_err() {
+    };
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .https_only(true)
+        .no_proxy()
+        .tls_built_in_root_certs(false)
+        .add_root_certificate(ca)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_millis(900))
+        .build()
+    else {
         return false;
-    }
-    let response = String::from_utf8_lossy(&response);
-    response.starts_with("HTTP/1.1 200") && response.contains(RELAY_HEALTH_MARKER)
+    };
+    let Ok(response) = client.get(RELAY_HEALTH_URL).bearer_auth(token).send() else {
+        return false;
+    };
+    response.status() == reqwest::StatusCode::OK
+        && serde_json::from_reader::<_, serde_json::Value>(response.take(2_048)).is_ok_and(
+            |value| value["service"] == "codex-telemetry-relay" && value["status"] == "ok",
+        )
 }
 
 #[cfg(windows)]
@@ -919,13 +940,19 @@ async fn fetch_overlay(range: String) -> Result<serde_json::Value, String> {
     if !matches!(range.as_str(), "24h" | "7d" | "30d") {
         return Err("invalid_range".into());
     }
+    let (ca, token) = local_relay_identity()?;
     let client = reqwest::Client::builder()
+        .https_only(true)
+        .no_proxy()
+        .tls_built_in_root_certs(false)
+        .add_root_certificate(ca)
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "relay_offline".to_string())?;
     let response = client
         .get(RELAY_OVERLAY_URL)
+        .bearer_auth(token)
         .query(&[("range", range)])
         .send()
         .await
