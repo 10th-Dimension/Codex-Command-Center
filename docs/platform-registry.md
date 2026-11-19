@@ -13,11 +13,12 @@ The `/platform` route is a bundled, source-attributed reference plus a point-in-
 
 Keep these layers separate. An API or Work/Codex listing does not prove this account, plan, or installed build can use a capability. A model missing from the captured local bundle is `not_observed`, not `unavailable`. Unknown model IDs and persisted telemetry remain unchanged and render through their raw identifier.
 
-## September 29, 2026 updates represented
+## Model and capability updates
 
-- GPT-6.1 Sol (`gpt-6.1-sol`): 1,050,000 context tokens, 128,000 maximum output, API reasoning low/medium/high/xhigh/max (`none` and `minimal` unsupported). Responses API is required for tool calling. Standard short-context API USD and Work/Codex Standard token-credit rates are listed separately. The local bundled catalog did not contain this ID at inspection time.
+- GPT-6.2 Astra and Sol launched on November 17, 2026. Both were present in the refreshed Codex cache on November 18. The CLI bundle inspected separately on the same date contained GPT-6.1 Sol and Terra.
+- GPT-6.1 Sol (`gpt-6.1-sol`): 1,050,000 context tokens, 128,000 maximum output, API reasoning low/medium/high/xhigh/max (`none` and `minimal` unsupported). Responses API is required for tool calling. The page shows Standard short-context API USD and Work/Codex Standard token-credit rates.
 - GPT-6.1 Sol multi-agent is beta in the Responses API. Current Command Center telemetry cannot establish a parent/child agent lifecycle graph.
-- Fast and Ultrafast are service tiers, not reasoning efforts. The official rate card lists Fast for GPT-6.1 Sol, GPT-6 Astra, GPT-6 Sol, and GPT-6 Luna where supported. Ultrafast is GPT-6 Astra-only, at 6× API / 6× purchased Work/Codex credits / 8× included allowance on eligible plans. It is not listed by this installed model catalog. No actual served tier is ingested.
+- GPT-6.2 Astra and Sol both support Fast and Ultrafast where available. Ultrafast uses 6× included allowance on eligible Codex plans. Standard API and purchased-credit rates are multiplied by 3 through February 28, 2027 (Pacific time), and by 6 thereafter. Current telemetry omits the served tier.
 - Agents API computer use is an official OpenAI-hosted browser feature; it does not itself create a Codex desktop telemetry signal.
 - Codex Cloud and Sign in with ChatGPT appear as product metadata with account eligibility unknown. Daybreak/Trusted Access is available only with approval; Daybreak Red needs separate provisioning. Its local model slugs are observed in the bundle but do not prove this account is approved.
 - GPT-5.5 is scheduled to retire from ChatGPT, Work, and Codex on Oct 14, 2026; API access is unaffected. GPT-5.4/mini are documented as unavailable in Codex when signed in with ChatGPT as of Aug 31, while API-key use remains unaffected. Both facts are kept separate from old telemetry and bundled model definitions.
@@ -29,7 +30,7 @@ Product/release status, official source presence, and `accountAvailability` are 
 ## Model, tier, command, and price rules
 
 - `src/lib/platform/registry.ts` contains source IDs, authority/source type, URLs where available, effective/verified dates, status, and separate local/account observations.
-- `normalizeKnownModelIdentifier()` normalizes recognized GPT-6.1 Sol variants for metadata lookup only; it never rewrites persisted model identifiers. Unknown IDs pass through unchanged.
+- `normalizeKnownModelIdentifier()` recognizes GPT-6.2 Astra and Sol variants and GPT-6.1 Sol variants for metadata lookup. Persisted model IDs retain their emitted values.
 - Reasoning effort and service tier are separate. Explicit `priority`/`priority:Fast` normalizes to Fast; a missing value remains unknown. Local `ultra` reasoning is not API/Work `Ultrafast` processing.
 - CLI/TUI slash commands come from a pinned upstream `openai/codex` source revision; Desktop commands come from the separate Desktop command reference. This local `codex --help` reports top-level verbs, not slash menus, so installed slash-command availability remains unknown. The pinned source is not a local install or minimum-version guarantee.
 - `src/lib/telemetry/pricing.ts` centralizes token pricing. The exact local slugs `gpt-daybreak-blue-latest` and `gpt-daybreak-red-latest` resolve to the respective official Daybreak rates. The aggregate estimator applies Standard, short-context rates only. It does not apply long-context, Fast, Ultrafast, Batch/Flex, regional, or separately metered feature adjustments because request-level context length and returned service tier are not retained.
@@ -63,13 +64,16 @@ The Platform route does not call `getCodexPageData`, an API route, or a D1-backe
 
 ## Verified source manifest
 
-The local runtime and most listed documentation sources were checked at `2026-09-30T01:23:56Z` (Sep 29, 2026 in America/Los_Angeles). The model page, API pricing, Sep 29 API changelog, and Work/Codex rate card were rechecked at `2026-09-30T01:36:04Z`; the official DevDay event page was checked at `2026-09-30T01:45:35Z`. The event page confirms date and schedule only; product/release claims below are independently sourced from official docs, rate cards, release notes, or upstream source. An effective date is recorded only when an OpenAI release/publication date was stated; verification time is not treated as an effective date.
+The model cache, local runtime, GPT-6.2 release and model documentation, and pricing sources were checked on November 18, 2026 in America/Los_Angeles. The registry records the verification time for each source and the published effective date when available.
 
 | Source ID | Authority / effective date | Canonical source |
 | --- | --- | --- |
 | `apiModel` | OpenAI developer docs · Sep 29 | [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol) |
-| `apiPricing` | OpenAI developer docs · current pricing checked Sep 29 | [API pricing](https://developers.openai.com/api/docs/pricing) |
-| `workRateCard` | OpenAI Help Center · current card checked Sep 29 | [Work/Codex credit rate card](https://help.openai.com/en/articles/11481834-chatgpt-rate-card-business-enterpriseedu-credit-based-pricing) |
+| `gpt62Release` | OpenAI launch announcement · November 17 | [GPT-6.2 Astra and Sol](https://openai.com/index/introducing-gpt-6-2-astra-sol/) |
+| `gpt62AstraModel`, `gpt62SolModel` | OpenAI developer docs · checked November 18 | [Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra), [Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol) |
+| `apiPricing` | OpenAI developer docs · checked November 18 | [API pricing](https://developers.openai.com/api/docs/pricing) |
+| `codexPricing` | ChatGPT Learn · checked November 18 | [Individual Work/Codex pricing](https://learn.chatgpt.com/docs/pricing?codex-pricing-plans=individual) |
+| `workRateCard` | OpenAI Help Center · checked November 18 | [Work/Codex credit rate card](https://help.openai.com/en/articles/11481834-chatgpt-rate-card-business-enterpriseedu-credit-based-pricing) |
 | `apiChangelog` | Official release notes · Sep 29 | [API Changelog](https://developers.openai.com/api/docs/changelog) |
 | `devDayEvent` | Official DevDay event page · Sep 29 (event date/schedule only) | [OpenAI DevDay 2026](https://devday.openai.com/) |
 | `codexSource` | Official source · pinned blob `85eabb59dcc1ba7ee22de8172f4e90ce3af0e49d` | [Codex TUI slash-command source](https://github.com/openai/codex/blob/85eabb59dcc1ba7ee22de8172f4e90ce3af0e49d/codex-rs/tui/src/slash_command.rs) |

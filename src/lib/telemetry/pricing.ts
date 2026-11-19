@@ -3,7 +3,7 @@
  * published Work/Codex credit rates. They are comparisons, not account
  * balances or invoices.
  */
-export const CODEX_PRICING_CARD_ID = "openai-api-and-codex-token-rates-2026-10-26";
+export const CODEX_PRICING_CARD_ID = "openai-api-and-codex-token-rates-2026-11-18";
 export const CODEX_PRICING_BASIS = "codex-token-credit-rates" as const;
 export const CODEX_PRICING_NOTE = "Codex auto-review activity is excluded from these estimates and coverage because it has no published per-token rate. Standard short-context API USD rates and the published Work/Codex Standard credit rate card only; a missing current credit rate is reported as unavailable. Cache reads and writes are separate input subsets; API USD estimates use only a published cache-write rate, while Codex does not charge cache writes in credits. GPT-Rosalind-Research API billing begins October 5, 2026; hourly model aggregates do not preserve event dates to separate usage around that effective date, so its USD comparison uses the published rate and is not a date-scoped bill. GPT-6 Pro Chat is priced per message and is not estimated from token totals. Reasoning tokens are included in output and are not added again. Fast and Ultrafast service-tier multipliers, long-context requests, regional processing, and separately metered feature charges are excluded because this aggregate does not preserve the request-level fields needed to apply them. Pricing compares matching complete hourly rollups, so the partial leading model hour is excluded. This is not an invoice or account balance.";
 
@@ -29,6 +29,14 @@ type CacheWriteUsdRule = "premium-1.25x" | "unavailable";
 
 /** Published token-based Work/Codex credits and standard API USD rates. */
 export const CODEX_MODEL_PRICING: readonly CodexModelPricingRate[] = [
+  rate("gpt-6.2-astra", "GPT-6.2 Astra", ["gpt-6.2-astra", "6.2-astra"], 200, 10, 1000, 8, 0.4, 40, "premium-1.25x", {
+    thresholdTokens: 272_000, inputUsdPerMillion: 16, cachedInputUsdPerMillion: 0.8,
+    cacheWriteUsdPerMillion: 20, outputUsdPerMillion: 60,
+  }),
+  rate("gpt-6.2-sol", "GPT-6.2 Sol", ["gpt-6.2-sol", "6.2-sol"], 50, 2.5, 250, 2, 0.1, 10, "premium-1.25x", {
+    thresholdTokens: 272_000, inputUsdPerMillion: 4, cachedInputUsdPerMillion: 0.2,
+    cacheWriteUsdPerMillion: 5, outputUsdPerMillion: 15,
+  }),
   rate("gpt-6-astra", "GPT-6 Astra", ["gpt-6-astra", "6-astra", "astra"], 250, 25, 1250, 10, 1, 50, "premium-1.25x"),
   rate("gpt-6.1-sol", "GPT-6.1 Sol", ["gpt-6.1-sol", "6.1-sol", "gpt-6.1-sol-latest"], 50, 2.5, 250, 2, 0.1, 10, "premium-1.25x", {
     thresholdTokens: 272_000, inputUsdPerMillion: 4, cachedInputUsdPerMillion: 0.2,
@@ -98,7 +106,7 @@ export function codexEquivalentModelPriceLabel(model: Pick<CodexEquivalentModelC
   if (model.apiCredits !== undefined) {
     return model.status === "incomplete" ? `Partial ${model.apiCredits} credits` : `${model.apiCredits} credits only`;
   }
-  return model.status === "priced" ? "$—" : model.status === "incomplete" ? "Incomplete" : "Unpriced";
+  return "$0.00";
 }
 
 export interface CodexEquivalentPricing {
@@ -133,8 +141,8 @@ export interface CodexEquivalentPricing {
 export function codexPricingCoverageReasons(pricing: CodexEquivalentPricing) {
   const reasons: string[] = [];
   const formatted = (count: number) => `${count.toLocaleString()} tokens`;
-  if (pricing.unpricedModelTokenCount > 0) reasons.push(`Unpriced model usage: ${formatted(pricing.unpricedModelTokenCount)}.`);
-  if ((pricing.creditRateUnavailableTokenCount ?? 0) > 0) reasons.push(`Current Work/Codex credit rates are unavailable for ${formatted(pricing.creditRateUnavailableTokenCount ?? 0)}; the total credit equivalent is withheld.`);
+  if (pricing.unpricedModelTokenCount > 0) reasons.push(`Model usage excluded from the USD estimate: ${formatted(pricing.unpricedModelTokenCount)}.`);
+  if ((pricing.creditRateUnavailableTokenCount ?? 0) > 0) reasons.push(`Current Work/Codex credit rates are unavailable for ${formatted(pricing.creditRateUnavailableTokenCount ?? 0)}. The credit total shows zero when an estimate is unavailable.`);
   if ((pricing.unattributedTokenCount ?? 0) > 0) reasons.push(`Unattributed token usage: no trustworthy model was emitted for ${formatted(pricing.unattributedTokenCount ?? 0)}.`);
   if (pricing.tokenFieldsUnavailableTokenCount > 0) reasons.push(`Token fields unavailable: ${formatted(pricing.tokenFieldsUnavailableTokenCount)} could not be priced exactly.`);
   if ((pricing.truncatedModelTokenCount ?? 0) > 0) reasons.push(`Model details beyond the display limit: ${formatted(pricing.truncatedModelTokenCount ?? 0)}.`);

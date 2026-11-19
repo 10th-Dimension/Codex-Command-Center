@@ -5,6 +5,7 @@ import {
   CODEX_CLI_COMMANDS,
   CODEX_DESKTOP_COMMANDS,
   GPT_61_SOL,
+  GPT_62_MODELS,
   LOCAL_CODEX_MODELS,
   LOCAL_CODEX_RUNTIME,
   OTHER_REVIEWED_SURFACES,
@@ -32,12 +33,12 @@ test("GPT-6.1 Sol reasoning support is explicit and surface-scoped", () => {
   }
   assert.equal(reasoningEffortSupport("gpt-6.1-sol", "none", "api"), "unsupported");
   assert.equal(reasoningEffortSupport("gpt-6.1-sol", "minimal", "api"), "unsupported");
-  assert.equal(reasoningEffortSupport("gpt-6.1-sol", "low", "installed-codex"), "unknown");
+  assert.equal(reasoningEffortSupport("gpt-6.1-sol", "low", "installed-codex"), "supported");
   assert.equal(reasoningEffortSupport("future-model", "low", "api"), "unknown");
 });
 
-test("local catalog snapshot preserves legacy entries and separates Ultra effort from Ultrafast tier", () => {
-  assert.equal(LOCAL_CODEX_MODELS.length, 11);
+test("the observed CLI bundle separates Ultra effort from Ultrafast tier", () => {
+  assert.equal(LOCAL_CODEX_MODELS.length, 12);
   for (const slug of ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
     assert.ok(LOCAL_CODEX_MODELS.some(({ id }) => id === slug), slug);
   }
@@ -52,10 +53,22 @@ test("local catalog snapshot preserves legacy entries and separates Ultra effort
   assert.equal(SERVICE_TIER_REGISTRY.find(({ id }) => id === "ultrafast")?.workCodexIncludedAllowanceMultiplier, 8);
 });
 
+test("GPT-6.2 model aliases resolve and cache observations keep their provenance", () => {
+  assert.equal(normalizeKnownModelIdentifier("openai/GPT-6.2 Astra-ultra"), "gpt-6.2-astra");
+  assert.equal(normalizeKnownModelIdentifier("6.2 Sol"), "gpt-6.2-sol");
+  for (const model of GPT_62_MODELS) {
+    const capability = PLATFORM_CAPABILITIES.find(({ id }) => id === model.id);
+    assert.equal(capability?.effectiveDate, "2026-11-17");
+    assert.equal(capability?.accountAvailability, "unknown");
+    assert.ok(capability?.sourceIds.includes("codexModelCache"));
+    assert.equal(LOCAL_CODEX_MODELS.some(({ id }) => id === model.id), false);
+  }
+});
+
 test("GPT-6.1 Sol product release, local bundle observation, and account eligibility remain distinct", () => {
   assert.equal(GPT_61_SOL.apiStatus, "available");
   assert.equal(GPT_61_SOL.workCodexStatus, "available");
-  assert.equal(GPT_61_SOL.installedCodexBundleObservation, "not_observed");
+  assert.equal(GPT_61_SOL.installedCodexBundleObservation, "observed");
   assert.equal(GPT_61_SOL.accountAvailability, "unknown");
   assert.equal(PLATFORM_CAPABILITIES.find(({ id }) => id === "gpt-6.1-multi-agent")?.status, "beta");
   assert.equal(PLATFORM_CAPABILITIES.find(({ id }) => id === "gpt-6.1-multi-agent")?.accountAvailability, "unknown");

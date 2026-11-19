@@ -2,6 +2,8 @@ import {
   CODEX_CLI_COMMANDS,
   CODEX_DESKTOP_COMMANDS,
   GPT_61_SOL,
+  GPT_62_CATALOG,
+  GPT_62_MODELS,
   LOCAL_CODEX_MODELS,
   LOCAL_CODEX_RUNTIME,
   OTHER_REVIEWED_SURFACES,
@@ -31,7 +33,7 @@ export function PlatformPage() {
         <h1>Platform intelligence</h1>
         <p>Major AI launches and capabilities, official OpenAI product facts, this machine’s observed Codex baseline, and current telemetry coverage—kept separate.</p>
       </div>
-      <div className="platform-verified"><span>Metadata verified</span><time dateTime={PLATFORM_VERIFIED_AT}>{PLATFORM_VERIFIED_AT.replace("T", " ").replace(".000Z", " UTC")}</time><small>Sep 29 local runtime and release audit</small></div>
+      <div className="platform-verified"><span>Models and pricing checked</span><time dateTime={PLATFORM_VERIFIED_AT}>{PLATFORM_VERIFIED_AT.replace("T", " ").replace(".000Z", " UTC")}</time></div>
     </header>
 
     <PlatformIntelligencePanel />
@@ -45,9 +47,32 @@ export function PlatformPage() {
     </section>
 
     <section className="platform-section" aria-labelledby="platform-model-title">
-      <SectionHeading eyebrow="MODEL CATALOG" title="GPT-6.1 models and this installed bundle" id="platform-model-title" />
+      <SectionHeading eyebrow="MODEL CATALOG" title="GPT-6.2 and GPT-6.1 models" id="platform-model-title" />
+      {GPT_62_MODELS.map((model) => {
+        const price = resolveCodexPricingRate(model.id);
+        return <article key={model.id} className="platform-panel platform-model-card">
+          <div className="platform-panel-heading"><div><span className="platform-status available">API documented</span><span className="platform-status available">Seen in Codex cache</span></div><SourceLink sourceId={model.sourceId} /></div>
+          <h3>{model.displayName} <code>{model.id}</code></h3>
+          <p>{model.summary} Tool calling uses the Responses API.</p>
+          <dl className="platform-facts">
+            <Fact label="API context" value={formatTokens(GPT_62_CATALOG.apiContextWindowTokens)} />
+            <Fact label="API maximum output" value={formatTokens(GPT_62_CATALOG.apiMaximumOutputTokens)} />
+            <Fact label="Codex cache context" value={`${formatTokens(model.cachedContextWindowTokens)} · max ${formatTokens(GPT_62_CATALOG.cachedMaximumContextTokens)}`} />
+            <Fact label="Codex cache reasoning" value={GPT_62_CATALOG.cachedReasoningEfforts.join(" · ")} />
+          </dl>
+          {price ? <div className="platform-rate-grid">
+            <div><b>Rate</b><b>Input / 1M</b><b>Cached input / 1M</b><b>Output / 1M</b>
+              <span>API Standard, short context</span><span>${price.inputUsdPerMillion?.toFixed(2)}</span><span>${price.cachedInputUsdPerMillion?.toFixed(2)}</span><span>${price.outputUsdPerMillion?.toFixed(2)}</span>
+              <span>Work/Codex Standard credits</span><span>{price.inputCreditsPerMillion}</span><span>{price.cachedInputCreditsPerMillion}</span><span>{price.outputCreditsPerMillion}</span>
+            </div>
+            <p>API 30-minute cache writes cost ${price.cacheWriteUsdPerMillion?.toFixed(2)} per 1M. The comparison uses Standard rates for short-context requests.</p>
+            <SourceLink sourceId="codexPricing" /> <SourceLink sourceId="apiPricing" />
+          </div> : null}
+          <p className="platform-note">Codex catalog cache fetched <time dateTime={GPT_62_CATALOG.cacheFetchedAt}>{GPT_62_CATALOG.cacheFetchedAt}</time>. Availability varies across accounts and workspaces.</p>
+        </article>;
+      })}
       <article className="platform-panel platform-model-card">
-        <div className="platform-panel-heading"><div><span className="platform-status available">API documented</span><span className="platform-status unknown">Not observed in local bundle</span></div><SourceLink sourceId="apiModel" /></div>
+        <div className="platform-panel-heading"><div><span className="platform-status available">API documented</span><span className="platform-status available">Seen in local bundle</span></div><SourceLink sourceId="apiModel" /></div>
         <h3>{GPT_61_SOL.displayName} <code>{GPT_61_SOL.id}</code></h3>
         <p>GPT-6 family model for complex coding and professional work, positioned below GPT-6 Astra in API price. Chat Completions does not provide tool calling for this model; use Responses API for tools.</p>
         <dl className="platform-facts">
@@ -81,11 +106,11 @@ export function PlatformPage() {
         </div> : <p className="platform-unavailable">Pricing metadata is unavailable.</p>}
       </article>
       <details className="platform-panel platform-details">
-        <summary>Locally bundled model catalog <span>{LOCAL_CODEX_MODELS.length} entries · snapshot, not a live connection</span></summary>
+        <summary>Locally bundled model catalog <span>{LOCAL_CODEX_MODELS.length} entries · CLI snapshot</span></summary>
         <div className="platform-table-wrap"><table><thead><tr><th>Bundled slug</th><th>Context window</th><th>Maximum context</th><th>Reasoning efforts</th><th>Catalog tier</th></tr></thead>
           <tbody>{LOCAL_CODEX_MODELS.map((model) => <tr key={model.id}><th><code>{model.id}</code><small>{model.displayName}</small></th><td>{formatTokens(model.contextWindowTokens)}</td><td>{formatTokens(model.maximumContextTokens)}</td><td>{model.reasoningEfforts.join(", ")}</td><td>{model.speedTiers.length ? model.speedTiers.join(", ") : "Not listed"}</td></tr>)}</tbody>
         </table></div>
-        <p className="platform-note">Observed with <code>codex debug models --bundled</code> on {LOCAL_CODEX_RUNTIME.cliVersion}. This snapshot can include gated or retired model definitions; it is not the account’s selectable-model list. GPT-6.1 Sol and Ultrafast were not in this bundled output, which does not prove they are unavailable to the account or another client.</p>
+        <p className="platform-note">Observed with <code>codex debug models --bundled</code> on {LOCAL_CODEX_RUNTIME.cliVersion}. The bundle can include gated or retired model definitions. GPT-6.2 was observed in the refreshed Codex cache shown above.</p>
         <SourceLink sourceId="localRuntime" />
       </details>
     </section>
@@ -94,10 +119,19 @@ export function PlatformPage() {
       <section className="platform-section" aria-labelledby="platform-tiers-title">
         <SectionHeading eyebrow="PROCESSING, NOT REASONING" title="Service tiers" id="platform-tiers-title" />
         <article className="platform-panel platform-table-wrap"><table><thead><tr><th>Tier</th><th>API vs Standard</th><th>Work/Codex credits</th><th>Scope</th></tr></thead><tbody>
-          {SERVICE_TIER_REGISTRY.map((tier) => <tr key={tier.id}><th>{tier.id}</th><td>{tier.apiMultiplier === 1 ? "1×" : tier.apiMultiplier === null ? "Unknown" : `${tier.apiMultiplier}×`}</td><td>{tier.workCodexPurchasedCreditMultiplier === null ? "No published rate" : `${tier.workCodexPurchasedCreditMultiplier}× purchased · ${tier.workCodexIncludedAllowanceMultiplier}× included allowance`}</td><td>{tier.modelsAndScope}</td></tr>)}
+          {SERVICE_TIER_REGISTRY.map((tier) => {
+            const intro = tier.introductoryRate;
+            const introLabel = intro ? `${intro.multiplier}× through ${intro.through}, then ` : "";
+            return <tr key={`${tier.id}-${tier.modelsAndScope}`}>
+              <th>{tier.id}</th>
+              <td>{tier.apiMultiplier === null ? "Unknown" : `${introLabel}${tier.apiMultiplier}×`}</td>
+              <td>{tier.workCodexPurchasedCreditMultiplier === null ? "No published rate" : `${introLabel}${tier.workCodexPurchasedCreditMultiplier}× purchased · ${tier.workCodexIncludedAllowanceMultiplier}× included allowance`}</td>
+              <td>{tier.modelsAndScope}</td>
+            </tr>;
+          })}
         </tbody></table>
           <p className="platform-note">Fast and Ultrafast are not reasoning efforts. The local model catalog lists Fast for selected models, but current telemetry does not capture the tier that actually served a request. Therefore these multipliers are documented for reference only and are not applied to the aggregate estimator.</p>
-          <SourceLink sourceId="apiPricing" /> <SourceLink sourceId="workRateCard" />
+          <SourceLink sourceId="apiPricing" /> <SourceLink sourceId="codexPricing" />
         </article>
       </section>
 
