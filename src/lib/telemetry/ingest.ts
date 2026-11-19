@@ -7,6 +7,7 @@ import {
   deleteExpiredRollups,
   isMissingRollupSchemaError,
   refreshStaleMaterializedSnapshots,
+  SNAPSHOT_TTL_MS,
 } from "@/lib/telemetry/rollups";
 
 export const MAX_TELEMETRY_PAYLOAD_BYTES = 1_048_576;
@@ -23,8 +24,8 @@ interface MaintenanceResult {
 interface MaintenanceState {
   lastCompletedAt?: number;
   lastAttemptAt?: number;
+  lastCleanupAt?: number;
   inFlight?: Promise<MaintenanceResult>;
-  cleanupBacklog?: boolean;
 }
 
 const maintenanceStates = new WeakMap<object, MaintenanceState>();
@@ -105,15 +106,16 @@ async function runMaintenance(database: D1DatabaseLike, retentionDays: number, n
     let snapshotRebuilds = 0;
     let rowsWritten: number | undefined;
     let cleanupDue = false;
+    const retentionCleanupIntervalElapsed = state.lastCleanupAt === undefined ||
+      now.getTime() - state.lastCleanupAt >= SNAPSHOT_TTL_MS["30d"];
     try {
       const snapshots = await refreshStaleMaterializedSnapshots(database, now);
       snapshotRebuilds = snapshots.refreshed.length;
       rowsWritten = addRowsWritten(rowsWritten, snapshots.rowsWritten);
-      // The persisted 30-day snapshot timestamp gates normal cleanup across
-      // Worker instances without slowing the one-minute 24-hour snapshot.
-      // If a bounded raw delete fills a batch, keep draining on subsequent
-      // maintenance passes in this instance rather than waiting 15 minutes.
-      cleanupDue = snapshots.refreshed.includes("30d") || state.cleanupBacklog === true;
+      // Only the isolate that wins a persisted 30-day snapshot refresh runs
+      // normal cleanup. Full batches resume on that shared 15-minute cadence
+      // instead of draining more batches on every minute-level ingest pass.
+      cleanupDue = snapshots.refreshed.includes("30d");
       if (cleanupDue) {
         const rollupCleanup = await deleteExpiredRollups(database, now);
         cleanupDeletes += rollupCleanup.changes;
@@ -123,13 +125,13 @@ async function runMaintenance(database: D1DatabaseLike, retentionDays: number, n
       if (!isMissingRollupSchemaError(error)) throw error;
       schemaUnavailable = true;
       // Preserve raw-event retention when rollup tables have not been applied.
-      cleanupDue = true;
+      cleanupDue = retentionCleanupIntervalElapsed;
     }
     if (cleanupDue) {
+      state.lastCleanupAt = now.getTime();
       const rawCleanup = await deleteExpiredTelemetry(database, retentionDays, now);
       cleanupDeletes += rawCleanup.changes;
       rowsWritten = addRowsWritten(rowsWritten, rawCleanup.rowsWritten);
-      state.cleanupBacklog = rawCleanup.backlogMayRemain;
     }
     const result: MaintenanceResult = { schemaUnavailable, snapshotRebuilds, cleanupDeletes, ...(rowsWritten === undefined ? {} : { rowsWritten }) };
     state.lastCompletedAt = now.getTime();

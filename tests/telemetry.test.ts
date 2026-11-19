@@ -450,7 +450,7 @@ test("ingestion batches writes, deduplicates retries, and runs retention cleanup
   assert.doesNotMatch(stored, /must-never-appear|authorization|private prompt|private output/);
 });
 
-test("retention cleanup follows the 30-day snapshot without slowing 24-hour refresh", async () => {
+test("retention cleanup follows the 30-day snapshot and the 24-hour snapshot refreshes every five minutes", async () => {
   const database = new SnapshotTrackingD1();
   let current = Date.parse(now);
   const options = { database, ingestKey, retentionDays: 30, now: () => new Date(current) };
@@ -463,10 +463,16 @@ test("retention cleanup follows the 30-day snapshot without slowing 24-hour refr
   current += 61_000;
   const nextMinute = await handleTelemetryIngest(requestFor(jsonPayload("codex.api_request.next-minute")), options);
   assert.equal(nextMinute.status, 200);
-  assert.equal(nextMinute.headers.get("x-codex-telemetry-snapshot-rebuilds"), "1");
+  assert.equal(nextMinute.headers.get("x-codex-telemetry-snapshot-rebuilds"), "0");
   assert.equal(database.deleted, 6, "24-hour refresh must not repeat retention scans");
 
-  current += 15 * 60_000;
+  current += 4 * 60_000;
+  const next24Hour = await handleTelemetryIngest(requestFor(jsonPayload("codex.api_request.next-24h")), options);
+  assert.equal(next24Hour.status, 200);
+  assert.equal(next24Hour.headers.get("x-codex-telemetry-snapshot-rebuilds"), "1");
+  assert.equal(database.deleted, 6, "a 24-hour refresh does not repeat retention scans");
+
+  current += 10 * 60_000;
   const nextLongRange = await handleTelemetryIngest(requestFor(jsonPayload("codex.api_request.next-long-range")), options);
   assert.equal(nextLongRange.status, 200);
   assert.equal(nextLongRange.headers.get("x-codex-telemetry-snapshot-rebuilds"), "3");
@@ -496,7 +502,7 @@ test("maintenance failures back off within an isolate without dropping subsequen
   assert.equal(database.insertedValues.length, 3);
 });
 
-test("a full raw-retention batch keeps draining on the next maintenance pass", async () => {
+test("a full raw-retention batch waits for the next 30-day cleanup cycle", async () => {
   const database = new BacklogD1();
   let current = Date.parse(now);
   const options = { database, ingestKey, retentionDays: 30, now: () => new Date(current) };
@@ -505,13 +511,18 @@ test("a full raw-retention batch keeps draining on the next maintenance pass", a
   assert.equal(database.legacyDeletePasses, 1);
 
   current += 61_000;
-  const drain = await handleTelemetryIngest(requestFor(jsonPayload("codex.api_request.drain")), options);
-  assert.equal(drain.status, 200);
-  assert.equal(drain.headers.get("x-codex-telemetry-snapshot-rebuilds"), "1");
-  assert.equal(database.legacyDeletePasses, 2, "a full batch must not wait for the next 30-day snapshot");
+  const wait = await handleTelemetryIngest(requestFor(jsonPayload("codex.api_request.wait")), options);
+  assert.equal(wait.status, 200);
+  assert.equal(wait.headers.get("x-codex-telemetry-snapshot-rebuilds"), "0");
+  assert.equal(database.legacyDeletePasses, 1, "a full batch must not be drained on the next minute-level maintenance pass");
+
+  current += 15 * 60_000 - 61_000;
+  const nextCycle = await handleTelemetryIngest(requestFor(jsonPayload("codex.api_request.next-cycle")), options);
+  assert.equal(nextCycle.headers.get("x-codex-telemetry-snapshot-rebuilds"), "3");
+  assert.equal(database.legacyDeletePasses, 2, "the next 30-day refresh resumes bounded retention cleanup");
 
   current += 61_000;
-  await handleTelemetryIngest(requestFor(jsonPayload("codex.api_request.after-drain")), options);
+  await handleTelemetryIngest(requestFor(jsonPayload("codex.api_request.after-cycle")), options);
   assert.equal(database.legacyDeletePasses, 2, "cleanup rests after the backlog is drained");
 });
 
