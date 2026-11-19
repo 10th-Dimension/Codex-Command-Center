@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { Activity, AlertTriangle, Check, ChevronDown, Circle, ExternalLink, EyeOff, LayoutGrid, Lock, Minus, Power, RefreshCw, Settings, Unlock, X } from "lucide-react";
 import type { CodexQuotaWindow, OverlaySnapshot, TelemetryBufferHealth } from "../../../src/lib/overlay/contracts";
-import { codexEquivalentModelPriceLabel, codexPricingCoverageReasons } from "../../../src/lib/telemetry/pricing";
+import { codexEquivalentModelPriceLabel, codexPricingCoverageReasons, resolveCodexPricingRate } from "../../../src/lib/telemetry/pricing";
 import { absoluteResetTime, estimateUsagePace, quotaFreshness, resetCountdown } from "../../../src/lib/overlay/account";
 import { telemetryFreshness } from "./lib/freshness";
 import { telemetryBufferStatus } from "./lib/buffer-status";
@@ -317,11 +317,10 @@ function QuotaPanel({ account, now, showWeeklyDetails = false }: Readonly<{ acco
 }
 
 function PricingPanel({ pricing }: Readonly<{ pricing?: OverlaySnapshot["pricing"] }>) {
-  const available = pricing?.status === "available" || pricing?.status === "partial";
   const coverageReasons = pricing ? codexPricingCoverageReasons(pricing) : [];
   return <section className={`pricing-panel ${pricing?.status ?? "unavailable"}`}>
     <div className="section-title"><b>API-equivalent usage</b><span>{pricing?.status === "partial" ? "Partial coverage" : pricing?.status === "available" ? "Full coverage" : "Unavailable"}</span></div>
-    <div className="pricing-main"><div><small>USD equivalent</small><strong>{available && pricing?.usdEquivalent !== undefined ? `$${pricing.usdEquivalent}` : "Unavailable"}</strong></div><div><small>Codex credits</small><strong>{available && pricing?.apiCredits !== undefined ? pricing.apiCredits : "—"}</strong></div><div><small>Priced token coverage</small><strong>{pricing?.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}%`}</strong></div></div>
+    <div className="pricing-main"><div><small>USD equivalent</small><strong>${pricing?.usdEquivalent ?? "0.00"}</strong></div><div><small>Codex credits</small><strong>{pricing?.apiCredits ?? "0"}</strong></div><div><small>Priced token coverage</small><strong>{pricing?.coveragePercent === undefined ? "—" : `${pricing.coveragePercent}%`}</strong></div></div>
     {pricing?.status === "partial" && coverageReasons.length ? <p className="pricing-coverage-reasons">{coverageReasons.join(" · ")}</p> : null}
     {pricing?.byModel.length ? <details className="pricing-details"><summary>Model math <span>+</span></summary><div>{pricing.byModel.map((model) => <div key={model.model}><span><b>{model.displayName}</b><small>{model.model} · {model.eventCount.toLocaleString()} events{model.reason ? ` · ${model.reason}` : ""}</small></span><strong className={model.status === "incomplete" && (model.usdEquivalent !== undefined || model.apiCredits !== undefined) ? "partial" : undefined}>{codexEquivalentModelPriceLabel(model)}</strong></div>)}</div></details> : null}
     <details className="pricing-details pricing-note-details"><summary>Pricing assumptions <span>+</span></summary><p>{pricing?.note ?? "Standard token rates · feature charges excluded · reasoning is included in output."}</p></details>
@@ -478,7 +477,10 @@ function Text({ label, value, change }: Readonly<{ label: string; value: string;
 function numberLabel(value?: number) { return value === undefined ? "—" : new Intl.NumberFormat("en", { notation: value >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value); }
 function formatCreditBalance(balance: string) { const value = Number(balance); return Number.isFinite(value) ? new Intl.NumberFormat("en", { maximumFractionDigits: 2 }).format(value) : balance; }
 function durationLabel(value?: number) { return value === undefined ? "—" : value < 1_000 ? `${Math.round(value)}ms` : `${(value / 1_000).toFixed(1)}s`; }
-function friendlyModel(value?: string) { return value ? value.replace(/^gpt-/, "").replace(/\.0$/, "") : "No model"; }
+function friendlyModel(value?: string) {
+  if (!value) return "No model";
+  return resolveCodexPricingRate(value)?.displayName.replace(/^GPT-/, "") ?? value.replace(/^gpt-/, "").replace(/\.0$/, "");
+}
 function shortAge(value: string) { const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 1_000)); return seconds < 60 ? `${seconds}s ago` : seconds < 3_600 ? `${Math.floor(seconds / 60)}m ago` : `${Math.floor(seconds / 3_600)}h ago`; }
 function titleCase(value: string) { return value.replace(/-/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 function safeNativeMessage(error: unknown) {

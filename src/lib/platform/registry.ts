@@ -3,9 +3,10 @@
  * This registry is bundled at build time; it never fetches remote metadata or
  * writes product facts into telemetry tables.
  */
-export const PLATFORM_VERIFIED_AT = "2026-09-30T01:45:35.000Z" as const;
+export const PLATFORM_VERIFIED_AT = "2026-11-19T01:49:10.000Z" as const;
 const productMetadataVerified = "2026-09-30T01:36:04.000Z";
 const previouslyVerified = "2026-09-30T01:23:56.000Z";
+const gpt62ReleaseDate = "2026-11-17";
 
 export type PlatformStatus = "available" | "rolling_out" | "announced" | "preview" | "beta" | "unavailable" | "unknown";
 export type PlatformAuthority = "runtime" | "official_source_code" | "official_developer_docs" | "official_help_center" | "official_release_notes" | "official_safety_document" | "official_event";
@@ -25,12 +26,51 @@ const verified = productMetadataVerified;
 
 export const PLATFORM_SOURCES = {
   localRuntime: {
-    sourceId: "local-codex-runtime-2026-09-29",
+    sourceId: "local-codex-runtime-2026-11-18",
     sourceType: "runtime",
     title: "Codex CLI help and bundled model catalog on this Windows machine",
     authority: "runtime",
-    verifiedAt: previouslyVerified,
-    effectiveDate: "2026-09-29",
+    verifiedAt: PLATFORM_VERIFIED_AT,
+  },
+  codexModelCache: {
+    sourceId: "local-codex-model-cache-2026-11-18",
+    sourceType: "runtime",
+    title: "Refreshed Codex model cache, client version 0.169.0",
+    authority: "runtime",
+    verifiedAt: PLATFORM_VERIFIED_AT,
+  },
+  gpt62Release: {
+    sourceId: "openai-gpt-6.2-astra-sol-launch",
+    sourceType: "release_notes",
+    title: "Introducing GPT-6.2 Astra and Sol",
+    url: "https://openai.com/index/introducing-gpt-6-2-astra-sol/",
+    authority: "official_release_notes",
+    verifiedAt: PLATFORM_VERIFIED_AT,
+    effectiveDate: gpt62ReleaseDate,
+  },
+  gpt62AstraModel: {
+    sourceId: "openai-api-model-gpt-6.2-astra",
+    sourceType: "developer_docs",
+    title: "GPT-6.2 Astra model documentation",
+    url: "https://developers.openai.com/api/docs/models/gpt-6.2-astra",
+    authority: "official_developer_docs",
+    verifiedAt: PLATFORM_VERIFIED_AT,
+  },
+  gpt62SolModel: {
+    sourceId: "openai-api-model-gpt-6.2-sol",
+    sourceType: "developer_docs",
+    title: "GPT-6.2 Sol model documentation",
+    url: "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+    authority: "official_developer_docs",
+    verifiedAt: PLATFORM_VERIFIED_AT,
+  },
+  codexPricing: {
+    sourceId: "codex-pricing-2026-11-18",
+    sourceType: "help_center",
+    title: "ChatGPT Work and Codex pricing and speed multipliers",
+    url: "https://learn.chatgpt.com/docs/pricing?codex-pricing-plans=individual",
+    authority: "official_help_center",
+    verifiedAt: PLATFORM_VERIFIED_AT,
   },
   apiModel: {
     sourceId: "openai-api-model-gpt-6.1-sol",
@@ -42,20 +82,20 @@ export const PLATFORM_SOURCES = {
     effectiveDate: "2026-09-29",
   },
   apiPricing: {
-    sourceId: "openai-api-pricing-2026-09-29",
+    sourceId: "openai-api-pricing-2026-11-18",
     sourceType: "developer_docs",
     title: "OpenAI API pricing",
     url: "https://developers.openai.com/api/docs/pricing",
     authority: "official_developer_docs",
-    verifiedAt: verified,
+    verifiedAt: PLATFORM_VERIFIED_AT,
   },
   workRateCard: {
-    sourceId: "openai-work-codex-credit-rate-card-2026-09-29",
+    sourceId: "openai-work-codex-credit-rate-card-2026-11-18",
     sourceType: "help_center",
     title: "ChatGPT Rate Card: Business, Enterprise/Edu credit-based pricing",
     url: "https://help.openai.com/en/articles/11481834-chatgpt-rate-card-business-enterpriseedu-credit-based-pricing",
     authority: "official_help_center",
-    verifiedAt: verified,
+    verifiedAt: PLATFORM_VERIFIED_AT,
   },
   apiChangelog: {
     sourceId: "openai-api-changelog-2026-09-29",
@@ -72,7 +112,7 @@ export const PLATFORM_SOURCES = {
     title: "OpenAI DevDay 2026 event page",
     url: "https://devday.openai.com/",
     authority: "official_event",
-    verifiedAt: PLATFORM_VERIFIED_AT,
+    verifiedAt: "2026-09-30T01:45:35.000Z",
     effectiveDate: "2026-09-29",
   },
   codexSource: {
@@ -180,30 +220,44 @@ export interface LocalCodexModel {
 
 /** Point-in-time machine snapshot; not a live query and not account eligibility. */
 export const LOCAL_CODEX_RUNTIME = {
-  observedAt: previouslyVerified,
-  cliVersion: "0.158.0-alpha.2.1",
-  desktopPackageVersion: "26.924.2738.0",
+  observedAt: PLATFORM_VERIFIED_AT,
+  cliVersion: "0.167.0-alpha.4.1",
+  desktopPackageVersion: "26.1111.2228.0",
   sourceId: "localRuntime" satisfies PlatformSourceId,
   topLevelCommands: [
     "agents", "exec", "review", "login", "logout", "mcp", "plugin", "app-server", "remote-control", "app",
     "completion", "update", "doctor", "sandbox", "debug", "apply", "resume", "queue", "archive", "delete",
-    "migrate-rollouts", "unarchive", "fork", "cloud", "exec-server", "features", "help",
+    "migrate-rollouts", "migrate-nfs-db", "unarchive", "fork", "cloud", "exec-server", "features", "help",
   ],
 } as const;
 
 export const LOCAL_CODEX_MODELS: readonly LocalCodexModel[] = [
   { id: "gpt-6-astra", displayName: "GPT-6 Astra", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], contextWindowTokens: 272_000, maximumContextTokens: 872_000, speedTiers: ["fast"] },
+  { id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], contextWindowTokens: 272_000, maximumContextTokens: 872_000, speedTiers: ["fast"] },
+  { id: "gpt-6.1-terra", displayName: "GPT-6.1 Terra", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], contextWindowTokens: 500_000, maximumContextTokens: 872_000, speedTiers: ["fast"] },
   { id: "gpt-6-sol", displayName: "GPT-6 Sol", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], contextWindowTokens: 272_000, maximumContextTokens: 872_000, speedTiers: ["fast"] },
   { id: "gpt-6-luna", displayName: "GPT-6 Luna", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], contextWindowTokens: 272_000, maximumContextTokens: 872_000, speedTiers: ["fast"] },
   { id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], contextWindowTokens: 272_000, maximumContextTokens: 872_000, speedTiers: ["fast"] },
   { id: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], contextWindowTokens: 272_000, maximumContextTokens: 872_000, speedTiers: ["fast"] },
   { id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], contextWindowTokens: 272_000, maximumContextTokens: 872_000, speedTiers: ["fast"] },
-  { id: "gpt-daybreak-blue-latest", displayName: "Daybreak Blue (local slug)", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], contextWindowTokens: 272_000, maximumContextTokens: 272_000, speedTiers: [] },
+  { id: "gpt-daybreak-blue-latest", displayName: "Daybreak Blue (local slug)", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], contextWindowTokens: 272_000, maximumContextTokens: 872_000, speedTiers: [] },
   { id: "gpt-daybreak-red-latest", displayName: "Daybreak Red (local slug)", reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"], contextWindowTokens: 372_000, maximumContextTokens: 372_000, speedTiers: [] },
   { id: "gpt-5.5", displayName: "GPT-5.5", reasoningEfforts: ["low", "medium", "high", "xhigh"], contextWindowTokens: 272_000, maximumContextTokens: 272_000, speedTiers: ["fast"] },
-  { id: "gpt-5.4", displayName: "GPT-5.4 (bundled entry)", reasoningEfforts: ["low", "medium", "high", "xhigh"], contextWindowTokens: 272_000, maximumContextTokens: 1_000_000, speedTiers: ["fast"] },
   { id: "codex-auto-review", displayName: "Codex Auto Review", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"], contextWindowTokens: 272_000, maximumContextTokens: 872_000, speedTiers: ["fast"] },
 ];
+
+export const GPT_62_MODELS = [
+  { id: "gpt-6.2-astra", displayName: "GPT-6.2 Astra", summary: "Frontier reasoning for demanding coding and professional work.", sourceId: "gpt62AstraModel", cachedContextWindowTokens: 272_000 },
+  { id: "gpt-6.2-sol", displayName: "GPT-6.2 Sol", summary: "An everyday model for coding and agent workflows.", sourceId: "gpt62SolModel", cachedContextWindowTokens: 500_000 },
+] as const;
+
+export const GPT_62_CATALOG = {
+  apiContextWindowTokens: 1_050_000,
+  apiMaximumOutputTokens: 128_000,
+  cacheFetchedAt: "2026-11-19T01:46:44.850Z",
+  cachedMaximumContextTokens: 872_000,
+  cachedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+} as const;
 
 export const GPT_61_SOL = {
   id: "gpt-6.1-sol",
@@ -213,7 +267,7 @@ export const GPT_61_SOL = {
   apiStatus: "available" satisfies PlatformStatus,
   workCodexStatus: "available" satisfies PlatformStatus,
   accountAvailability: "unknown" satisfies PlatformStatus,
-  installedCodexBundleObservation: "not_observed" as const,
+  installedCodexBundleObservation: "observed" as const,
   contextWindowTokens: 1_050_000,
   maximumOutputTokens: 128_000,
   reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] as const,
@@ -233,6 +287,8 @@ export function normalizeKnownModelIdentifier(identifier: string): string {
     .replace(/-(?:none|minimal|low|medium|high|xhigh|max|ultra)$/, "");
   const withoutGpt = normalized.replace(/^gpt-/, "");
   if (withoutGpt === "6.1-sol" || withoutGpt === "6.1-sol-latest") return "gpt-6.1-sol";
+  const gpt62Match = GPT_62_MODELS.find((model) => model.id === `gpt-${withoutGpt}`);
+  if (gpt62Match) return gpt62Match.id;
   const localMatch = LOCAL_CODEX_MODELS.find((model) => model.id === normalized);
   return localMatch?.id ?? original;
 }
@@ -243,8 +299,7 @@ export function reasoningEffortSupport(model: string, effort: string, surface: "
   CapabilitySupport {
   const canonicalModel = normalizeKnownModelIdentifier(model);
   const normalizedEffort = effort.trim().toLowerCase().replace(/_/g, "-");
-  if (canonicalModel === GPT_61_SOL.id) {
-    if (surface !== "api") return "unknown";
+  if (canonicalModel === GPT_61_SOL.id && surface === "api") {
     return (GPT_61_SOL.reasoningEfforts as readonly string[]).includes(normalizedEffort) ? "supported" : "unsupported";
   }
   const localModel = LOCAL_CODEX_MODELS.find((item) => item.id === canonicalModel);
@@ -273,6 +328,7 @@ export interface ServiceTierMetadata {
   apiMultiplier: number | null;
   workCodexPurchasedCreditMultiplier: number | null;
   workCodexIncludedAllowanceMultiplier: number | null;
+  introductoryRate?: { multiplier: number; through: string };
   modelsAndScope: string;
   status: PlatformStatus;
 }
@@ -281,8 +337,10 @@ export const SERVICE_TIER_REGISTRY: readonly ServiceTierMetadata[] = [
   { id: "standard", apiMultiplier: 1, workCodexPurchasedCreditMultiplier: 1, workCodexIncludedAllowanceMultiplier: 1, modelsAndScope: "Baseline pricing; the account's applicable plan/rate card still governs actual usage.", status: "available" },
   { id: "batch", apiMultiplier: 0.5, workCodexPurchasedCreditMultiplier: null, workCodexIncludedAllowanceMultiplier: null, modelsAndScope: "API processing tier; no Codex runtime/account telemetry support is established here.", status: "available" },
   { id: "flex", apiMultiplier: 0.5, workCodexPurchasedCreditMultiplier: null, workCodexIncludedAllowanceMultiplier: null, modelsAndScope: "API processing tier; no Codex runtime/account telemetry support is established here.", status: "available" },
-  { id: "fast", apiMultiplier: 2, workCodexPurchasedCreditMultiplier: 2, workCodexIncludedAllowanceMultiplier: 2.5, modelsAndScope: "Published for GPT-6.1 Sol, GPT-6 Astra, GPT-6 Sol, and GPT-6 Luna where available; the installed bundle advertises Fast only for its listed models.", status: "available" },
-  { id: "ultrafast", apiMultiplier: 6, workCodexPurchasedCreditMultiplier: 6, workCodexIncludedAllowanceMultiplier: 8, modelsAndScope: "GPT-6 Astra only in API; Work/Codex credit card lists eligible Pro $500 and eligible Enterprise/Edu plans. Not present in this installed bundle's model tier list.", status: "available" },
+  { id: "fast", apiMultiplier: 2, workCodexPurchasedCreditMultiplier: 2, workCodexIncludedAllowanceMultiplier: 2.5, modelsAndScope: "GPT-6.1 Sol and Terra, GPT-6 Astra, GPT-6 Sol, and GPT-6 Luna where available.", status: "available" },
+  { id: "fast", apiMultiplier: 2, workCodexPurchasedCreditMultiplier: 2, workCodexIncludedAllowanceMultiplier: 2, modelsAndScope: "GPT-6.2 Astra and Sol where available.", status: "available" },
+  { id: "ultrafast", apiMultiplier: 6, workCodexPurchasedCreditMultiplier: 6, workCodexIncludedAllowanceMultiplier: 8, modelsAndScope: "GPT-6 Astra and GPT-6.1 Sol where available.", status: "available" },
+  { id: "ultrafast", apiMultiplier: 6, workCodexPurchasedCreditMultiplier: 6, workCodexIncludedAllowanceMultiplier: 6, introductoryRate: { multiplier: 3, through: "February 28, 2027 (Pacific time)" }, modelsAndScope: "GPT-6.2 Astra and Sol where eligible.", status: "available" },
 ];
 
 export interface PlatformCapability {
@@ -297,9 +355,10 @@ export interface PlatformCapability {
 }
 
 export const PLATFORM_CAPABILITIES: readonly PlatformCapability[] = [
-  { id: "gpt-6.1-sol", title: "GPT-6.1 Sol", status: "available", effectiveDate: "2026-09-29", surface: "API; Work/Codex product and credit rate card", accountAvailability: "unknown", summary: "New GPT-6 family model for complex coding and professional work. Tool calling uses Responses API. Not observed in this machine's bundled Codex model catalog.", sourceIds: ["apiModel", "apiChangelog", "workRateCard", "localRuntime"] },
+  ...GPT_62_MODELS.map((model): PlatformCapability => ({ id: model.id, title: model.displayName, status: "available", effectiveDate: gpt62ReleaseDate, surface: "OpenAI API · ChatGPT Work · Codex", accountAvailability: "unknown", summary: model.summary, sourceIds: ["gpt62Release", model.sourceId, "codexModelCache"] })),
+  { id: "gpt-6.1-sol", title: "GPT-6.1 Sol", status: "available", effectiveDate: "2026-09-29", surface: "API; Work/Codex product and credit rate card", accountAvailability: "unknown", summary: "GPT-6 family model for complex coding and professional work. Tool calling uses the Responses API. Present in the bundled Codex CLI model catalog.", sourceIds: ["apiModel", "apiChangelog", "workRateCard", "localRuntime"] },
   { id: "gpt-6.1-multi-agent", title: "GPT-6.1 Sol multi-agent", status: "beta", effectiveDate: "2026-09-29", surface: "Responses API", accountAvailability: "unknown", summary: "The API changelog marks delegation to subagents as beta. Current local Codex telemetry does not expose a verified parent/child lifecycle graph.", sourceIds: ["apiChangelog"] },
-  { id: "ultrafast", title: "Ultrafast processing", status: "available", effectiveDate: "2026-09-29", surface: "Responses API on GPT-6 Astra; Work/Codex on eligible plans", accountAvailability: "unknown", summary: "A processing tier, not a reasoning effort. API access is rate-limited and restricted to global/US residency. Work/Codex credit eligibility is plan-dependent. Not listed by this local bundle.", sourceIds: ["apiChangelog", "apiPricing", "workRateCard", "localRuntime"] },
+  { id: "ultrafast", title: "Ultrafast processing", status: "available", surface: "OpenAI API · eligible ChatGPT Work and Codex plans", accountAvailability: "unknown", summary: "GPT-6.2 Astra and Sol support Ultrafast in the API. In Codex, eligible Pro $500 accounts can use both, and Pro $200 includes GPT-6.2 Sol Ultrafast. Enterprise and Edu access depends on workspace eligibility and permissions.", sourceIds: ["gpt62Release", "apiPricing", "codexPricing"] },
   { id: "agents-api-computer-use", title: "Agents API computer use", status: "available", effectiveDate: "2026-09-29", surface: "Agents API / OpenAI-hosted browser", accountAvailability: "unknown", summary: "Officially added Sep 29. It is not a Codex desktop telemetry signal and adds no Command Center integration by itself.", sourceIds: ["apiChangelog"] },
   { id: "codex-cloud", title: "Codex Cloud environments", status: "available", surface: "Codex web, CLI, and supported integrations", accountAvailability: "unknown", summary: "Documented isolated task workspaces can configure repositories, dependencies, tools, and environment setup. This project has no authenticated cloud-task telemetry provider, so cloud activity is not counted here.", sourceIds: ["cloud"] },
   { id: "sign-in-with-chatgpt", title: "Sign in with ChatGPT", status: "available", effectiveDate: "2026-09-28", surface: "Eligible local/open-source integrations; selected private apps", accountAvailability: "unknown", summary: "Identity and optional ChatGPT-plan usage are separate permissions. This is documented as a future authentication option only; existing Command Center authentication is unchanged.", sourceIds: ["signIn"] },

@@ -8,11 +8,11 @@ import type { NormalizedTelemetryEvent } from "@/lib/telemetry/normalize";
 export interface D1ResultLike<T = Record<string, unknown>> { success: boolean; results?: T[]; meta?: { changes?: number; rows_read?: number; rows_written?: number }; error?: string }
 export interface D1PreparedStatementLike { bind(...values: unknown[]): D1PreparedStatementLike; run<T = Record<string, unknown>>(): Promise<D1ResultLike<T>>; all<T = Record<string, unknown>>(): Promise<D1ResultLike<T>> }
 export interface D1DatabaseLike { prepare(sql: string): D1PreparedStatementLike; batch<T = Record<string, unknown>>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> }
-export interface D1MutationResult { changes: number; rowsWritten?: number; backlogMayRemain?: boolean }
+export interface D1MutationResult { changes: number; rowsWritten?: number }
 
-// Retention runs inline with ingestion. Keep each maintenance pass bounded so
-// an old backlog cannot turn one otherwise small request into an unbounded D1
-// read/delete operation. Subsequent maintenance passes will drain the rest.
+// Retention runs inline with ingestion on the 30-day snapshot cadence. Keep
+// each pass bounded so an old backlog cannot turn one request into an
+// unbounded D1 read/delete operation; a full batch resumes on the next cycle.
 export const TELEMETRY_RETENTION_DELETE_BATCH_SIZE = 500;
 // The explicit forensic view fans out into many aggregate statements. Probe
 // the indexed time range first so that a large raw table cannot multiply into
@@ -110,7 +110,6 @@ export async function deleteExpiredTelemetry(database: D1DatabaseLike, retention
     : undefined;
   return {
     changes: results.reduce((total, result) => total + (result.meta?.changes ?? 0), 0),
-    backlogMayRemain: results.some((result) => (result.meta?.changes ?? 0) >= perTableLimit),
     ...(rowsWritten === undefined ? {} : { rowsWritten }),
   };
 }

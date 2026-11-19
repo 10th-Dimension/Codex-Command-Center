@@ -12,7 +12,8 @@ export type TelemetryRange = "24h" | "7d" | "30d";
 export const TELEMETRY_RANGES: readonly TelemetryRange[] = ["24h", "7d", "30d"];
 export const TELEMETRY_TREND_BUCKET_MINUTES = 10;
 export const SNAPSHOT_TTL_MS: Record<TelemetryRange, number> = {
-  "24h": 60_000,
+  // A five-minute snapshot delay avoids rescanning rollups every minute.
+  "24h": 5 * 60_000,
   "7d": 15 * 60_000,
   "30d": 15 * 60_000,
 };

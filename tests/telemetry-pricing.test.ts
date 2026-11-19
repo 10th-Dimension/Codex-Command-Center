@@ -88,6 +88,23 @@ test("GPT-6.1 Sol uses its official Standard API and Work/Codex credit rate-card
   assert.equal(result.coveragePercent, 100);
 });
 
+test("GPT-6.2 Astra and Sol price attributed tokens using their respective published Standard rates", () => {
+  const result = calculateCodexEquivalentPricing({
+    metrics: metrics(2_000_000, 400_000, 2_000_000, 200_000),
+    models: [
+      modelUsage("openai/gpt-6.2-astra-ultra", { input: 1_000_000, cached: 200_000, write: 100_000, output: 1_000_000 }),
+      modelUsage("6.2 Sol", { input: 1_000_000, cached: 200_000, write: 100_000, output: 1_000_000 }),
+    ],
+  });
+  assert.equal(result.status, "available");
+  assert.equal(result.coveragePercent, 100);
+  assert.equal(result.usdEquivalent, "58.35");
+  assert.equal(result.apiCredits, "1427.5");
+  assert.deepEqual(result.byModel.map((model) => [model.displayName, codexEquivalentModelPriceLabel(model)]), [
+    ["GPT-6.2 Astra", "$46.68"], ["GPT-6.2 Sol", "$11.67"],
+  ]);
+});
+
 test("GPT-6.1 Terra prices mixed token categories using published rates", () => {
   const rate = resolveCodexPricingRate("openai/gpt-6.1-terra-xhigh");
   assert.equal(rate?.model, "gpt-6.1-terra");
@@ -200,7 +217,7 @@ test("GPT-5.4 keeps its current API USD rate without inventing a Work/Codex cred
   assert.match(result.note, /hourly model aggregates do not preserve event dates/);
   assert.match(result.note, /not a date-scoped bill/);
   assert.match(result.note, /not an invoice or account balance/i);
-  assert.match(codexPricingCoverageReasons(result).join(" "), /total credit equivalent is withheld/);
+  assert.match(codexPricingCoverageReasons(result).join(" "), /credit total shows zero when an estimate is unavailable/);
 });
 
 test("GPT-5.4 Mini keeps its exact API output rate and has no current Work/Codex credit equivalent", () => {
@@ -253,7 +270,7 @@ test("reasoning tokens remain an output breakdown and are never charged or count
   assert.equal(result.apiCredits, "0.0003");
 });
 
-test("an unknown model remains visibly unpriced with an exact token count", () => {
+test("an unknown model displays zero while preserving its excluded token count", () => {
   const result = calculateCodexEquivalentPricing({
     metrics: metrics(2_000_000, 0, 0),
     models: [modelUsage("gpt-5.6-luna", { input: 1_000_000 }), modelUsage("gpt-5.3-codex-spark", { input: 1_000_000 })],
@@ -265,6 +282,9 @@ test("an unknown model remains visibly unpriced with an exact token count", () =
   assert.equal(result.unattributedTokenCount, 0);
   assert.equal(result.coveragePercent, 50);
   assert.equal(result.byModel[1].status, "unpriced");
+  assert.equal(result.byModel[1].usdEquivalent, undefined);
+  assert.equal(codexEquivalentModelPriceLabel(result.byModel[1]), "$0.00");
+  assert.match(codexPricingCoverageReasons(result).join(" "), /excluded from the USD estimate/);
 });
 
 test("Codex auto-review is excluded from API-equivalent model totals and coverage", () => {
@@ -324,8 +344,8 @@ test("per-model prices show safely priced partial USD amounts without implying a
   assert.equal(model.status, "incomplete");
   assert.equal(model.usdEquivalent, "0.00015");
   assert.equal(codexEquivalentModelPriceLabel(model), "Partial $0.00015");
-  assert.equal(codexEquivalentModelPriceLabel({ status: "incomplete" }), "Incomplete");
-  assert.equal(codexEquivalentModelPriceLabel({ status: "unpriced" }), "Unpriced");
+  assert.equal(codexEquivalentModelPriceLabel({ status: "incomplete" }), "$0.00");
+  assert.equal(codexEquivalentModelPriceLabel({ status: "unpriced" }), "$0.00");
 });
 
 test("published Work credits without a public API USD rate do not invent a USD estimate", () => {
