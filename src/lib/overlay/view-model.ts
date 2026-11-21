@@ -1,6 +1,7 @@
-import { averageTtft, completedTools, latestSession, measuredValue, selectTrend, selectUsage, toolFailures, trendTotal, type DashboardRange } from "@/lib/dashboard/analytics";
+import { averageTtft, completedTools, measuredValue, selectTrend, selectUsage, toolFailures, trendTotal, type DashboardRange } from "@/lib/dashboard/analytics";
 import type { DashboardSnapshot } from "@/lib/dashboard/view-model";
 import type { OverlaySnapshot } from "@/lib/overlay/contracts";
+import { selectOverlaySession } from "@/lib/overlay/session";
 import type { ProviderStatus } from "@/lib/providers/types";
 export type { OverlaySnapshot } from "@/lib/overlay/contracts";
 function ciStatus(snapshot: DashboardSnapshot): ProviderStatus {
@@ -8,7 +9,9 @@ function ciStatus(snapshot: DashboardSnapshot): ProviderStatus {
   return snapshot.builds.data[0].status === "failure" ? "degraded" : "connected";
 }
 export function composeOverlaySnapshot(snapshot: DashboardSnapshot, range: DashboardRange, generatedAt = new Date().toISOString()): OverlaySnapshot {
-  const usage = selectUsage(snapshot.codex, range); const trend = selectTrend(snapshot.codex, range); const session = latestSession(snapshot.codex); const data = usage.status === "connected" ? usage.data : undefined;
+  const usage = selectUsage(snapshot.codex, range); const trend = selectTrend(snapshot.codex, range); const data = usage.status === "connected" ? usage.data : undefined;
+  const sessions = snapshot.codex.sessions;
+  const session = sessions.status === "connected" ? selectOverlaySession(sessions.data) : undefined;
   const rollup = snapshot.codex.rollupSummaries?.[range];
   const latestBuild = snapshot.builds.status === "connected" ? snapshot.builds.data[0] : undefined;
   const repository = snapshot.repositories?.status === "connected" ? snapshot.repositories.data[0] : undefined;

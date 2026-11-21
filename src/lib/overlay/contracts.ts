@@ -108,6 +108,7 @@ export interface OverlaySnapshot {
     github: OverlayProviderStatus;
     ci: OverlayProviderStatus;
   };
+  /** Most recent session with reported model or effort, or the latest observed session if neither is available. */
   latestSession?: {
     model?: string;
     reasoningEffort?: string;
