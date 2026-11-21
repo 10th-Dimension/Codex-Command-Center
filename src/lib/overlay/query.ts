@@ -5,6 +5,7 @@ import { providerRegistry } from "@/lib/providers/registry";
 import { getTelemetryRuntimeBindings } from "@/lib/telemetry/cloudflare";
 import { readMaterializedSnapshot, type CodexMaterializedSnapshot, type TelemetryRange } from "@/lib/telemetry/rollups";
 import type { OverlaySnapshot } from "@/lib/overlay/contracts";
+import { selectOverlaySession } from "@/lib/overlay/session";
 
 function measuredValue(metric: CodexMaterializedSnapshot["summary"]["inputTokens"]) {
   return metric.availability === "available" ? metric.value : undefined;
@@ -49,7 +50,7 @@ export async function getOverlaySnapshot(range: TelemetryRange): Promise<Overlay
     return unavailableOverlay(range, github, generatedAt);
   }
   if (!codex) return unavailableOverlay(range, github, generatedAt);
-  const latestSession = codex.sessions[0];
+  const latestSession = selectOverlaySession(codex.sessions);
   const latestBuild = github.builds.status === "connected" ? github.builds.data[0] : undefined;
   const repository = github.repositories.status === "connected" ? github.repositories.data[0] : undefined;
   return {

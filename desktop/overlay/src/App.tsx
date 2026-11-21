@@ -266,7 +266,7 @@ function Expanded({ snapshot, now }: Readonly<{ snapshot: OverlaySnapshot; now: 
     <section><SectionTitle title="Token trend" note={`${snapshot.range.toUpperCase()} · ${snapshot.range === "24h" ? "10m" : "1d"}`} /><TokenTrendChart points={snapshot.tokenTrend} range={snapshot.range} asOf={snapshot.generatedAt} /></section>
     <div className="split"><section><SectionTitle title="Model mix" /><Distribution items={snapshot.modelDistribution} /></section><section><SectionTitle title="Reasoning mix" /><Distribution items={snapshot.reasoningDistribution} /></section></div>
     <AccountDetails account={snapshot.codexAccount} now={now} />
-    <section><SectionTitle title="Latest session" note={session ? shortAge(session.lastSeenAt) : undefined} /><div className="session-line"><span>{session ? `${session.completedTools} tools` : "No session"}</span><span>{session ? `${session.toolFailures ?? 0} failed` : "—"}</span></div></section>
+    <section><SectionTitle title="Observed session" note={session ? shortAge(session.lastSeenAt) : undefined} /><div className="session-line"><span>{session ? `${session.completedTools} tools` : "No session"}</span><span>{session ? `${session.toolFailures ?? 0} failed` : "—"}</span></div></section>
     <section><SectionTitle title="Delivery" note={snapshot.delivery?.repository} /><div className="delivery"><HealthChip label="GitHub" status={snapshot.health.github} /><HealthChip label={snapshot.delivery?.latestBuild?.name ?? "CI"} status={snapshot.health.ci} /><span>{snapshot.delivery?.latestBuild?.status ?? "Unavailable"}</span></div></section>
   </div>;
 }
@@ -361,7 +361,7 @@ function QuotaDetail({ window, now }: Readonly<{ window: CodexQuotaWindow; now: 
   return <div className="quota-detail"><div><i><b style={{ width: `${window.remainingPercent}%` }} /></i><strong>{Math.round(window.remainingPercent)}% left</strong></div><span>{countdown ? `Resets in ${countdown}` : "Reset unavailable"}</span>{pace ? <span>Linear pace {pace.deltaPercent > 0 ? "+" : ""}{Math.round(pace.deltaPercent)}%</span> : null}{projected ? <span title={projected}>Projected {projected}</span> : null}</div>;
 }
 
-function Identity({ session }: Readonly<{ session?: OverlaySnapshot["latestSession"] }>) { return <div className="identity" title={session ? `Latest observed session · ${session.lastSeenAt}` : "No observed session"}><span>{friendlyModel(session?.model)}</span><i>·</i><small>{session?.reasoningEffort ?? "effort unavailable"}</small></div>; }
+function Identity({ session }: Readonly<{ session?: OverlaySnapshot["latestSession"] }>) { return <div className="identity" title={session ? `Observed session · ${session.lastSeenAt}` : "No observed session"}><span>{friendlyModel(session?.model)}</span><i>·</i><small>{session?.reasoningEffort ?? "effort unavailable"}</small></div>; }
 
 function ObservedOperations({ session, summary, lastTelemetryAt }: Readonly<{ session?: OverlaySnapshot["latestSession"]; summary: OverlaySnapshot["windowSummary"]; lastTelemetryAt?: string }>) {
   const observed = Boolean(session);
@@ -478,7 +478,7 @@ function numberLabel(value?: number) { return value === undefined ? "—" : new 
 function formatCreditBalance(balance: string) { const value = Number(balance); return Number.isFinite(value) ? new Intl.NumberFormat("en", { maximumFractionDigits: 2 }).format(value) : balance; }
 function durationLabel(value?: number) { return value === undefined ? "—" : value < 1_000 ? `${Math.round(value)}ms` : `${(value / 1_000).toFixed(1)}s`; }
 function friendlyModel(value?: string) {
-  if (!value) return "No model";
+  if (!value) return "Model unavailable";
   return resolveCodexPricingRate(value)?.displayName.replace(/^GPT-/, "") ?? value.replace(/^gpt-/, "").replace(/\.0$/, "");
 }
 function shortAge(value: string) { const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 1_000)); return seconds < 60 ? `${seconds}s ago` : seconds < 3_600 ? `${Math.floor(seconds / 60)}m ago` : `${Math.floor(seconds / 3_600)}h ago`; }

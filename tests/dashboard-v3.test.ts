@@ -7,6 +7,7 @@ import { averageTtft, distributionShares, latestSession, measuredLabel, parseDas
 import { accountActivityBuckets, accountActivitySummary, formatAccountSeconds, formatBackendDate } from "../src/lib/dashboard/account-activity";
 import type { DashboardSnapshot } from "../src/lib/dashboard/view-model";
 import { defaultOverlaySettings, isSafeHexColor, parseOverlaySettings, resolveOverlayLayout } from "../src/lib/overlay/settings";
+import { selectOverlaySession } from "../src/lib/overlay/session";
 import { composeOverlaySnapshot } from "../src/lib/overlay/view-model";
 import type { CodexTelemetrySnapshot } from "../src/lib/providers/types";
 import { codexWorkspaceMode, legacySectionRedirects, navigationItems } from "../src/lib/navigation";
@@ -115,6 +116,24 @@ test("overlay snapshot exposes only the bounded operational contract", () => {
   assert.equal(overlay.windowSummary.completedTools, 3);
   const serialized = JSON.stringify(overlay);
   for (const forbidden of ["prompt", "command", "arguments", "stdout", "stderr", "toolOutput", "reasoningText", "accountId", "email", "hostname", "credential", "secret"]) assert.doesNotMatch(serialized, new RegExp(forbidden, "i"));
+});
+
+test("overlay keeps the latest reported identity and metrics together when a newer session has neither field", () => {
+  const [older, identified] = codex.sessions.status === "connected" ? codex.sessions.data : [];
+  const unidentified = { ...older, sessionId: "unidentified", models: [], reasoningEfforts: [], lastSeenAt: "2026-09-12T12:01:00.000Z", toolExecutions: 0 };
+  const sessions = [older, unidentified, identified];
+  const overlay = composeOverlaySnapshot({ ...dashboard, codex: { ...codex, sessions: connected(sessions) } }, "24h", now);
+  assert.equal(overlay.latestSession?.model, "gpt-future");
+  assert.equal(overlay.latestSession?.reasoningEffort, "ultra");
+  assert.equal(overlay.latestSession?.completedTools, identified.toolExecutions);
+  assert.equal(overlay.latestSession?.lastSeenAt, identified.lastSeenAt);
+  assert.equal(selectOverlaySession([unidentified]), unidentified);
+  assert.equal(selectOverlaySession([]), undefined);
+
+  const partial = { ...unidentified, models: ["gpt-new"] };
+  const latest = selectOverlaySession([identified, partial]);
+  assert.equal(latest?.models[0], "gpt-new");
+  assert.deepEqual(latest?.reasoningEfforts, []);
 });
 
 test("overlay settings are bounded and invalid colors fall back", () => {
