@@ -2,7 +2,6 @@ import Link from "next/link";
 import { Activity, AlertTriangle, BarChart3, Bot, Boxes, Clock3, GitCommitHorizontal, ListTree, ShieldCheck, Workflow } from "lucide-react";
 
 import { ActivityHeatmap, Distribution, TokenComposition, TokenTrend } from "@/components/dashboard/analytics-ui";
-import { LocalCodexAccount } from "@/components/dashboard/local-codex-account";
 import { RefreshButton } from "@/components/dashboard/refresh-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { StatusPill } from "@/components/ui/status-pill";
@@ -49,7 +48,7 @@ export function CodexCommandPage({ data, section }: Readonly<{ data: CodexData; 
 
 function CodexHeroCopy({ mode }: Readonly<{ mode: CodexWorkspaceMode }>) {
   const copy = mode === "usage"
-    ? { icon: BarChart3, kicker: "Usage analytics", title: "Understand your usage.", description: "Explore reported token fields, account history, and model activity." }
+    ? { icon: BarChart3, kicker: "Usage analytics", title: "Understand your usage.", description: "Explore reported token fields and model activity." }
     : mode === "activity"
       ? { icon: ListTree, kicker: "Activity & diagnostics", title: "Every operation in context.", description: "Trace recent sessions, tool outcomes, and the health of your telemetry." }
       : { icon: Activity, kicker: "Workspace overview", title: "Your workspace, in focus.", description: "A clearer view of your Codex activity. The signals that matter, with room to think." };
@@ -93,7 +92,6 @@ function OverviewWorkspace(props: Readonly<WorkspaceProps>) {
       <Panel className="overview-reasoning-panel" title="Reasoning effort" icon={Boxes} note="top 5"><Distribution result={telemetry.reasoningEfforts} /></Panel>
       <Panel className="overview-session-panel" title="Latest session" icon={Clock3} note={latest ? formatAge(latest.lastSeenAt) : "no session"}><LatestSession latest={latest} /></Panel>
     </section>
-    <LocalCodexAccount showActivity={false} />
   </>;
 }
 
@@ -115,7 +113,6 @@ function UsageWorkspace(props: Readonly<WorkspaceProps & { pricingResult: DataRe
       <Panel className="usage-reasoning-panel" title="Reasoning effort" icon={Boxes} note="top 5"><Distribution result={telemetry.reasoningEfforts} /></Panel>
     </section>
     <MeasuredLedger result={usageResult} pricing={pricingResult} range={data.range} />
-    <LocalCodexAccount />
     <div className="command-details">
       <Detail title="Usage & performance" open={detailOpen("usage")}><div className="detail-grid"><Fact label="Cache writes" value={usage ? metricLabel(usage.cacheWriteTokens) : "Unavailable"} /><Fact label="Average duration" value={duration(summary?.averageDurationMs)} /><Fact label="Approvals" value={compactNumber(summary?.approvals)} /><Fact label="Warnings" value={compactNumber(summary?.warnings)} /></div><p className="detail-note">Sessions, tools, forensics, and data health are grouped on the Activity page so this workspace stays focused on usage. <Link prefetch={false} className="detail-link" href={`/?range=${data.range}&section=activity`}>Open Activity</Link></p></Detail>
     </div>

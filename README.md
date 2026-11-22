@@ -114,7 +114,7 @@ Codex OTLP logs
   -> Codex page and Codex Live overlay
 ```
 
-The relay listens only on IPv4 loopback over HTTPS. It accepts authenticated OTLP/HTTP protobuf or JSON, preserves the payload content type, and adds `CF-Access-Client-Id`, `CF-Access-Client-Secret`, and `X-Codex-Telemetry-Key` only on the outbound request. The local exporter, native overlay, and browser quota card each have a distinct local credential. The relay never prints configuration values or payloads.
+The relay listens only on IPv4 loopback over HTTPS. It accepts authenticated OTLP/HTTP protobuf or JSON, preserves the payload content type, and adds `CF-Access-Client-Id`, `CF-Access-Client-Secret`, and `X-Codex-Telemetry-Key` only on the outbound request. The local exporter and native overlay use distinct local credentials. The relay never prints configuration values or payloads.
 
 When the upstream collector is temporarily unavailable or returns a retryable failure, the relay places the individual OTLP request in a bounded disk-backed spool and acknowledges it locally so Codex is not held open by a cloud outage. Entries survive relay restarts and replay oldest-first when the collector recovers. The spool is limited to 64 MiB and 512 entries; if either bound is reached, the oldest entries are dropped deterministically and the safe dropped-batch count is exposed in relay health and Codex Live. Corrupt entries are discarded without stopping the relay. Runtime spool files live in the operating-system application-data area and are never committed.
 
@@ -160,8 +160,6 @@ tls = { ca-certificate = '<absolute path to relay-ca.pem>' }
 ```
 
 Restart Codex and start the updated relay or native overlay. The exporter still supports binary protobuf and JSON. The local exporter token authorizes only local ingestion. Cloud credentials remain in the relay’s ignored environment file. The native overlay reads its own token and pins the local CA automatically. Legacy queue entries are scrubbed on the updated relay’s first spool read. If Codex runs behind an HTTPS proxy, include `127.0.0.1` in its `NO_PROXY` setting. Local trust relies on the Windows user boundary and the privacy of the per-user directory.
-
-To use the optional browser quota card, reload or close any older dashboard tabs before pairing with the updated dashboard. Import the initializer’s `relay-ca.cer` into the current user’s trusted roots for the browser, then pair the dashboard using the value in `browser.token`. For Edge on Windows, the trust step is `Import-Certificate -FilePath <path-to-relay-ca.cer> -CertStoreLocation Cert:\CurrentUser\Root` in PowerShell. The browser stores only its scoped account-read token in this dashboard origin’s local storage. The card can forget the pairing. The CA signing key is discarded during setup. When replacing an expired identity, remove the old browser trust entry, update the exporter CA and token, and pair the browser again.
 
 ### Event normalization and privacy
 
@@ -266,8 +264,8 @@ Codex Live also maintains one separate, read-only stdio connection to the authen
 local Codex app-server (account/read, account/rateLimits/read, account/usage/read)
   -> persistent child owned by the existing local relay
   -> sanitized in-memory account snapshot
-  -> loopback-only GET /v1/account
-  -> native Codex Live and, when browser policy permits, the hosted dashboard on this PC
+  -> included in the authenticated local /v1/overlay response
+  -> native Codex Live
 ```
 
 The collector discovers Codex through the optional `CODEX_CLI_PATH`, the current `PATH`, or the versioned Codex Desktop runtime below `%LOCALAPPDATA%\OpenAI\Codex\bin`. Each candidate is validated with a bounded `--version` invocation. It never reads `.codex/auth.json`, copies OAuth material, calls private ChatGPT usage endpoints, starts a Codex thread, invokes a tool, mutates an account, or consumes a rate-limit reset credit. Codex itself remains responsible for authentication and token refresh. App-server failure makes only account quota unavailable; OTel forwarding and historical analytics continue normally.
@@ -276,11 +274,9 @@ Quota windows are classified by their returned duration, not by their `primary` 
 
 `account/rateLimits/updated` is treated as a sparse invalidation signal. The relay debounces it, performs a fresh full read, and keeps a 45-second full-read fallback. Account activity uses the backend summary and at most the latest 90 `dailyUsageBuckets`; their accounting and timezone semantics are backend-defined, so they are labeled **Account Activity** and are never merged into OTel/D1 daily totals.
 
-The website control panel exposes the complete account-activity contract currently returned by the supported local app-server: exact daily token buckets with 7-day and 30-day views, active-day and peak-day totals, lifetime tokens, current and longest streaks, peak daily tokens, longest running turn, quota windows, reset timing, and the existing materialized OTel/D1 model, reasoning, session, tool, latency, ledger, and API-equivalent views. The daily chart and ledger share the same bounded response and provide exact hover/focus values; changing the website range does not poll again or read D1. The native Codex Live overlay intentionally remains compact and does not render this website-only history panel.
-
 The newer Codex Desktop Analytics screen can also show official credit history grouped by feature, model, surface, or turn start, plus top chats and plugin/skill activity. Those fields are not returned by this installation's supported `account/usage/read` contract (`threadUsage` is absent), and the local app-server exposes no supported equivalent. They therefore remain explicitly unavailable rather than being reconstructed from private ChatGPT storage, OTel events, or estimated token prices. The website's API-equivalent card is a separate token-rate comparison estimate, not official plan-credit history.
 
-Quota information stays local in this implementation. The paired dashboard requests it from `https://127.0.0.1:14318/v1/account` using its account-read token. The relay also restricts CORS to the configured Command Center origin. Browser certificate trust and local-network policy govern access to this optional card. The native overlay uses its separately authenticated connection on the same PC.
+Account quota and account activity are available in the native Codex Live overlay. The hosted dashboard reads materialized OTel telemetry through the Worker. It requires no browser pairing or local certificate trust.
 
 Codex Live Expanded may show `OTel delivery live`, `OTel delivery buffered`, `OTel delivery replaying`, or `OTel delivery degraded`. This describes local delivery only; it does not mean that the materialized D1 snapshot is fresh. Expanded labels snapshot freshness separately, so a healthy relay can be visible while Activity or historical analytics remain unavailable or stale because the remote snapshot path is unavailable. The saved cumulative dropped-batch count is labeled `dropped historically` even after delivery recovers; it means history may be incomplete. Its loss dates and causes are unavailable. Current replay failures remain explicitly degraded regardless of the historical count.
 

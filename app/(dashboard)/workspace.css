@@ -66,8 +66,8 @@
 .app-shell .overview-model-panel { grid-column: span 4; }
 .app-shell .overview-reasoning-panel { grid-column: span 3; }
 .app-shell .overview-session-panel { grid-column: span 12; }
-.app-shell .command-panel > header, .app-shell .local-account > header, .app-shell .usage-ledger > header { min-height: 58px; padding: 0 22px; border-bottom: 1px solid #262e3a; }
-.app-shell .command-panel > header > h2, .app-shell .local-account > header > span { gap: 9px; color: #e3e8f0; font-size: 13px; font-weight: 550; }
+.app-shell .command-panel > header, .app-shell .usage-ledger > header { min-height: 58px; padding: 0 22px; border-bottom: 1px solid #262e3a; }
+.app-shell .command-panel > header > h2 { gap: 9px; color: #e3e8f0; font-size: 13px; font-weight: 550; }
 .app-shell .command-panel > header svg { width: 15px; color: #9babbf; }
 .app-shell .command-panel > header small { color: #8d9bad; font-size: 10px; }
 .app-shell .overview-panel-intro { display: flex; justify-content: space-between; gap: 8px; padding: 18px 22px 8px; }
@@ -122,14 +122,6 @@
 .app-shell .latest-session strong { color: #e1e9f1; font-size: 16px; font-weight: 500; }
 .app-shell .latest-session span, .app-shell .latest-session p { color: #b3c1d1; font-size: 12px; }
 .app-shell .latest-session small { color: #92a2b7; font-size: 11px; }
-.app-shell .local-account { margin: 24px 0; }
-.app-shell .local-account-meta { padding: 12px 22px; color: #9facbe; }
-.app-shell .quota-window { padding: 20px 22px; background: #151d27; }
-.app-shell .quota-window span { font-size: 12px; }
-.app-shell .quota-window strong { color: #c8edf7; font-size: 15px; }
-.app-shell .quota-track { height: 5px; margin: 12px 0; background: #2e3947; }
-.app-shell .quota-track i { background: #69cfe7; box-shadow: none; }
-.app-shell .quota-window small { color: #99a9bb; font-size: 11px; }
 .app-shell .command-details { display: grid; gap: 12px; margin-top: 24px; }
 .app-shell .command-details > details { border: 1px solid #293441; border-radius: 10px; background: #141b24; }
 .app-shell .command-details > details > summary { min-height: 50px; padding: 16px 20px; color: #bdcbda; font-size: 13px; }
@@ -149,9 +141,6 @@
 .app-shell .activity-map-heading { padding: 10px 22px; }
 .app-shell .activity-heatmap { padding: 10px 22px; }
 .app-shell .activity-heatmap-key { margin: 8px 22px 20px; font-size: 10px; }
-.app-shell .account-activity-card { padding-bottom: 12px; }
-.app-shell .account-activity-stat strong { font-size: 24px; }
-.app-shell .account-activity-stat > span, .app-shell .account-activity-stat > small { font-size: 10px; }
 .app-shell .platform-hero { display: flex; }
 .app-shell .platform-section { margin-top: 32px; }
 .app-shell .platform-panel { padding: 24px; }
