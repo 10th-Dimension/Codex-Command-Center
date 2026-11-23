@@ -3,7 +3,7 @@ import "server-only";
 import type { GitHubDataSnapshot, ProviderStatus } from "@/lib/providers/types";
 import { providerRegistry } from "@/lib/providers/registry";
 import { getTelemetryRuntimeBindings } from "@/lib/telemetry/cloudflare";
-import { readMaterializedSnapshot, type CodexMaterializedSnapshot, type TelemetryRange } from "@/lib/telemetry/rollups";
+import { readMaterializedSnapshot, refreshStaleMaterializedSnapshot, type CodexMaterializedSnapshot, type TelemetryRange } from "@/lib/telemetry/rollups";
 import type { OverlaySnapshot } from "@/lib/overlay/contracts";
 import { selectOverlaySession } from "@/lib/overlay/session";
 
@@ -45,6 +45,12 @@ export async function getOverlaySnapshot(range: TelemetryRange): Promise<Overlay
   if (!runtime.database) return unavailableOverlay(range, github, generatedAt);
   let codex: CodexMaterializedSnapshot | undefined;
   try {
+    try {
+      await refreshStaleMaterializedSnapshot(runtime.database, range, new Date(generatedAt));
+    } catch {
+      // A stale refresh is best-effort; keep serving the last saved snapshot
+      // when D1 writes are temporarily unavailable or quota-limited.
+    }
     codex = await readMaterializedSnapshot(runtime.database, range);
   } catch {
     return unavailableOverlay(range, github, generatedAt);

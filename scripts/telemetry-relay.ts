@@ -313,11 +313,12 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
     return replayInFlight;
   }
 
-  async function bufferBody(contentType: TelemetrySpoolContentType, body: Uint8Array) {
+  async function bufferBody(contentType: TelemetrySpoolContentType, body: Uint8Array, upstreamFailed: boolean) {
     try {
       const sanitized = await sanitizeTelemetryPayload(contentType, body, new Date(now()).toISOString());
       if (!sanitized) return spool.drop();
-      await spool.recordUpstreamFailure();
+      // New arrivals behind queued work must not postpone the next replay.
+      if (upstreamFailed) await spool.recordUpstreamFailure();
       const health = await spool.enqueue(sanitized.contentType, sanitized.body);
       relayCounters.bufferedRequests += 1;
       scheduleReplay(Math.max(0, spool.nextRetryAt() - now()));
@@ -537,7 +538,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
       const body = await readRequestBody(request);
       const spoolPending = await spool.hasPending().catch(() => false);
       if (spoolPending || directForwardInFlight) {
-        const health = await bufferBody(contentType as TelemetrySpoolContentType, body);
+        const health = await bufferBody(contentType as TelemetrySpoolContentType, body, false);
         if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
         else {
           response.writeHead(502, { "content-type": "application/json" });
@@ -550,7 +551,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
       try {
         const { upstream, upstreamBody } = await sendToCollector(contentType as TelemetrySpoolContentType, body);
         if (retryableStatus(upstream.status)) {
-          const health = await bufferBody(contentType as TelemetrySpoolContentType, body);
+          const health = await bufferBody(contentType as TelemetrySpoolContentType, body, true);
           if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
           else {
             response.writeHead(502, { "content-type": "application/json" });
@@ -563,7 +564,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
         response.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/x-protobuf" });
         response.end(upstreamBody);
       } catch {
-        const health = await bufferBody(contentType as TelemetrySpoolContentType, body);
+        const health = await bufferBody(contentType as TelemetrySpoolContentType, body, true);
         if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
         else {
           response.writeHead(502, { "content-type": "application/json" });

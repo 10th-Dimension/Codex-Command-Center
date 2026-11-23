@@ -451,6 +451,37 @@ test("relay buffers a retryable collector failure durably and exposes only safe 
   }
 });
 
+test("incoming batches do not postpone replay while the collector is in backoff", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-relay-backoff-test-"));
+  let now = Date.parse("2026-11-22T00:00:00Z");
+  const spool = new TelemetrySpool({ directory, now: () => now, retryMinimumMs: 60_000 });
+  let attempts = 0;
+  const relay = createTestRelay(relayConfiguration, {
+    spool,
+    now: () => now,
+    fetchImpl: async () => { attempts += 1; return new Response(null, { status: 503 }); },
+  });
+  const port = await listen(relay);
+  try {
+    const submit = () => requestRelay(`https://${TELEMETRY_RELAY_HOST}:${port}/v1/logs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"resourceLogs":[]}',
+    });
+    assert.equal((await submit()).status, 202);
+    const retryAt = spool.nextRetryAt();
+    assert.equal(retryAt, now + 60_000);
+    now += 30_000;
+    assert.equal((await submit()).status, 202);
+    assert.equal(attempts, 1);
+    assert.equal(spool.nextRetryAt(), retryAt);
+    assert.equal((await spool.health()).queuedBatches, 2);
+  } finally {
+    await close(relay);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("account endpoint returns only the bounded local snapshot and rejects unsupported methods", async () => {
   const relay = createTestRelay(relayConfiguration, { accountProvider: { getSnapshot: () => accountSnapshot } });
   const relayPort = await listen(relay);

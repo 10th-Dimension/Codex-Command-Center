@@ -18,6 +18,9 @@ export const SNAPSHOT_TTL_MS: Record<TelemetryRange, number> = {
   "30d": 15 * 60_000,
 };
 
+const OVERLAY_SNAPSHOT_REFRESH_RETRY_MS = 60_000;
+const overlaySnapshotRefreshNextAttempt = new WeakMap<D1DatabaseLike, Map<TelemetryRange, number>>();
+
 interface ScalarAggregate {
   eventCount: number;
   inputTokens: number;
@@ -604,13 +607,16 @@ export async function writeMaterializedSnapshot(database: D1DatabaseLike, snapsh
   };
 }
 
-export async function refreshStaleMaterializedSnapshots(database: D1DatabaseLike, now: Date) {
-  const state = await database.prepare("SELECT range,generated_at FROM codex_dashboard_snapshot WHERE range IN ('24h','7d','30d')").all<Pick<SnapshotRow, "range" | "generated_at">>();
+async function refreshStaleSnapshotsForRanges(database: D1DatabaseLike, now: Date, ranges: readonly TelemetryRange[]) {
+  if (!ranges.length) return { refreshed: [] as TelemetryRange[] };
+  const placeholders = ranges.map(() => "?").join(",");
+  const state = await database.prepare(`SELECT range,generated_at FROM codex_dashboard_snapshot WHERE range IN (${placeholders})`)
+    .bind(...ranges).all<Pick<SnapshotRow, "range" | "generated_at">>();
   const existing = new Map(resultRows(state).map((row) => [row.range, row]));
   const refreshed: TelemetryRange[] = [];
   let rowsWritten = 0;
   let rowsWrittenObserved = false;
-  for (const range of TELEMETRY_RANGES) {
+  for (const range of ranges) {
     const row = existing.get(range);
     const generated = row ? Date.parse(row.generated_at) : Number.NaN;
     if (Number.isFinite(generated) && now.getTime() - generated < SNAPSHOT_TTL_MS[range]) continue;
@@ -639,6 +645,24 @@ export async function refreshStaleMaterializedSnapshots(database: D1DatabaseLike
     if (written.changes > 0) refreshed.push(range);
   }
   return { refreshed, ...(rowsWrittenObserved ? { rowsWritten } : {}) };
+}
+
+export async function refreshStaleMaterializedSnapshots(database: D1DatabaseLike, now: Date) {
+  return refreshStaleSnapshotsForRanges(database, now, TELEMETRY_RANGES);
+}
+
+export async function refreshStaleMaterializedSnapshot(database: D1DatabaseLike, range: TelemetryRange, now: Date) {
+  let retryAtByRange = overlaySnapshotRefreshNextAttempt.get(database);
+  if (!retryAtByRange) {
+    retryAtByRange = new Map();
+    overlaySnapshotRefreshNextAttempt.set(database, retryAtByRange);
+  }
+  if ((retryAtByRange.get(range) ?? 0) > now.getTime()) return { refreshed: [] as TelemetryRange[] };
+
+  // Relay polls are frequent. Keep stale-range refresh checks to at most one
+  // per minute per isolate; the durable D1 lease still coalesces across them.
+  retryAtByRange.set(range, now.getTime() + OVERLAY_SNAPSHOT_REFRESH_RETRY_MS);
+  return refreshStaleSnapshotsForRanges(database, now, [range]);
 }
 
 export async function readMaterializedSnapshots(database: D1DatabaseLike) {
