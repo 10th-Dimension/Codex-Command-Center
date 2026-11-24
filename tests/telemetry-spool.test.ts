@@ -9,6 +9,7 @@ import { normalizeOtlpRecords } from "../src/lib/telemetry/normalize";
 import {
   TELEMETRY_SPOOL_MAX_ENTRY_BODY_BYTES,
   TelemetrySpool,
+  TelemetrySpoolFullError,
   type TelemetrySpoolItem,
 } from "../scripts/telemetry-spool";
 import { sanitizeTelemetryPayload } from "../scripts/telemetry-spool-payload";
@@ -68,15 +69,25 @@ test("spool survives relay restart and replays individual bodies oldest-first", 
   });
 });
 
-test("spool enforces both file and byte bounds with visible dropped accounting", async () => {
+test("a full spool preserves acknowledged batches and rejects new ones for retry", async () => {
   await withDirectory(async (directory) => {
     const spool = new TelemetrySpool({ directory, maxFiles: 2, maxBytes: 1_000, retryMinimumMs: 0, retryMaximumMs: 0 });
-    for (let index = 0; index < 20; index += 1) await spool.enqueue("application/json", new TextEncoder().encode(`{"batch":${index}}`));
+    const encoder = new TextEncoder();
+    await spool.enqueue("application/json", encoder.encode('{"batch":0}'));
+    await spool.enqueue("application/json", encoder.encode('{"batch":1}'));
+    await assert.rejects(spool.enqueue("application/json", encoder.encode('{"batch":2}')), TelemetrySpoolFullError);
     const health = await spool.health();
-    assert.ok(health.queuedBatches <= 2);
+    assert.equal(health.queuedBatches, 2);
     assert.ok(health.queuedBytes <= 1_000);
-    assert.ok(health.droppedBatches > 0);
-    assert.equal((await readdir(directory)).filter((name) => name.endsWith(".json") && name !== ".state.json").length, health.queuedBatches);
+    assert.equal(health.droppedBatches, 0);
+    const reloaded = new TelemetrySpool({ directory, maxBytes: 1_000 });
+    await assert.rejects(reloaded.enqueue("application/json", new Uint8Array(1_000)), TelemetrySpoolFullError);
+    const bodies: string[] = [];
+    await reloaded.replay(async (item) => {
+      bodies.push(new TextDecoder().decode(item.body));
+      return "delivered";
+    });
+    assert.deepEqual(bodies, ['{"batch":0}', '{"batch":1}']);
   });
 });
 
@@ -107,12 +118,13 @@ test("replay backs off on a transient failure and preserves the entry for recove
 test("entry body size is bounded before it can reach disk", async () => {
   await withDirectory(async (directory) => {
     const spool = new TelemetrySpool({ directory, maxBytes: 1024 });
-    const health = await spool.enqueue("application/json", new Uint8Array(TELEMETRY_SPOOL_MAX_ENTRY_BODY_BYTES + 1));
+    await assert.rejects(spool.enqueue("application/json", new Uint8Array(TELEMETRY_SPOOL_MAX_ENTRY_BODY_BYTES + 1)), TelemetrySpoolFullError);
+    const health = await spool.health();
     assert.equal(health.queuedBatches, 0);
-    assert.equal(health.droppedBatches, 1);
+    assert.equal(health.droppedBatches, 0);
     const files = await readdir(directory);
     const state = JSON.parse(await readFile(join(directory, ".state.json"), "utf8")) as { droppedBatches: number };
-    assert.equal(state.droppedBatches, 1);
+    assert.equal(state.droppedBatches, 0);
     assert.equal(files.filter((file) => file.startsWith("entry-")).length, 0);
   });
 });

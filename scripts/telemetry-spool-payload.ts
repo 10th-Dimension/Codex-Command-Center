@@ -1,4 +1,4 @@
-import { decodeOtlpJson, decodeOtlpProtobuf } from "../src/lib/telemetry/otlp";
+import { decodeOtlpJson, decodeOtlpProtobuf, MAX_OTLP_LOG_RECORDS } from "../src/lib/telemetry/otlp";
 import { normalizeOtlpRecords, type NormalizedTelemetryEvent } from "../src/lib/telemetry/normalize";
 import type { TelemetrySpoolContentType } from "./telemetry-spool";
 
@@ -192,4 +192,37 @@ export async function sanitizeTelemetryPayload(contentType: TelemetrySpoolConten
   } catch {
     return undefined;
   }
+}
+
+// Combine only already sanitized spool entries. Keep original OTLP resource
+// envelopes intact, including preserved timestamps and replay fingerprints.
+export function groupReplayPayloads(items: readonly SanitizedTelemetryPayload[]) {
+  const contentType = items[0]?.contentType;
+  if (!contentType) return undefined;
+  const decoder = new TextDecoder();
+  const resourceLogs: unknown[] = [];
+  const parts: Uint8Array[] = [];
+  let bytes = 0;
+  let records = 0;
+  for (const item of items) {
+    if (item.contentType !== contentType || bytes + item.body.byteLength > 256 * 1024) break;
+    try {
+      const json = contentType === "application/json"
+        ? JSON.parse(decoder.decode(item.body)) as { resourceLogs: unknown[] }
+        : undefined;
+      const count = json ? decodeOtlpJson(json).length : decodeOtlpProtobuf(item.body).length;
+      if (records + count > MAX_OTLP_LOG_RECORDS) break;
+      if (json) resourceLogs.push(...json.resourceLogs);
+      parts.push(item.body);
+      bytes += item.body.byteLength;
+      records += count;
+    } catch {
+      break;
+    }
+  }
+  if (parts.length < 2) return undefined;
+  const body = contentType === "application/json"
+    ? textEncoder.encode(JSON.stringify({ resourceLogs }))
+    : concat(parts);
+  return { contentType, body, count: parts.length };
 }

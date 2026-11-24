@@ -40,6 +40,8 @@ const FORENSICS_EVENTS_VIEW = "codex_telemetry_events_all";
 const INSERT_SQL = `INSERT OR IGNORE INTO ${COMPACT_EVENTS_TABLE} (${INSERT_COLUMNS.join(", ")})
   SELECT ${INSERT_COLUMNS.map(() => "?").join(", ")}
   WHERE NOT EXISTS (SELECT 1 FROM codex_telemetry_events WHERE id=?)`;
+const STRICT_INSERT_SQL = `INSERT INTO ${COMPACT_EVENTS_TABLE} (${INSERT_COLUMNS.join(", ")})
+  VALUES (${INSERT_COLUMNS.map(() => "?").join(", ")})`;
 const nil = (value: string | number | undefined) => value ?? null;
 
 function eventValues(event: NormalizedTelemetryEvent) {
@@ -54,6 +56,24 @@ function eventValues(event: NormalizedTelemetryEvent) {
     nil(event.providerName), nil(event.originator), nil(event.mcpServerOrigin), nil(event.appVersion), nil(event.serviceName), nil(event.serviceVersion), nil(event.startupPhase),
     nil(event.startupStatus), nil(event.terminalType),
   ];
+}
+
+export function prepareTelemetryInsert(database: D1DatabaseLike, event: NormalizedTelemetryEvent) {
+  // A concurrent insert of the same key must abort the transaction, including
+  // the rollups built from this insert's preflight.
+  return database.prepare(STRICT_INSERT_SQL).bind(...eventValues(event));
+}
+
+export async function selectNewTelemetryEvents(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]) {
+  const keys = JSON.stringify(events.map((event) => [event.occurredAt, event.id]));
+  const result = await database.prepare(`SELECT j.key AS position FROM json_each(?) AS j
+    WHERE EXISTS (SELECT 1 FROM codex_telemetry_events_compact
+      WHERE occurred_at=json_extract(j.value,'$[0]') AND id=json_extract(j.value,'$[1]'))
+    OR EXISTS (SELECT 1 FROM codex_telemetry_events WHERE id=json_extract(j.value,'$[1]'))`)
+    .bind(keys).all<{ position: number }>();
+  if (!result.success) throw new Error("Telemetry deduplication lookup failed.");
+  const duplicatePositions = new Set(result.results?.map((row) => row.position));
+  return events.filter((_, index) => !duplicatePositions.has(index));
 }
 
 export async function insertTelemetryEventsDetailed(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]) {

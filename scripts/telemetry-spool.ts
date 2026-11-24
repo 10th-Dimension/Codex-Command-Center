@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { sanitizeTelemetryPayload } from "./telemetry-spool-payload";
 
 export const TELEMETRY_SPOOL_MAX_BYTES = 64 * 1024 * 1024;
-export const TELEMETRY_SPOOL_MAX_FILES = 512;
+export const TELEMETRY_SPOOL_MAX_FILES = 4_096;
 export const TELEMETRY_SPOOL_MAX_ENTRY_BODY_BYTES = 1_048_576;
 export const TELEMETRY_SPOOL_REPLAY_BATCH_SIZE = 16;
 export const TELEMETRY_SPOOL_RETRY_MINIMUM_MS = 5_000;
@@ -44,6 +44,13 @@ export interface TelemetrySpoolItem {
 }
 
 export type TelemetrySpoolReplayResult = "delivered" | "retry" | "drop";
+type ReplayGroup = (items: readonly TelemetrySpoolItem[]) => Promise<number | undefined>;
+
+export class TelemetrySpoolFullError extends Error {
+  constructor() {
+    super("The telemetry spool is full.");
+  }
+}
 
 export interface TelemetrySpoolOptions {
   directory: string;
@@ -293,21 +300,10 @@ export class TelemetrySpool {
     return this.serialize(() => this.enqueueReady(contentType, body));
   }
 
-  async drop() {
-    await this.ready();
-    return this.serialize(async () => {
-      this.state.droppedBatches += 1;
-      await this.persistState();
-      return this.healthSnapshot();
-    });
-  }
-
   private async enqueueReady(contentType: TelemetrySpoolContentType, body: Uint8Array) {
     if (!isContentType(contentType)) throw new Error("telemetry_spool_entry_invalid");
     if (body.byteLength > TELEMETRY_SPOOL_MAX_ENTRY_BODY_BYTES) {
-      this.state.droppedBatches += 1;
-      await this.persistState();
-      return this.healthSnapshot();
+      throw new TelemetrySpoolFullError();
     }
     const sequence = this.state.nextSequence++;
     const enqueuedAt = new Date(this.now()).toISOString();
@@ -322,18 +318,10 @@ export class TelemetrySpool {
     };
     const contents = `${JSON.stringify(serialized)}\n`;
     const fileBytes = Buffer.byteLength(contents, "utf8");
-    if (fileBytes > this.maxBytes) {
-      this.state.droppedBatches += 1;
-      await this.persistState();
-      return this.healthSnapshot();
-    }
-
-    while (this.entries.length >= this.maxFiles || this.queuedBytes + fileBytes > this.maxBytes) {
-      const oldest = this.entries.shift();
-      if (!oldest) break;
-      this.queuedBytes -= oldest.fileBytes;
-      await rm(oldest.path, { force: true });
-      this.state.droppedBatches += 1;
+    if (this.entries.length >= this.maxFiles || this.queuedBytes + fileBytes > this.maxBytes) {
+      // An exporter can retry an unacknowledged batch. Previously acknowledged
+      // batches have no other sender and must remain queued.
+      throw new TelemetrySpoolFullError();
     }
 
     const path = join(this.directory, `${id}.json`);
@@ -345,29 +333,35 @@ export class TelemetrySpool {
     return this.healthSnapshot();
   }
 
-  async replay(send: (item: TelemetrySpoolItem) => Promise<TelemetrySpoolReplayResult>, force = false) {
+  async replay(send: (item: TelemetrySpoolItem) => Promise<TelemetrySpoolReplayResult>, force = false, sendGroup?: ReplayGroup) {
     await this.ready();
     if (this.replayPromise) return this.replayPromise;
     if (!this.entries.length || (!force && this.now() < this.retryNotBefore)) return 0;
-    this.replayPromise = this.replayInternal(send).finally(() => {
+    this.replayPromise = this.replayInternal(send, sendGroup).finally(() => {
       this.replayPromise = undefined;
     });
     return this.replayPromise;
   }
 
-  private async replayInternal(send: (item: TelemetrySpoolItem) => Promise<TelemetrySpoolReplayResult>) {
+  private async replayInternal(send: (item: TelemetrySpoolItem) => Promise<TelemetrySpoolReplayResult>, sendGroup?: ReplayGroup) {
     this.replayState = "replaying";
     let delivered = 0;
     let attempts = 0;
     while (this.entries.length && attempts < this.replayBatchSize) {
-      attempts += 1;
-      const entry = this.entries[0];
+      const entries = this.entries.slice(0, sendGroup ? Math.min(8, this.replayBatchSize - attempts) : 1);
+      let completed = 1;
       let result: TelemetrySpoolReplayResult;
       try {
-        result = await send({ id: entry.id, contentType: entry.contentType, body: entry.body, enqueuedAt: entry.enqueuedAt });
+        const groupCount = entries.length > 1 ? await sendGroup?.(entries) : undefined;
+        if (groupCount === undefined) result = await send(entries[0]);
+        else {
+          result = groupCount === 0 ? "retry" : "delivered";
+          if (groupCount > 0) completed = groupCount;
+        }
       } catch {
         result = "retry";
       }
+      attempts += completed;
       if (result === "retry") {
         await this.serialize(async () => {
           this.state.lastUpstreamFailureAt = new Date(this.now()).toISOString();
@@ -379,15 +373,21 @@ export class TelemetrySpool {
         return delivered;
       }
       const removed = await this.serialize(async () => {
-        if (this.entries[0]?.id !== entry.id) return false;
-        this.entries.shift();
-        this.queuedBytes -= entry.fileBytes;
-        await rm(entry.path, { force: true });
-        if (result === "drop") this.state.droppedBatches += 1;
-        else {
-          delivered += 1;
-          this.state.lastSuccessfulReplayAt = new Date(this.now()).toISOString();
+        const acknowledged = new Set(entries.slice(0, completed).map((entry) => entry.id));
+        let removed = false;
+        while (this.entries.length && acknowledged.has(this.entries[0].id)) {
+          const entry = this.entries[0];
+          await rm(entry.path, { force: true });
+          this.entries.shift();
+          this.queuedBytes -= entry.fileBytes;
+          if (result === "drop") this.state.droppedBatches += 1;
+          else {
+            delivered += 1;
+            this.state.lastSuccessfulReplayAt = new Date(this.now()).toISOString();
+          }
+          removed = true;
         }
+        if (!removed) return false;
         this.retryDelayMs = this.retryMinimumMs;
         this.retryNotBefore = 0;
         await this.persistState();

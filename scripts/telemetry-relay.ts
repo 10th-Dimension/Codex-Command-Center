@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { createCodexAccountService, discoverCodexExecutable, unavailableCodexAccount, type CodexAccountProvider } from "./codex-app-server-client";
 import { defaultTelemetrySpoolDirectory, TelemetrySpool, type TelemetryBufferHealth, type TelemetrySpoolContentType, type TelemetrySpoolReplayResult } from "./telemetry-spool";
-import { sanitizeTelemetryPayload } from "./telemetry-spool-payload";
+import { groupReplayPayloads, sanitizeTelemetryPayload, type SanitizedTelemetryPayload } from "./telemetry-spool-payload";
 import { allowsRelayRequest, loadRelaySecurity, type RelaySecurity } from "./relay-security";
 import type { CodexAccountSnapshot, OverlayCacheState } from "../src/lib/overlay/contracts";
 
@@ -288,6 +288,20 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
     }
   }
 
+  async function sendQueuedGroup(items: readonly SanitizedTelemetryPayload[]) {
+    const group = groupReplayPayloads(items);
+    if (!group) return undefined;
+    const { upstream } = await sendToCollector(group.contentType, group.body, true);
+    if (upstream.ok) {
+      relayCounters.forwardedRequests += 1;
+      observeIngestHeaders(upstream.headers);
+      return group.count;
+    }
+    // If the collector rejects the envelope, try the original first entry
+    // separately so one bad entry cannot discard the rest of the group.
+    return retryableStatus(upstream.status) ? 0 : undefined;
+  }
+
   function scheduleReplay(delayMs = 0) {
     if (replayTimer) return;
     replayTimer = setTimeout(() => {
@@ -301,7 +315,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
     if (replayInFlight) return replayInFlight;
     replayInFlight = (async () => {
       try {
-        await spool.replay(sendQueued, force);
+        await spool.replay(sendQueued, force, sendQueuedGroup);
         const health = await spool.health();
         if (health.queuedBatches > 0) scheduleReplay(Math.max(0, spool.nextRetryAt() - now()));
       } catch {
@@ -316,7 +330,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
   async function bufferBody(contentType: TelemetrySpoolContentType, body: Uint8Array, upstreamFailed: boolean) {
     try {
       const sanitized = await sanitizeTelemetryPayload(contentType, body, new Date(now()).toISOString());
-      if (!sanitized) return spool.drop();
+      if (!sanitized) return undefined;
       // New arrivals behind queued work must not postpone the next replay.
       if (upstreamFailed) await spool.recordUpstreamFailure();
       const health = await spool.enqueue(sanitized.contentType, sanitized.body);
@@ -541,7 +555,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
         const health = await bufferBody(contentType as TelemetrySpoolContentType, body, false);
         if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
         else {
-          response.writeHead(502, { "content-type": "application/json" });
+          response.writeHead(503, { "content-type": "application/json" });
           response.end(JSON.stringify({ error: "collector_unavailable" }));
         }
         return;
@@ -554,7 +568,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
           const health = await bufferBody(contentType as TelemetrySpoolContentType, body, true);
           if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
           else {
-            response.writeHead(502, { "content-type": "application/json" });
+            response.writeHead(503, { "content-type": "application/json" });
             response.end(JSON.stringify({ error: "collector_unavailable" }));
           }
           return;
@@ -567,7 +581,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
         const health = await bufferBody(contentType as TelemetrySpoolContentType, body, true);
         if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
         else {
-          response.writeHead(502, { "content-type": "application/json" });
+          response.writeHead(503, { "content-type": "application/json" });
           response.end(JSON.stringify({ error: "collector_unavailable" }));
         }
       } finally {

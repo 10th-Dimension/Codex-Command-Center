@@ -333,12 +333,9 @@ function dimensionValues(key: string, value: DimensionAggregate, includePricing 
     : base;
 }
 
-export async function applyTelemetryRollups(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]): Promise<RollupWriteResult> {
-  if (!events.length) return { hourlyGroups: 0, modelGroups: 0, reasoningGroups: 0, sessionGroups: 0 };
+export function prepareTelemetryRollups(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]) {
   const grouped = groupTelemetryRollups(events);
   const statements: D1PreparedStatementLike[] = [];
-  let rowsWritten = 0;
-  let rowsWrittenObserved = false;
   for (const [hour, value] of grouped.hourly) {
     statements.push(database.prepare(hourlyUpsert).bind(hour, value.eventCount, value.inputTokens, value.inputSamples,
       value.outputTokens, value.outputSamples, value.cachedTokens, value.cachedSamples, value.cacheWriteTokens,
@@ -355,6 +352,19 @@ export async function applyTelemetryRollups(database: D1DatabaseLike, events: No
       value.toolTokens, value.completedTools, value.failedTools, value.errorCount, value.warningCount, value.approvals,
       value.ttftSumMs, value.ttftSampleCount));
   }
+  return {
+    statements,
+    hourlyGroups: grouped.hourly.size,
+    modelGroups: grouped.models.size,
+    reasoningGroups: grouped.reasoning.size,
+    sessionGroups: grouped.sessions.size,
+  };
+}
+
+export async function applyTelemetryRollups(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]): Promise<RollupWriteResult> {
+  const { statements, ...counts } = prepareTelemetryRollups(database, events);
+  let rowsWritten = 0;
+  let rowsWrittenObserved = false;
   for (let offset = 0; offset < statements.length; offset += 50) {
     const results = await database.batch(statements.slice(offset, offset + 50));
     if (results.some((result) => !result.success)) throw new Error("Telemetry rollup batch failed.");
@@ -364,10 +374,7 @@ export async function applyTelemetryRollups(database: D1DatabaseLike, events: No
     }
   }
   return {
-    hourlyGroups: grouped.hourly.size,
-    modelGroups: grouped.models.size,
-    reasoningGroups: grouped.reasoning.size,
-    sessionGroups: grouped.sessions.size,
+    ...counts,
     ...(rowsWrittenObserved ? { rowsWritten } : {}),
   };
 }

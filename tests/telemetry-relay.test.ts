@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { ACCOUNT_MAX_BYTES, ACCOUNT_RELAY_PATH, createTelemetryRelay, isSafeCodexAccountPayload, isSafeOverlayPayload, isUsableOverlayPayload, OVERLAY_UPSTREAM_PATH, TELEMETRY_RELAY_HEALTH_PATH, TELEMETRY_RELAY_HOST } from "../scripts/telemetry-relay";
 import { TelemetrySpool } from "../scripts/telemetry-spool";
 import { loadRelaySecurity } from "../scripts/relay-security";
+import { decodeOtlpJson } from "../src/lib/telemetry/otlp";
 
 // Keep the suite isolated from the user's running Codex Live relay. The
 // production relay intentionally uses a durable per-user spool, while tests
@@ -476,6 +477,49 @@ test("incoming batches do not postpone replay while the collector is in backoff"
     assert.equal(attempts, 1);
     assert.equal(spool.nextRetryAt(), retryAt);
     assert.equal((await spool.health()).queuedBatches, 2);
+  } finally {
+    await close(relay);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("relay retries a grouped backlog without removing entries before collector acceptance", { timeout: 5_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-relay-group-test-"));
+  const spool = new TelemetrySpool({ directory, retryMinimumMs: 1, retryMaximumMs: 1 });
+  const payload = (name: string) => new TextEncoder().encode(JSON.stringify({
+    resourceLogs: [{ scopeLogs: [{ logRecords: [{ eventName: name }] }] }],
+  }));
+  await spool.enqueue("application/json", payload("codex.first"));
+  await spool.enqueue("application/json", payload("codex.second"));
+  let calls = 0;
+  let finish!: () => void;
+  const delivered = new Promise<void>((resolve) => { finish = resolve; });
+  const requests: Array<{ records: number; queued: number; replay: string | null }> = [];
+  const relay = createTestRelay(relayConfiguration, {
+    spool,
+    fetchImpl: async (_input, init) => {
+      calls += 1;
+      requests.push({
+        records: decodeOtlpJson(JSON.parse(new TextDecoder().decode(init?.body as Uint8Array))).length,
+        queued: (await spool.health()).queuedBatches,
+        replay: new Headers(init?.headers).get("x-codex-telemetry-replay"),
+      });
+      if (calls === 1) return new Response(null, { status: 503 });
+      finish();
+      return new Response(null, { status: 200 });
+    },
+  });
+  await listen(relay);
+  try {
+    await delivered;
+    for (let attempt = 0; attempt < 50 && await spool.hasPending(); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.deepEqual(requests, [
+      { records: 2, queued: 2, replay: "1" },
+      { records: 2, queued: 2, replay: "1" },
+    ]);
+    assert.equal((await spool.health()).queuedBatches, 0);
   } finally {
     await close(relay);
     await rm(directory, { recursive: true, force: true });

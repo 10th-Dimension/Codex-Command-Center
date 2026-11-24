@@ -6,6 +6,7 @@ import type { D1DatabaseLike, D1PreparedStatementLike, D1ResultLike } from "../.
 export class SqliteD1 implements D1DatabaseLike {
   readonly statements: { sql: string; values: unknown[] }[] = [];
   beforeExecute?: (sql: string, values: unknown[]) => Promise<void>;
+  transactionalBatches = false;
 
   constructor(readonly sqlite = new DatabaseSync(":memory:"), migrate = true) {
     if (!migrate) return;
@@ -34,10 +35,17 @@ export class SqliteD1 implements D1DatabaseLike {
 
   async batch<T>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> {
     const results: D1ResultLike<T>[] = [];
-    for (const statement of statements) {
-      results.push(await (/^\s*(?:INSERT|UPDATE|DELETE)/i.test((statement as unknown as { sql?: string }).sql ?? "")
-        ? statement.run<T>() : statement.all<T>()));
+    if (this.transactionalBatches) this.sqlite.exec("BEGIN");
+    try {
+      for (const statement of statements) {
+        results.push(await (/^\s*(?:INSERT|UPDATE|DELETE)/i.test((statement as unknown as { sql?: string }).sql ?? "")
+          ? statement.run<T>() : statement.all<T>()));
+      }
+      if (this.transactionalBatches) this.sqlite.exec("COMMIT");
+      return results;
+    } catch (error) {
+      if (this.transactionalBatches) this.sqlite.exec("ROLLBACK");
+      throw error;
     }
-    return results;
   }
 }

@@ -13,6 +13,7 @@ import {
 import { handleTelemetryIngest, MAX_TELEMETRY_PAYLOAD_BYTES } from "../src/lib/telemetry/ingest";
 import { normalizeOtlpRecords } from "../src/lib/telemetry/normalize";
 import { decodeOtlpJson, decodeOtlpProtobuf } from "../src/lib/telemetry/otlp";
+import { SqliteD1 } from "./helpers/sqlite-d1";
 
 const now = "2026-09-11T12:00:00.000Z";
 const ingestKey = "unit-test-ingest-key";
@@ -74,13 +75,20 @@ class FakeD1 implements D1DatabaseLike {
     return statement;
   }
   async batch<T>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> {
+    if (this.missingRollupSchema && statements.some((statement) => /codex_(?:rollup|session_summary)/.test((statement as FakeStatement).sql))) {
+      throw new Error("no such table: codex_rollup_hourly");
+    }
     if (this.queryResults && statements.every((statement) => !((statement as FakeStatement).sql.includes("INSERT")))) return this.queryResults as D1ResultLike<T>[];
     return statements.map((statement) => this.execute(statement as FakeStatement) as D1ResultLike<T>);
   }
   execute(statement: FakeStatement): D1ResultLike {
     const sql = statement.sql.trim();
     if (this.missingRollupSchema && /codex_(?:rollup|dashboard_snapshot|session_summary)/.test(statement.sql)) throw new Error("no such table: codex_rollup_hourly");
-    if (statement.sql.includes("INSERT OR IGNORE")) {
+    if (sql.startsWith("SELECT j.key AS position FROM json_each")) {
+      const keys = JSON.parse(String(statement.values[0])) as [string, string][];
+      return { success: true, results: keys.flatMap(([, id], position) => this.fingerprints.has(id) ? [{ position }] : []) };
+    }
+    if (statement.sql.includes("INSERT OR IGNORE") || sql.startsWith("INSERT INTO codex_telemetry_events_compact")) {
       const fingerprint = String(statement.values[1]);
       if (this.fingerprints.has(fingerprint)) return { success: true, meta: { changes: 0 } };
       this.fingerprints.add(fingerprint);
@@ -435,9 +443,9 @@ test("ingestion batches writes, deduplicates retries, and runs retention cleanup
   }
   assert.match(legacyDelete.sql, /WHERE id IN\s*\(\s*SELECT id/);
   assert.match(compactDelete.sql, /WHERE \(occurred_at,id\) IN\s*\(\s*SELECT occurred_at,id/);
-  const compactInsert = database.statements.find((statement) => statement.sql.includes("INSERT OR IGNORE INTO codex_telemetry_events_compact"));
+  const compactInsert = database.statements.find((statement) => statement.sql.startsWith("INSERT INTO codex_telemetry_events_compact"));
   assert.ok(compactInsert);
-  assert.match(compactInsert.sql, /NOT EXISTS \(SELECT 1 FROM codex_telemetry_events WHERE id=\?\)/);
+  assert.ok(database.statements.some((statement) => statement.sql.includes("OR EXISTS (SELECT 1 FROM codex_telemetry_events WHERE id=json_extract")));
   assert.ok(database.rollupInsertCount > 0);
   assert.equal(database.rollupInsertCount, rollupsAfterFirst, "duplicate delivery must not increment rollups");
   assert.equal(database.lastDeleteCutoff, "2026-08-12T12:00:00.000Z");
@@ -493,7 +501,7 @@ test("maintenance failures back off within an isolate without dropping subsequen
   const database = new TransientD1();
   let current = Date.parse(now);
   const options = { database, ingestKey, retentionDays: 30, now: () => new Date(current) };
-  assert.equal((await handleTelemetryIngest(requestFor(jsonPayload("codex.first")), options)).status, 503);
+  assert.equal((await handleTelemetryIngest(requestFor(jsonPayload("codex.first")), options)).status, 200);
   assert.equal((await handleTelemetryIngest(requestFor(jsonPayload("codex.second")), options)).status, 200);
   assert.equal(database.attempts, 1);
   current += 60000;
@@ -539,7 +547,7 @@ test("duplicate-only retries skip maintenance even when the maintenance interval
   assert.equal(second.headers.get("x-codex-telemetry-rollup-upserts"), "0");
   assert.equal(second.headers.get("x-codex-telemetry-snapshot-rebuilds"), "0");
   assert.equal(second.headers.get("x-codex-telemetry-cleanup-deletes"), "0");
-  assert.equal(second.headers.get("x-codex-telemetry-d1-rows-written"), "1", "only the duplicate-aware insert statement was observed");
+  assert.equal(second.headers.get("x-codex-telemetry-d1-rows-written"), null, "duplicate preflight requires no write");
 });
 
 test("malformed OTLP protobuf is rejected without a D1 write", async () => {
@@ -633,14 +641,41 @@ test("ingestion exposes bounded write-amplification diagnostics without creating
   assert.equal(database.insertedValues.length, 1);
 });
 
-test("missing migration 0003 does not break ingest or trigger a raw analytics fallback", async () => {
+test("ingestion returns a retryable error when the required rollup schema is missing", async () => {
   const database = new FakeD1();
   database.missingRollupSchema = true;
   const response = await handleTelemetryIngest(requestFor(jsonPayload()), { database, ingestKey, retentionDays: 30, now: () => new Date(now) });
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("x-codex-telemetry-accepted"), "1");
-  assert.equal(response.headers.get("x-codex-telemetry-rollups"), "schema-unavailable");
-  assert.equal(database.rawDeleteCount, 2);
+  assert.equal(response.status, 503);
+  assert.equal(database.insertedValues.length, 0);
+  assert.equal(database.rawDeleteCount, 0);
+});
+
+test("rollup quota failure rolls back raw events and replay commits each event exactly once", async () => {
+  const database = new SqliteD1();
+  database.transactionalBatches = true;
+  try {
+    const payload = jsonPayload();
+    const first = payload.resourceLogs[0].scopeLogs[0].logRecords[0];
+    payload.resourceLogs[0].scopeLogs[0].logRecords.push({ ...first, timeUnixNano: "1789128001000000000" });
+    const options = { database, ingestKey, retentionDays: 30, now: () => new Date(now) };
+    const submit = () => handleTelemetryIngest(requestFor(payload), options);
+    const count = () => database.sqlite.prepare("SELECT count(*) AS n FROM codex_telemetry_events_compact").get()?.n;
+    database.sqlite.exec(`CREATE TRIGGER fail_rollup BEFORE INSERT ON codex_session_summary
+      BEGIN SELECT RAISE(ABORT, 'daily row write limit'); END`);
+    assert.equal((await submit()).status, 503);
+    assert.equal(count(), 0);
+    assert.equal(database.sqlite.prepare("SELECT count(*) AS n FROM codex_rollup_hourly").get()?.n, 0);
+    database.sqlite.exec("DROP TRIGGER fail_rollup");
+    const accepted = await submit();
+    assert.equal(accepted.status, 200);
+    assert.equal(accepted.headers.get("x-codex-telemetry-accepted"), "2");
+    assert.equal(accepted.headers.get("x-codex-telemetry-session-upserts"), "1");
+    assert.equal((await submit()).headers.get("x-codex-telemetry-duplicates"), "2");
+    assert.equal(count(), 2);
+    assert.equal(database.sqlite.prepare("SELECT event_count FROM codex_session_summary").get()?.event_count, 2);
+  } finally {
+    database.sqlite.close();
+  }
 });
 
 test("D1 migration preserves deduplication, query indexes, and bounded raw-event schema", async () => {
