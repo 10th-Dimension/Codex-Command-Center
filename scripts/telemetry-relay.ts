@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { createCodexAccountService, discoverCodexExecutable, unavailableCodexAccount, type CodexAccountProvider } from "./codex-app-server-client";
 import { defaultTelemetrySpoolDirectory, TelemetrySpool, type TelemetryBufferHealth, type TelemetrySpoolContentType, type TelemetrySpoolReplayResult } from "./telemetry-spool";
-import { groupReplayPayloads, sanitizeTelemetryPayload, type SanitizedTelemetryPayload } from "./telemetry-spool-payload";
+import { groupTelemetryPayloads, sanitizeTelemetryPayload, type TelemetryPayload } from "./telemetry-spool-payload";
 import { allowsRelayRequest, loadRelaySecurity, type RelaySecurity } from "./relay-security";
 import type { CodexAccountSnapshot, OverlayCacheState } from "../src/lib/overlay/contracts";
 
@@ -24,6 +24,8 @@ export const OVERLAY_REFRESH_MINIMUM_MS = 15_000;
 export const ACCOUNT_RELAY_PATH = "/v1/account";
 export const ACCOUNT_MAX_BYTES = 65_536;
 export const TELEMETRY_REPLAY_BACKOFF_DEFAULT_MS = 5_000;
+const LIVE_BATCH_WINDOW_MS = 1_000;
+const MAX_LIVE_BATCH_REQUESTS = 8;
 export const OVERLAY_RANGES = ["24h", "7d", "30d"] as const;
 const OVERLAY_CACHE_STATES = ["fresh", "upstream", "stale"] as const;
 export type OverlayRange = typeof OVERLAY_RANGES[number];
@@ -224,6 +226,9 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
     d1RowsWrittenObserved: false,
   };
   let directForwardInFlight = false;
+  type LiveDelivery = TelemetryPayload & { response: ServerResponse };
+  let pendingLive: LiveDelivery[] = [];
+  let liveTimer: ReturnType<typeof setTimeout> | undefined;
   let replayInFlight: Promise<void> | undefined;
   let replayTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -288,8 +293,8 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
     }
   }
 
-  async function sendQueuedGroup(items: readonly SanitizedTelemetryPayload[]) {
-    const group = groupReplayPayloads(items);
+  async function sendQueuedGroup(items: readonly TelemetryPayload[]) {
+    const group = groupTelemetryPayloads(items, "replay");
     if (!group) return undefined;
     const { upstream } = await sendToCollector(group.contentType, group.body, true);
     if (upstream.ok) {
@@ -352,6 +357,77 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
     };
     response.writeHead(202, headers);
     response.end(contentType === "application/json" ? JSON.stringify({ partialSuccess: {} }) : new Uint8Array());
+  }
+
+  async function bufferLive(delivery: LiveDelivery, upstreamFailed: boolean) {
+    const { contentType, body, response } = delivery;
+    const health = await bufferBody(contentType, body, upstreamFailed);
+    if (health) await bufferedResponse(response, contentType, health);
+    else {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "collector_unavailable" }));
+    }
+  }
+
+  async function deliverLive(items: LiveDelivery[], payload: TelemetryPayload) {
+    const receipt = await sendToCollector(payload.contentType, payload.body).catch(() => undefined);
+    if (!receipt || retryableStatus(receipt.upstream.status)) {
+      for (const [index, item] of items.entries()) await bufferLive(item, index === 0);
+      return "buffered";
+    }
+    const { upstream, upstreamBody } = receipt;
+    // Attribute permanent errors to their original requests, so a single
+    // rejected envelope cannot cause the whole group to be discarded.
+    if (items.length > 1 && !upstream.ok) return "split";
+    relayCounters.forwardedRequests += 1;
+    observeIngestHeaders(upstream.headers);
+    for (const { response } of items) {
+      if (response.destroyed) continue;
+      response.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/x-protobuf" });
+      response.end(upstreamBody);
+    }
+    return "forwarded";
+  }
+
+  async function flushLive() {
+    if (liveTimer) clearTimeout(liveTimer);
+    liveTimer = undefined;
+    const items = pendingLive;
+    pendingLive = [];
+    directForwardInFlight = true;
+    try {
+      let splitUntil = 0;
+      for (let offset = 0; offset < items.length;) {
+        const group = offset >= splitUntil ? groupTelemetryPayloads(items.slice(offset), "live") : undefined;
+        let count = group?.count ?? 1;
+        let result = await deliverLive(items.slice(offset, offset + count), group ?? items[offset]);
+        if (result === "split") {
+          splitUntil = offset + count;
+          count = 1;
+          result = await deliverLive([items[offset]], items[offset]);
+        }
+        offset += count;
+        if (result === "buffered") {
+          for (const delivery of items.slice(offset)) await bufferLive(delivery, false);
+          break;
+        }
+      }
+    } catch {
+      for (const { response } of items) {
+        if (response.writableEnded || response.destroyed) continue;
+        if (!response.headersSent) response.writeHead(503, { "content-type": "application/json" });
+        response.end();
+      }
+    } finally {
+      directForwardInFlight = false;
+      if (await spool.hasPending().catch(() => false)) scheduleReplay();
+    }
+  }
+
+  function queueLive(delivery: LiveDelivery) {
+    pendingLive.push(delivery);
+    if (pendingLive.length >= MAX_LIVE_BATCH_REQUESTS) void flushLive();
+    else liveTimer ??= setTimeout(() => void flushLive(), LIVE_BATCH_WINDOW_MS);
   }
 
   async function fetchOverlay(range: OverlayRange) {
@@ -540,7 +616,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
       response.end(JSON.stringify({ error: "payload_too_large" }));
       return;
     }
-    const contentType = String(request.headers["content-type"] ?? "").split(";", 1)[0].toLowerCase();
+      const contentType = String(request.headers["content-type"] ?? "").split(";", 1)[0].toLowerCase();
     if (!["application/json", "application/x-protobuf", "application/protobuf"].includes(contentType)) {
       response.writeHead(415, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "unsupported_media_type" }));
@@ -550,44 +626,13 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
     try {
       relayCounters.ingestRequests += 1;
       const body = await readRequestBody(request);
+      const delivery = { contentType: contentType as TelemetrySpoolContentType, body, response };
       const spoolPending = await spool.hasPending().catch(() => false);
       if (spoolPending || directForwardInFlight) {
-        const health = await bufferBody(contentType as TelemetrySpoolContentType, body, false);
-        if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
-        else {
-          response.writeHead(503, { "content-type": "application/json" });
-          response.end(JSON.stringify({ error: "collector_unavailable" }));
-        }
+        await bufferLive(delivery, false);
         return;
       }
-
-      directForwardInFlight = true;
-      try {
-        const { upstream, upstreamBody } = await sendToCollector(contentType as TelemetrySpoolContentType, body);
-        if (retryableStatus(upstream.status)) {
-          const health = await bufferBody(contentType as TelemetrySpoolContentType, body, true);
-          if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
-          else {
-            response.writeHead(503, { "content-type": "application/json" });
-            response.end(JSON.stringify({ error: "collector_unavailable" }));
-          }
-          return;
-        }
-        relayCounters.forwardedRequests += 1;
-        observeIngestHeaders(upstream.headers);
-        response.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/x-protobuf" });
-        response.end(upstreamBody);
-      } catch {
-        const health = await bufferBody(contentType as TelemetrySpoolContentType, body, true);
-        if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
-        else {
-          response.writeHead(503, { "content-type": "application/json" });
-          response.end(JSON.stringify({ error: "collector_unavailable" }));
-        }
-      } finally {
-        directForwardInFlight = false;
-        if (await spool.hasPending().catch(() => false)) scheduleReplay();
-      }
+      queueLive(delivery);
     } catch (error) {
       const status = error instanceof Error && "statusCode" in error && error.statusCode === 413 ? 413 : 502;
       response.writeHead(status, { "content-type": "application/json" });
@@ -595,6 +640,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
     }
   });
   server.on("close", () => {
+    if (liveTimer) clearTimeout(liveTimer);
     if (replayTimer) clearTimeout(replayTimer);
     replayTimer = undefined;
   });

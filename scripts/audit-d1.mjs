@@ -195,6 +195,23 @@ try {
   }
   assert.equal(rebuilt.executions.length, 12);
   assert.ok(rebuilt.executions.every((item) => !item.sql.includes("codex_telemetry_events")));
+  const thirtyDayCutoff = "2026-09-26T12:00:00.000Z";
+  const previousHourly = await applicationDatabase.prepare(`WITH windowed AS (
+    SELECT hour_start,event_count,input_tokens,
+      SUM(CASE WHEN hour_start>=? THEN input_tokens ELSE 0 END) OVER() AS pricing_input_tokens
+    FROM codex_rollup_hourly WHERE hour_start>=?
+  )
+  SELECT substr(hour_start,1,10) AS label,SUM(event_count) AS event_count,
+    SUM(input_tokens) AS input_tokens,MAX(pricing_input_tokens) AS pricing_input_tokens
+  FROM windowed GROUP BY label ORDER BY label LIMIT 744`).bind(thirtyDayCutoff, thirtyDayCutoff).all();
+  const thirtyDayHourly = rebuilt.executions[8];
+  const optimizedHourly = await applicationDatabase.prepare(thirtyDayHourly.sql).bind(thirtyDayCutoff, thirtyDayCutoff).all();
+  const scalarProjection = ({ label, event_count, input_tokens, pricing_input_tokens }) =>
+    ({ label, event_count, input_tokens, pricing_input_tokens });
+  assert.deepEqual(optimizedHourly.results.map(scalarProjection), previousHourly.results);
+  assert.ok(optimizedHourly.meta.rows_read > 0 && optimizedHourly.meta.rows_read < previousHourly.meta.rows_read * 0.65,
+    `30-day scalar rebuild should reduce measured reads by at least 35%: ${previousHourly.meta.rows_read} -> ${optimizedHourly.meta.rows_read}`);
+  console.log("30-day scalar rebuild measured reads:", previousHourly.meta.rows_read, "->", optimizedHourly.meta.rows_read);
   const sessionRead = rebuilt.executions.find((item) => item.sql.includes("FROM codex_session_summary"));
   assert.ok(oldSession.meta?.rows_read > 0 && sessionRead.rows_read > 0, "D1 API must expose nonzero local read measurements");
   assert.ok(sessionRead.rows_read < oldSession.meta.rows_read / 10, "indexed session rebuild must reduce measured local rows read by more than 10x on this fixture");

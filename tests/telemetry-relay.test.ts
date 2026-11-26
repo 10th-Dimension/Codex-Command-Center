@@ -216,6 +216,46 @@ test("local relay binds to loopback and forwards OTLP with Access and ingestion 
   }
 });
 
+test("the live relay coalesces timestamped payloads and confirms them after one collector request", { timeout: 8_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-relay-live-batch-"));
+  const spool = new TelemetrySpool({ directory, retryMinimumMs: 60_000 });
+  const calls: Array<Array<{ eventName?: string; timeUnixNano?: bigint }>> = [];
+  let collectorAvailable = true;
+  const relay = createTestRelay(relayConfiguration, {
+    spool,
+    fetchImpl: async (_input, init) => {
+      assert.equal(new Headers(init?.headers).has("x-codex-telemetry-replay"), false);
+      calls.push(decodeOtlpJson(JSON.parse(new TextDecoder().decode(init?.body as Uint8Array))));
+      return new Response(null, { status: collectorAvailable ? 200 : 503 });
+    },
+  });
+  const port = await listen(relay);
+  try {
+    const send = (name: string, timeUnixNano?: string) => requestRelay(`https://${TELEMETRY_RELAY_HOST}:${port}/v1/logs`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ resourceLogs: [{ scopeLogs: [{ logRecords: [{ eventName: name, timeUnixNano }] }] }] }),
+    });
+    const healthy = await Promise.all([send("codex.one", "1789128000000000000"), send("codex.two", "1789128001000000000")]);
+    assert.deepEqual(healthy.map((response) => response.status), [200, 200]);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].map((record) => record.eventName).sort(), ["codex.one", "codex.two"]);
+
+    const untimed = await Promise.all([send("codex.untimed"), send("codex.three", "1789128002000000000")]);
+    assert.deepEqual(untimed.map((response) => response.status), [200, 200]);
+    assert.deepEqual(calls.slice(1).map((items) => items.length), [1, 1]);
+
+    collectorAvailable = false;
+    const deferred = await Promise.all([send("codex.four", "1789128003000000000"), send("codex.five", "1789128004000000000")]);
+    assert.deepEqual(deferred.map((response) => response.status), [202, 202]);
+    assert.equal(calls.length, 4);
+    assert.equal(calls[3].length, 2);
+    assert.equal((await spool.health()).queuedBatches, 2);
+  } finally {
+    await close(relay);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("relay rejects unsupported media types before forwarding", async () => {
   let calls = 0;
   const relay = createTestRelay({

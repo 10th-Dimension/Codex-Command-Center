@@ -4,7 +4,7 @@ import type { TelemetrySpoolContentType } from "./telemetry-spool";
 
 const textEncoder = new TextEncoder();
 
-export interface SanitizedTelemetryPayload {
+export interface TelemetryPayload {
   contentType: TelemetrySpoolContentType;
   body: Uint8Array;
 }
@@ -179,7 +179,7 @@ function protobufPayload(events: NormalizedTelemetryEvent[]) {
   return concat([fieldMessage(1, resourceLogs)]);
 }
 
-export async function sanitizeTelemetryPayload(contentType: TelemetrySpoolContentType, body: Uint8Array, receivedAt: string, replay = false): Promise<SanitizedTelemetryPayload | undefined> {
+export async function sanitizeTelemetryPayload(contentType: TelemetrySpoolContentType, body: Uint8Array, receivedAt: string, replay = false): Promise<TelemetryPayload | undefined> {
   try {
     const records = contentType === "application/json"
       ? decodeOtlpJson(JSON.parse(new TextDecoder().decode(body)))
@@ -194,9 +194,11 @@ export async function sanitizeTelemetryPayload(contentType: TelemetrySpoolConten
   }
 }
 
-// Combine only already sanitized spool entries. Keep original OTLP resource
-// envelopes intact, including preserved timestamps and replay fingerprints.
-export function groupReplayPayloads(items: readonly SanitizedTelemetryPayload[]) {
+// Preserve the original resource and scope envelopes. Live records with no
+// usable event time must be sent separately: changing their shared receipt
+// time could change their fingerprints and collapse distinct events.
+export function groupTelemetryPayloads(items: readonly TelemetryPayload[], mode: "live" | "replay") {
+  if (items.length < 2) return undefined;
   const contentType = items[0]?.contentType;
   if (!contentType) return undefined;
   const decoder = new TextDecoder();
@@ -210,12 +212,16 @@ export function groupReplayPayloads(items: readonly SanitizedTelemetryPayload[])
       const json = contentType === "application/json"
         ? JSON.parse(decoder.decode(item.body)) as { resourceLogs: unknown[] }
         : undefined;
-      const count = json ? decodeOtlpJson(json).length : decodeOtlpProtobuf(item.body).length;
-      if (records + count > MAX_OTLP_LOG_RECORDS) break;
+      const decoded = json ? decodeOtlpJson(json) : decodeOtlpProtobuf(item.body);
+      if (records + decoded.length > MAX_OTLP_LOG_RECORDS) break;
+      if (mode === "live" && decoded.some((record) => {
+        const timestamp = record.timeUnixNano ?? record.observedTimeUnixNano;
+        return !timestamp || timestamp <= 0n || timestamp / 1_000_000n > 8_640_000_000_000_000n;
+      })) break;
       if (json) resourceLogs.push(...json.resourceLogs);
       parts.push(item.body);
       bytes += item.body.byteLength;
-      records += count;
+      records += decoded.length;
     } catch {
       break;
     }

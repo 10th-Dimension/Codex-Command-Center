@@ -5,6 +5,7 @@ import test from "node:test";
 import type { D1DatabaseLike, D1PreparedStatementLike, D1ResultLike } from "../src/lib/telemetry/database";
 import type { NormalizedTelemetryEvent } from "../src/lib/telemetry/normalize";
 import { applyTelemetryRollups, buildMaterializedSnapshot, groupTelemetryRollups, readMaterializedSnapshot, refreshStaleMaterializedSnapshots, writeMaterializedSnapshot } from "../src/lib/telemetry/rollups";
+import { SqliteD1 } from "./helpers/sqlite-d1";
 
 const now = new Date("2026-09-13T12:00:00.000Z");
 
@@ -176,13 +177,29 @@ test("pricing snapshot aligns scalar and model rollups to the same complete-hour
   const hourlyRead = database.statements.find((statement) => statement.sql.includes("FROM codex_rollup_hourly"));
   const modelRead = database.statements.find((statement) => statement.sql.includes("FROM codex_rollup_model_hourly"));
   assert.ok(hourlyRead && modelRead);
-  assert.deepEqual(hourlyRead.values.slice(0, 8), Array(8).fill(completeHourCutoff));
-  assert.equal(hourlyRead.values[8], cutoff);
+  assert.deepEqual(hourlyRead.values, [completeHourCutoff, cutoff]);
   assert.deepEqual(modelRead.values, [completeHourCutoff]);
   assert.equal(snapshot.pricing?.observedTokenCount, 120);
   assert.equal(snapshot.pricing?.modelAttributedTokenCount, 120);
   assert.equal(snapshot.pricing?.pricedTokenCount, 120);
   assert.equal(snapshot.pricing?.coveragePercent, 100);
+});
+
+test("daily snapshot buckets retain trend totals and exclude the partial first hour only from pricing", async () => {
+  const database = new SqliteD1();
+  try {
+    const a = event({ occurredAt: "2026-09-06T12:51:00.000Z", model: "gpt-6-sol", inputTokens: 70, cachedInputTokens: 0, outputTokens: 7 });
+    const b = event({ occurredAt: "2026-09-06T13:01:00.000Z", model: "gpt-6-sol", inputTokens: 100, cachedInputTokens: 0, outputTokens: 20 });
+    const c = event({ occurredAt: "2026-09-13T12:40:00.000Z", model: "gpt-6-sol", inputTokens: 200, cachedInputTokens: 0, outputTokens: 30 });
+    await applyTelemetryRollups(database, [a, b, c]);
+    const snapshot = await buildMaterializedSnapshot(database, "7d", new Date("2026-09-13T12:43:00.000Z"));
+    assert.deepEqual(snapshot.trend.map(({ label, inputTokens }) => [label, inputTokens]), [["2026-09-06", 170], ["2026-09-13", 200]]);
+    assert.equal(snapshot.summary.inputTokens.value, 370);
+    assert.equal(snapshot.pricing?.observedTokenCount, 350);
+    assert.equal(snapshot.pricing?.modelAttributedTokenCount, 350);
+  } finally {
+    database.sqlite.close();
+  }
 });
 
 test("pricing snapshot returns 100% coverage without including Codex auto-review in model math", async () => {
