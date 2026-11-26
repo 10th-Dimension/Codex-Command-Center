@@ -103,6 +103,19 @@ function replayCategory(value: unknown): CodexTelemetryCategory | undefined {
     : undefined;
 }
 
+function replayKeys(value: unknown, limit: number): string[] | undefined {
+  if (typeof value !== "string" || value.length > MAX_KEYS * 84) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return undefined;
+    return [...new Set(parsed.filter((key): key is string =>
+      typeof key === "string" && /^[a-zA-Z0-9_.:/-]{1,80}$/.test(key) &&
+      !PRIVATE_KEY.test(key) && !AUTH_KEY.test(key) && !SECRET_KEY.test(key) && !CONTENT_KEY.test(key)))].sort().slice(0, limit);
+  } catch {
+    return undefined;
+  }
+}
+
 export async function normalizeOtlpRecords(records: OtlpLogRecord[], receivedAt: string, options: NormalizeOtlpOptions = {}) {
   const output: NormalizedTelemetryEvent[] = [];
   for (const record of records) {
@@ -147,7 +160,11 @@ export async function normalizeOtlpRecords(records: OtlpLogRecord[], receivedAt:
     const rawCallId = identifier(a.call_id, 256); const callIdHash = rawCallId ? await hash(`codex-call:${rawCallId}`) : options.replay ? replayHex(a["codex.replay.call_id_hash"]) : undefined;
     const at = occurredAt(record.timeUnixNano ?? record.observedTimeUnixNano, receivedAt);
     const fingerprintInput = JSON.stringify([at, eventName, eventKind, sessionId, threadId, model, toolName, rawCallId, status, approvalDecision, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, toolTokens, record.scopeName]);
-    const fingerprint = options.replay ? replayHex(a["codex.replay.fingerprint"]) ?? await hash(fingerprintInput) : await hash(fingerprintInput);
+    const replayFingerprint = options.replay ? replayHex(a["codex.replay.fingerprint"]) : undefined;
+    const fingerprint = replayFingerprint ?? await hash(fingerprintInput);
+    const restoredSafeKeys = replayFingerprint ? replayKeys(a["codex.replay.safe_keys"], MAX_KEYS) : undefined;
+    const restoredUnknownKeys = replayFingerprint ? replayKeys(a["codex.replay.unknown_keys"], 32) : undefined;
+    const restoredRedacted = replayFingerprint ? numberValue(a["codex.replay.redacted_keys"]) : undefined;
     output.push({
       id: fingerprint, fingerprint, occurredAt: at, receivedAt, eventName, eventKind, category, severityText: identifier(record.severityText, 40), severityNumber: record.severityNumber,
       sessionId, threadId, taskId: identifier(first(a, ["task.id", "task_id"])), projectId: identifier(first(a, ["project.id", "project_id"])), projectName: identifier(first(a, ["project.name", "project_name"])), repositoryId: identifier(first(a, ["repository.id", "repository_id"])), workspaceId: identifier(first(a, ["workspace.id", "workspace_id"])), environment: identifier(first(a, ["deployment.environment.name", "environment", "env"]), 80),
@@ -157,7 +174,11 @@ export async function normalizeOtlpRecords(records: OtlpLogRecord[], receivedAt:
       networkHost: identifier(first(a, ["network.host", "network.domain", "server.address"]), 253), networkDecision: identifier(first(a, ["network.decision", "network_decision"]), 40),
       agentName: dimension(a.agent_name), providerName: dimension(a.provider_name), originator: dimension(a.originator), appVersion: dimension(a["app.version"], 80), serviceName: dimension(a["service.name"], 120), serviceVersion: dimension(a["service.version"], 80), startupPhase, startupStatus, terminalType: dimension(a["terminal.type"], 80),
       success, status, errorType, durationMs: numberValue(first(a, ["duration_ms", "duration.ms"])), ttftMs: numberValue(a.ttft_ms), inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, reasoningTokens, toolTokens,
-      safeAttributeKeys: [...new Set(safeKeys)].sort(), unknownAttributeKeys: [...new Set(unknownKeys)].sort().slice(0, 32), redactedAttributeCount: redacted, source: "openai-codex-otel", schemaVersion: 2,
+      safeAttributeKeys: restoredSafeKeys ?? [...new Set(safeKeys)].sort(),
+      unknownAttributeKeys: restoredUnknownKeys?.filter((key) => restoredSafeKeys?.includes(key)) ?? [...new Set(unknownKeys)].sort().slice(0, 32),
+      redactedAttributeCount: restoredRedacted !== undefined && Number.isInteger(restoredRedacted) && restoredRedacted <= MAX_KEYS * 2
+        ? restoredRedacted : redacted,
+      source: "openai-codex-otel", schemaVersion: 2,
     });
   }
   return output;

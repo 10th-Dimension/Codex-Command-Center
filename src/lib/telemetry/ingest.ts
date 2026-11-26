@@ -1,11 +1,11 @@
 import type { D1DatabaseLike } from "@/lib/telemetry/database";
-import { deleteExpiredTelemetry, insertTelemetryEventsDetailed } from "@/lib/telemetry/database";
-import { normalizeOtlpRecords } from "@/lib/telemetry/normalize";
+import { deleteExpiredTelemetry, prepareTelemetryInsert, selectNewTelemetryEvents } from "@/lib/telemetry/database";
+import { normalizeOtlpRecords, type NormalizedTelemetryEvent } from "@/lib/telemetry/normalize";
 import { decodeOtlpJson, decodeOtlpProtobuf } from "@/lib/telemetry/otlp";
 import {
-  applyTelemetryRollups,
   deleteExpiredRollups,
   isMissingRollupSchemaError,
+  prepareTelemetryRollups,
   refreshStaleMaterializedSnapshots,
   SNAPSHOT_TTL_MS,
 } from "@/lib/telemetry/rollups";
@@ -13,6 +13,11 @@ import {
 export const MAX_TELEMETRY_PAYLOAD_BYTES = 1_048_576;
 export const TELEMETRY_MAINTENANCE_INTERVAL_MS = 60_000;
 const INGEST_HEADER = "x-codex-telemetry-key";
+const MAX_ATOMIC_EVENTS = 200;
+const MAX_ATOMIC_STATEMENTS = 500;
+const BUSY_DAY_EVENT_RATE = 35_000;
+const BUSY_RETENTION_ROWS_PER_TABLE = 100;
+const DAY_MS = 86_400_000;
 
 interface MaintenanceResult {
   schemaUnavailable: boolean;
@@ -91,6 +96,49 @@ function addRowsWritten(total: number | undefined, next: number | undefined) {
   return total === undefined && next === undefined ? undefined : (total ?? 0) + (next ?? 0);
 }
 
+async function commitTelemetry(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]) {
+  const unique = [...new Map(events.map((event) => [`${event.occurredAt}:${event.id}`, event])).values()];
+  const pending = unique.length ? await selectNewTelemetryEvents(database, unique) : [];
+  let inserted = 0;
+  let rollupUpserts = 0;
+  let sessionSummaryUpserts = 0;
+  let rowsWritten: number | undefined;
+
+  // Every committed prefix contains both raw rows and matching aggregates.
+  for (let offset = 0; offset < pending.length;) {
+    let count = Math.min(MAX_ATOMIC_EVENTS, pending.length - offset);
+    let group = pending.slice(offset, offset + count);
+    let rollups = prepareTelemetryRollups(database, group);
+    while (count + rollups.statements.length > MAX_ATOMIC_STATEMENTS) {
+      count = Math.floor(count / 2);
+      group = pending.slice(offset, offset + count);
+      rollups = prepareTelemetryRollups(database, group);
+    }
+    const results = await database.batch([
+      ...group.map((event) => prepareTelemetryInsert(database, event)),
+      ...rollups.statements,
+    ]);
+    if (results.some((result) => !result.success)) throw new Error("Telemetry transaction failed.");
+    inserted += results.slice(0, count).reduce((sum, result) => sum + (result.meta?.changes ?? 0), 0);
+    for (const result of results) rowsWritten = addRowsWritten(rowsWritten, result.meta?.rows_written);
+    rollupUpserts += rollups.hourlyGroups + rollups.modelGroups + rollups.reasoningGroups;
+    sessionSummaryUpserts += rollups.sessionGroups;
+    offset += count;
+  }
+  return { inserted, rollupUpserts, sessionSummaryUpserts, rowsWritten };
+}
+
+async function retentionLimitForLoad(database: D1DatabaseLike, now: Date) {
+  const dayStart = Math.floor(now.getTime() / DAY_MS) * DAY_MS;
+  const result = await database.prepare(`SELECT COALESCE(SUM(event_count), 0) AS events
+    FROM codex_rollup_hourly WHERE hour_start>=? AND hour_start<=?`)
+    .bind(new Date(dayStart).toISOString(), now.toISOString()).all<{ events: number }>();
+  if (!result.success) throw new Error("Could not measure telemetry intake for retention.");
+  const elapsed = Math.max(now.getTime() - dayStart, 3_600_000);
+  const projectedEvents = (result.results?.[0]?.events ?? 0) * DAY_MS / elapsed;
+  return projectedEvents >= BUSY_DAY_EVENT_RATE ? BUSY_RETENTION_ROWS_PER_TABLE : undefined;
+}
+
 async function runMaintenance(database: D1DatabaseLike, retentionDays: number, now: Date, intervalMs: number): Promise<MaintenanceResult> {
   const existing = maintenanceStates.get(database);
   const state = existing ?? {};
@@ -129,7 +177,11 @@ async function runMaintenance(database: D1DatabaseLike, retentionDays: number, n
     }
     if (cleanupDue) {
       state.lastCleanupAt = now.getTime();
-      const rawCleanup = await deleteExpiredTelemetry(database, retentionDays, now);
+      // Keep the retention cutoff and cadence, but leave write headroom for
+      // incoming telemetry on busy days. Later cleanup can reclaim the rest.
+      const retentionLimit = schemaUnavailable ? undefined : await retentionLimitForLoad(database, now)
+        .catch(() => BUSY_RETENTION_ROWS_PER_TABLE);
+      const rawCleanup = await deleteExpiredTelemetry(database, retentionDays, now, retentionLimit);
       cleanupDeletes += rawCleanup.changes;
       rowsWritten = addRowsWritten(rowsWritten, rawCleanup.rowsWritten);
     }
@@ -176,10 +228,10 @@ export async function handleTelemetryIngest(request: Request, options: Telemetry
       : decodeOtlpProtobuf(body);
     const now = options.now?.() ?? new Date();
     const normalized = await normalizeOtlpRecords(records, now.toISOString(), { replay: request.headers.get("x-codex-telemetry-replay") === "1" });
-    const insertion = await insertTelemetryEventsDetailed(options.database, normalized);
+    const insertion = await commitTelemetry(options.database, normalized);
     let d1RowsWritten = insertion.rowsWritten;
 
-    // A retry still needs the duplicate-aware insert above, but it must not
+    // A retry still needs the duplicate lookup above, but it must not
     // reopen the maintenance path. This keeps exporter retries from paying
     // for cleanup queries or snapshot rewrites when no new evidence arrived.
     if (insertion.inserted === 0) {
@@ -195,33 +247,18 @@ export async function handleTelemetryIngest(request: Request, options: Telemetry
       });
     }
 
-    let rollupState: "updated" | "schema-unavailable" = "updated";
-    let rollupUpserts = 0;
-    let sessionSummaryUpserts = 0;
-    let snapshotRebuilds = 0;
-    let cleanupDeletes = 0;
-    try {
-      const rollups = await applyTelemetryRollups(options.database, insertion.insertedEvents);
-      rollupUpserts = rollups.hourlyGroups + rollups.modelGroups + rollups.reasoningGroups;
-      sessionSummaryUpserts = rollups.sessionGroups;
-      d1RowsWritten = addRowsWritten(d1RowsWritten, rollups.rowsWritten);
-    } catch (error) {
-      if (!isMissingRollupSchemaError(error)) throw error;
-      rollupState = "schema-unavailable";
-    }
-    const maintenance = await runMaintenance(options.database, options.retentionDays, now, Math.max(0, Math.floor(options.maintenanceIntervalMs ?? TELEMETRY_MAINTENANCE_INTERVAL_MS)));
-    if (maintenance.schemaUnavailable) rollupState = "schema-unavailable";
-    snapshotRebuilds = maintenance.snapshotRebuilds;
-    cleanupDeletes = maintenance.cleanupDeletes;
+    // A snapshot or cleanup failure cannot invalidate committed telemetry.
+    const maintenance = await runMaintenance(options.database, options.retentionDays, now, Math.max(0, Math.floor(options.maintenanceIntervalMs ?? TELEMETRY_MAINTENANCE_INTERVAL_MS)))
+      .catch(() => emptyMaintenance());
     d1RowsWritten = addRowsWritten(d1RowsWritten, maintenance.rowsWritten);
     return successResponse(contentType, {
       accepted: insertion.inserted,
       duplicateCount: normalized.length - insertion.inserted,
-      rollups: rollupState,
-      rollupUpserts,
-      sessionSummaryUpserts,
-      snapshotRebuilds,
-      cleanupDeletes,
+      rollups: maintenance.schemaUnavailable ? "schema-unavailable" : "updated",
+      rollupUpserts: insertion.rollupUpserts,
+      sessionSummaryUpserts: insertion.sessionSummaryUpserts,
+      snapshotRebuilds: maintenance.snapshotRebuilds,
+      cleanupDeletes: maintenance.cleanupDeletes,
       ...(d1RowsWritten === undefined ? {} : { d1RowsWritten }),
     });
   } catch (error) {

@@ -18,6 +18,9 @@ export const SNAPSHOT_TTL_MS: Record<TelemetryRange, number> = {
   "30d": 15 * 60_000,
 };
 
+const OVERLAY_SNAPSHOT_REFRESH_RETRY_MS = 60_000;
+const overlaySnapshotRefreshNextAttempt = new WeakMap<D1DatabaseLike, Map<TelemetryRange, number>>();
+
 interface ScalarAggregate {
   eventCount: number;
   inputTokens: number;
@@ -330,12 +333,9 @@ function dimensionValues(key: string, value: DimensionAggregate, includePricing 
     : base;
 }
 
-export async function applyTelemetryRollups(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]): Promise<RollupWriteResult> {
-  if (!events.length) return { hourlyGroups: 0, modelGroups: 0, reasoningGroups: 0, sessionGroups: 0 };
+export function prepareTelemetryRollups(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]) {
   const grouped = groupTelemetryRollups(events);
   const statements: D1PreparedStatementLike[] = [];
-  let rowsWritten = 0;
-  let rowsWrittenObserved = false;
   for (const [hour, value] of grouped.hourly) {
     statements.push(database.prepare(hourlyUpsert).bind(hour, value.eventCount, value.inputTokens, value.inputSamples,
       value.outputTokens, value.outputSamples, value.cachedTokens, value.cachedSamples, value.cacheWriteTokens,
@@ -352,6 +352,19 @@ export async function applyTelemetryRollups(database: D1DatabaseLike, events: No
       value.toolTokens, value.completedTools, value.failedTools, value.errorCount, value.warningCount, value.approvals,
       value.ttftSumMs, value.ttftSampleCount));
   }
+  return {
+    statements,
+    hourlyGroups: grouped.hourly.size,
+    modelGroups: grouped.models.size,
+    reasoningGroups: grouped.reasoning.size,
+    sessionGroups: grouped.sessions.size,
+  };
+}
+
+export async function applyTelemetryRollups(database: D1DatabaseLike, events: NormalizedTelemetryEvent[]): Promise<RollupWriteResult> {
+  const { statements, ...counts } = prepareTelemetryRollups(database, events);
+  let rowsWritten = 0;
+  let rowsWrittenObserved = false;
   for (let offset = 0; offset < statements.length; offset += 50) {
     const results = await database.batch(statements.slice(offset, offset + 50));
     if (results.some((result) => !result.success)) throw new Error("Telemetry rollup batch failed.");
@@ -361,10 +374,7 @@ export async function applyTelemetryRollups(database: D1DatabaseLike, events: No
     }
   }
   return {
-    hourlyGroups: grouped.hourly.size,
-    modelGroups: grouped.models.size,
-    reasoningGroups: grouped.reasoning.size,
-    sessionGroups: grouped.sessions.size,
+    ...counts,
     ...(rowsWrittenObserved ? { rowsWritten } : {}),
   };
 }
@@ -468,19 +478,16 @@ function parseSnapshot(row: SnapshotRow): CodexMaterializedSnapshot | undefined 
   }
 }
 
-const hourlyQuery = (range: TelemetryRange) => `WITH windowed AS (
-  SELECT *,
-    SUM(CASE WHEN hour_start>=? THEN input_tokens ELSE 0 END) OVER() AS pricing_input_tokens,
-    SUM(CASE WHEN hour_start>=? THEN input_samples ELSE 0 END) OVER() AS pricing_input_samples,
-    SUM(CASE WHEN hour_start>=? THEN cached_tokens ELSE 0 END) OVER() AS pricing_cached_tokens,
-    SUM(CASE WHEN hour_start>=? THEN cached_samples ELSE 0 END) OVER() AS pricing_cached_samples,
-    SUM(CASE WHEN hour_start>=? THEN cache_write_tokens ELSE 0 END) OVER() AS pricing_cache_write_tokens,
-    SUM(CASE WHEN hour_start>=? THEN cache_write_samples ELSE 0 END) OVER() AS pricing_cache_write_samples,
-    SUM(CASE WHEN hour_start>=? THEN output_tokens ELSE 0 END) OVER() AS pricing_output_tokens,
-    SUM(CASE WHEN hour_start>=? THEN output_samples ELSE 0 END) OVER() AS pricing_output_samples
-  FROM codex_rollup_hourly WHERE hour_start>=?
-)
-SELECT ${range === "24h" ? "hour_start" : "substr(hour_start,1,10)"} AS label,
+const pricingColumns = [
+  "input_tokens", "input_samples", "cached_tokens", "cached_samples",
+  "cache_write_tokens", "cache_write_samples", "output_tokens", "output_samples",
+] as const;
+
+// Group the scalar rows before computing the pricing totals. The old window
+// repeated the full-range totals on every ten-minute row before grouping.
+// Keeping the window before the output limit preserves totals for all buckets.
+const hourlyQuery = (range: TelemetryRange) => `WITH bucketed AS (
+  SELECT ${range === "24h" ? "hour_start" : "substr(hour_start,1,10)"} AS label,
   SUM(event_count) AS event_count,SUM(input_tokens) AS input_tokens,SUM(input_samples) AS input_samples,
   SUM(output_tokens) AS output_tokens,SUM(output_samples) AS output_samples,SUM(cached_tokens) AS cached_tokens,
   SUM(cached_samples) AS cached_samples,SUM(cache_write_tokens) AS cache_write_tokens,
@@ -490,17 +497,18 @@ SELECT ${range === "24h" ? "hour_start" : "substr(hour_start,1,10)"} AS label,
   SUM(failed_tools) AS failed_tools,SUM(approvals) AS approvals,SUM(ttft_sum_ms) AS ttft_sum_ms,
   SUM(ttft_sample_count) AS ttft_sample_count,SUM(duration_sum_ms) AS duration_sum_ms,
   SUM(duration_sample_count) AS duration_sample_count,MAX(last_received_at) AS last_received_at,
-  MAX(pricing_input_tokens) AS pricing_input_tokens,MAX(pricing_input_samples) AS pricing_input_samples,
-  MAX(pricing_cached_tokens) AS pricing_cached_tokens,MAX(pricing_cached_samples) AS pricing_cached_samples,
-  MAX(pricing_cache_write_tokens) AS pricing_cache_write_tokens,MAX(pricing_cache_write_samples) AS pricing_cache_write_samples,
-  MAX(pricing_output_tokens) AS pricing_output_tokens,MAX(pricing_output_samples) AS pricing_output_samples
-  FROM windowed GROUP BY label ORDER BY label LIMIT 744`;
+  ${pricingColumns.map((column) => `SUM(CASE WHEN hour_start>=?1 THEN ${column} ELSE 0 END) AS priced_${column}`).join(",\n  ")}
+  FROM codex_rollup_hourly WHERE hour_start>=?2 GROUP BY label
+)
+SELECT bucketed.*,
+  ${pricingColumns.map((column) => `SUM(priced_${column}) OVER() AS pricing_${column}`).join(",\n  ")}
+FROM bucketed ORDER BY label LIMIT 744`;
 
 export async function buildMaterializedSnapshot(database: D1DatabaseLike, range: TelemetryRange, now: Date): Promise<CodexMaterializedSnapshot> {
   const cutoff = cutoffFor(range, now);
   const pricingCutoff = cutoffForCompleteModelHour(cutoff);
   const results = await database.batch([
-    database.prepare(hourlyQuery(range)).bind(pricingCutoff, pricingCutoff, pricingCutoff, pricingCutoff, pricingCutoff, pricingCutoff, pricingCutoff, pricingCutoff, cutoff),
+    database.prepare(hourlyQuery(range)).bind(pricingCutoff, cutoff),
     database.prepare(`WITH grouped AS (
       SELECT model AS label,SUM(event_count) AS count,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,
         SUM(cached_tokens) AS cached_tokens,SUM(reasoning_tokens) AS reasoning_tokens,SUM(tool_tokens) AS tool_tokens,
@@ -604,13 +612,16 @@ export async function writeMaterializedSnapshot(database: D1DatabaseLike, snapsh
   };
 }
 
-export async function refreshStaleMaterializedSnapshots(database: D1DatabaseLike, now: Date) {
-  const state = await database.prepare("SELECT range,generated_at FROM codex_dashboard_snapshot WHERE range IN ('24h','7d','30d')").all<Pick<SnapshotRow, "range" | "generated_at">>();
+async function refreshStaleSnapshotsForRanges(database: D1DatabaseLike, now: Date, ranges: readonly TelemetryRange[]) {
+  if (!ranges.length) return { refreshed: [] as TelemetryRange[] };
+  const placeholders = ranges.map(() => "?").join(",");
+  const state = await database.prepare(`SELECT range,generated_at FROM codex_dashboard_snapshot WHERE range IN (${placeholders})`)
+    .bind(...ranges).all<Pick<SnapshotRow, "range" | "generated_at">>();
   const existing = new Map(resultRows(state).map((row) => [row.range, row]));
   const refreshed: TelemetryRange[] = [];
   let rowsWritten = 0;
   let rowsWrittenObserved = false;
-  for (const range of TELEMETRY_RANGES) {
+  for (const range of ranges) {
     const row = existing.get(range);
     const generated = row ? Date.parse(row.generated_at) : Number.NaN;
     if (Number.isFinite(generated) && now.getTime() - generated < SNAPSHOT_TTL_MS[range]) continue;
@@ -639,6 +650,24 @@ export async function refreshStaleMaterializedSnapshots(database: D1DatabaseLike
     if (written.changes > 0) refreshed.push(range);
   }
   return { refreshed, ...(rowsWrittenObserved ? { rowsWritten } : {}) };
+}
+
+export async function refreshStaleMaterializedSnapshots(database: D1DatabaseLike, now: Date) {
+  return refreshStaleSnapshotsForRanges(database, now, TELEMETRY_RANGES);
+}
+
+export async function refreshStaleMaterializedSnapshot(database: D1DatabaseLike, range: TelemetryRange, now: Date) {
+  let retryAtByRange = overlaySnapshotRefreshNextAttempt.get(database);
+  if (!retryAtByRange) {
+    retryAtByRange = new Map();
+    overlaySnapshotRefreshNextAttempt.set(database, retryAtByRange);
+  }
+  if ((retryAtByRange.get(range) ?? 0) > now.getTime()) return { refreshed: [] as TelemetryRange[] };
+
+  // Relay polls are frequent. Keep stale-range refresh checks to at most one
+  // per minute per isolate; the durable D1 lease still coalesces across them.
+  retryAtByRange.set(range, now.getTime() + OVERLAY_SNAPSHOT_REFRESH_RETRY_MS);
+  return refreshStaleSnapshotsForRanges(database, now, [range]);
 }
 
 export async function readMaterializedSnapshots(database: D1DatabaseLike) {

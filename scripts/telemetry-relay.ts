@@ -5,8 +5,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createCodexAccountService, discoverCodexExecutable, unavailableCodexAccount, type CodexAccountProvider } from "./codex-app-server-client";
-import { defaultTelemetrySpoolDirectory, TelemetrySpool, type TelemetryBufferHealth, type TelemetrySpoolContentType, type TelemetrySpoolReplayResult } from "./telemetry-spool";
-import { sanitizeTelemetryPayload } from "./telemetry-spool-payload";
+import { defaultTelemetrySpoolDirectory, TELEMETRY_SPOOL_MAX_ENTRY_BODY_BYTES, TELEMETRY_SPOOL_REPLAY_BATCH_SIZE, TelemetrySpool, type TelemetryBufferHealth, type TelemetrySpoolContentType, type TelemetrySpoolReplayResult } from "./telemetry-spool";
+import { groupTelemetryPayloads, sanitizeTelemetryPayload, type TelemetryPayload } from "./telemetry-spool-payload";
 import { allowsRelayRequest, loadRelaySecurity, type RelaySecurity } from "./relay-security";
 import type { CodexAccountSnapshot, OverlayCacheState } from "../src/lib/overlay/contracts";
 
@@ -24,6 +24,7 @@ export const OVERLAY_REFRESH_MINIMUM_MS = 15_000;
 export const ACCOUNT_RELAY_PATH = "/v1/account";
 export const ACCOUNT_MAX_BYTES = 65_536;
 export const TELEMETRY_REPLAY_BACKOFF_DEFAULT_MS = 5_000;
+const LIVE_BATCH_WINDOW_MS = 30_000;
 export const OVERLAY_RANGES = ["24h", "7d", "30d"] as const;
 const OVERLAY_CACHE_STATES = ["fresh", "upstream", "stale"] as const;
 export type OverlayRange = typeof OVERLAY_RANGES[number];
@@ -195,12 +196,14 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
   spool?: TelemetrySpool;
   spoolDirectory?: string;
   spoolReplayBackoffMs?: number;
+  liveBatchWindowMs?: number;
 } = {}) {
   const collector = validateRelayConfiguration(configuration);
   const fetchImpl = options.fetchImpl ?? fetch;
   const overlayTimeoutMs = options.overlayTimeoutMs ?? OVERLAY_TIMEOUT_MS;
   const overlayRefreshMs = Math.max(OVERLAY_REFRESH_MINIMUM_MS, options.overlayRefreshMs ?? OVERLAY_REFRESH_DEFAULT_MS);
   const now = options.now ?? Date.now;
+  const liveBatchWindowMs = Math.max(1, options.liveBatchWindowMs ?? LIVE_BATCH_WINDOW_MS);
   const accountProvider = options.accountProvider ?? { getSnapshot: () => unavailableCodexAccount() };
   const spool = options.spool ?? new TelemetrySpool({
     directory: options.spoolDirectory ?? defaultTelemetrySpoolDirectory(),
@@ -223,9 +226,9 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
     d1RowsWritten: 0,
     d1RowsWrittenObserved: false,
   };
-  let directForwardInFlight = false;
   let replayInFlight: Promise<void> | undefined;
   let replayTimer: ReturnType<typeof setTimeout> | undefined;
+  let replayTimerAt = Number.POSITIVE_INFINITY;
 
   function numberHeader(headers: Headers, name: string) {
     const value = Number(headers.get(name));
@@ -282,28 +285,51 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
         observeIngestHeaders(upstream.headers);
         return "delivered";
       }
-      return retryableStatus(upstream.status) ? "retry" : "drop";
+      // The relay has already acknowledged this durable batch to the exporter.
+      // Keep it if the collector rejects it, including configuration errors.
+      return "retry";
     } catch {
       return "retry";
     }
   }
 
-  function scheduleReplay(delayMs = 0) {
-    if (replayTimer) return;
+  async function sendQueuedGroup(items: readonly TelemetryPayload[]) {
+    const group = groupTelemetryPayloads(items);
+    if (!group) return undefined;
+    const { upstream } = await sendToCollector(group.contentType, group.body, true);
+    if (upstream.ok) {
+      relayCounters.forwardedRequests += 1;
+      observeIngestHeaders(upstream.headers);
+      return group.count;
+    }
+    // If the collector rejects the envelope, try the original first entry
+    // separately so a group-format mismatch cannot stop valid entries.
+    return retryableStatus(upstream.status) ? 0 : undefined;
+  }
+
+  function scheduleReplay(health: TelemetryBufferHealth) {
+    const oldest = spool.oldestQueuedAt();
+    if (!server.listening || oldest === undefined) return;
+    const nextBoundary = (Math.floor(oldest / liveBatchWindowMs) + 1) * liveBatchWindowMs;
+    const readyAt = health.queuedBatches >= TELEMETRY_SPOOL_REPLAY_BATCH_SIZE ? now() : nextBoundary;
+    const attemptAt = Math.max(readyAt, spool.nextRetryAt());
+    if (replayTimer && replayTimerAt <= attemptAt) return;
+    if (replayTimer) clearTimeout(replayTimer);
+    replayTimerAt = attemptAt;
     replayTimer = setTimeout(() => {
       replayTimer = undefined;
+      replayTimerAt = Number.POSITIVE_INFINITY;
       void replayBuffered().catch(() => undefined);
-    }, Math.max(0, delayMs));
+    }, Math.max(0, attemptAt - now()));
     replayTimer.unref?.();
   }
 
-  async function replayBuffered(force = false) {
+  async function replayBuffered() {
     if (replayInFlight) return replayInFlight;
     replayInFlight = (async () => {
       try {
-        await spool.replay(sendQueued, force);
-        const health = await spool.health();
-        if (health.queuedBatches > 0) scheduleReplay(Math.max(0, spool.nextRetryAt() - now()));
+        await spool.replay(sendQueued, false, sendQueuedGroup);
+        scheduleReplay(await spool.health());
       } catch {
         // A local spool filesystem failure must not terminate the relay process.
       }
@@ -311,20 +337,6 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
       replayInFlight = undefined;
     });
     return replayInFlight;
-  }
-
-  async function bufferBody(contentType: TelemetrySpoolContentType, body: Uint8Array) {
-    try {
-      const sanitized = await sanitizeTelemetryPayload(contentType, body, new Date(now()).toISOString());
-      if (!sanitized) return spool.drop();
-      await spool.recordUpstreamFailure();
-      const health = await spool.enqueue(sanitized.contentType, sanitized.body);
-      relayCounters.bufferedRequests += 1;
-      scheduleReplay(Math.max(0, spool.nextRetryAt() - now()));
-      return health;
-    } catch {
-      return undefined;
-    }
   }
 
   async function bufferedResponse(response: ServerResponse, contentType: TelemetrySpoolContentType, health: TelemetryBufferHealth) {
@@ -335,7 +347,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
       "x-codex-telemetry-queued": String(health.queuedBatches),
       "x-codex-telemetry-dropped": String(health.droppedBatches),
     };
-    response.writeHead(202, headers);
+    response.writeHead(200, headers);
     response.end(contentType === "application/json" ? JSON.stringify({ partialSuccess: {} }) : new Uint8Array());
   }
 
@@ -535,46 +547,26 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
     try {
       relayCounters.ingestRequests += 1;
       const body = await readRequestBody(request);
-      const spoolPending = await spool.hasPending().catch(() => false);
-      if (spoolPending || directForwardInFlight) {
-        const health = await bufferBody(contentType as TelemetrySpoolContentType, body);
-        if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
-        else {
-          response.writeHead(502, { "content-type": "application/json" });
-          response.end(JSON.stringify({ error: "collector_unavailable" }));
+      const type = contentType as TelemetrySpoolContentType;
+      const sanitized = await sanitizeTelemetryPayload(type, body, new Date(now()).toISOString());
+      // Leave the final validity decision to the collector when the relay
+      // cannot represent an envelope in its privacy-filtered spool.
+      if (!sanitized || sanitized.body.byteLength > TELEMETRY_SPOOL_MAX_ENTRY_BODY_BYTES) {
+        const { upstream, upstreamBody } = await sendToCollector(type, body);
+        if (upstream.ok) {
+          relayCounters.forwardedRequests += 1;
+          observeIngestHeaders(upstream.headers);
         }
+        response.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? type });
+        response.end(upstreamBody);
         return;
       }
-
-      directForwardInFlight = true;
-      try {
-        const { upstream, upstreamBody } = await sendToCollector(contentType as TelemetrySpoolContentType, body);
-        if (retryableStatus(upstream.status)) {
-          const health = await bufferBody(contentType as TelemetrySpoolContentType, body);
-          if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
-          else {
-            response.writeHead(502, { "content-type": "application/json" });
-            response.end(JSON.stringify({ error: "collector_unavailable" }));
-          }
-          return;
-        }
-        relayCounters.forwardedRequests += 1;
-        observeIngestHeaders(upstream.headers);
-        response.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/x-protobuf" });
-        response.end(upstreamBody);
-      } catch {
-        const health = await bufferBody(contentType as TelemetrySpoolContentType, body);
-        if (health) await bufferedResponse(response, contentType as TelemetrySpoolContentType, health);
-        else {
-          response.writeHead(502, { "content-type": "application/json" });
-          response.end(JSON.stringify({ error: "collector_unavailable" }));
-        }
-      } finally {
-        directForwardInFlight = false;
-        if (await spool.hasPending().catch(() => false)) scheduleReplay();
-      }
+      const health = await spool.enqueue(type, sanitized.body);
+      relayCounters.bufferedRequests += 1;
+      scheduleReplay(health);
+      await bufferedResponse(response, type, health);
     } catch (error) {
-      const status = error instanceof Error && "statusCode" in error && error.statusCode === 413 ? 413 : 502;
+      const status = error instanceof Error && "statusCode" in error && error.statusCode === 413 ? 413 : 503;
       response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: status === 413 ? "payload_too_large" : "collector_unavailable" }));
     }
@@ -584,9 +576,7 @@ export function createTelemetryRelay(configuration: RelayConfiguration, security
     replayTimer = undefined;
   });
   server.once("listening", () => {
-    void spool.ready().then(async () => {
-      if (server.listening && await spool.hasPending()) scheduleReplay(Math.max(0, spool.nextRetryAt() - now()));
-    }).catch(() => undefined);
+    void spool.health().then(scheduleReplay).catch(() => undefined);
   });
   return server;
 }

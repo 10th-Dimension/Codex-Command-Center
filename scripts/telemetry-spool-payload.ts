@@ -1,10 +1,10 @@
-import { decodeOtlpJson, decodeOtlpProtobuf } from "../src/lib/telemetry/otlp";
+import { decodeOtlpJson, decodeOtlpProtobuf, MAX_OTLP_LOG_RECORDS } from "../src/lib/telemetry/otlp";
 import { normalizeOtlpRecords, type NormalizedTelemetryEvent } from "../src/lib/telemetry/normalize";
 import type { TelemetrySpoolContentType } from "./telemetry-spool";
 
 const textEncoder = new TextEncoder();
 
-export interface SanitizedTelemetryPayload {
+export interface TelemetryPayload {
   contentType: TelemetrySpoolContentType;
   body: Uint8Array;
 }
@@ -127,6 +127,9 @@ function eventAttributes(event: NormalizedTelemetryEvent) {
   addAttribute(attributes, "codex.replay.category", event.category);
   addAttribute(attributes, "codex.replay.fingerprint", event.fingerprint);
   addAttribute(attributes, "codex.replay.call_id_hash", event.callIdHash);
+  addAttribute(attributes, "codex.replay.safe_keys", JSON.stringify(event.safeAttributeKeys));
+  addAttribute(attributes, "codex.replay.unknown_keys", JSON.stringify(event.unknownAttributeKeys));
+  addAttribute(attributes, "codex.replay.redacted_keys", event.redactedAttributeCount);
   return attributes;
 }
 
@@ -179,7 +182,7 @@ function protobufPayload(events: NormalizedTelemetryEvent[]) {
   return concat([fieldMessage(1, resourceLogs)]);
 }
 
-export async function sanitizeTelemetryPayload(contentType: TelemetrySpoolContentType, body: Uint8Array, receivedAt: string, replay = false): Promise<SanitizedTelemetryPayload | undefined> {
+export async function sanitizeTelemetryPayload(contentType: TelemetrySpoolContentType, body: Uint8Array, receivedAt: string, replay = false): Promise<TelemetryPayload | undefined> {
   try {
     const records = contentType === "application/json"
       ? decodeOtlpJson(JSON.parse(new TextDecoder().decode(body)))
@@ -192,4 +195,37 @@ export async function sanitizeTelemetryPayload(contentType: TelemetrySpoolConten
   } catch {
     return undefined;
   }
+}
+
+// The spool has already assigned and preserved each event's time and fingerprint.
+export function groupTelemetryPayloads(items: readonly TelemetryPayload[]) {
+  if (items.length < 2) return undefined;
+  const contentType = items[0]?.contentType;
+  if (!contentType) return undefined;
+  const decoder = new TextDecoder();
+  const resourceLogs: unknown[] = [];
+  const parts: Uint8Array[] = [];
+  let bytes = 0;
+  let records = 0;
+  for (const item of items) {
+    if (item.contentType !== contentType || bytes + item.body.byteLength > 256 * 1024) break;
+    try {
+      const json = contentType === "application/json"
+        ? JSON.parse(decoder.decode(item.body)) as { resourceLogs: unknown[] }
+        : undefined;
+      const decoded = json ? decodeOtlpJson(json) : decodeOtlpProtobuf(item.body);
+      if (records + decoded.length > MAX_OTLP_LOG_RECORDS) break;
+      if (json) resourceLogs.push(...json.resourceLogs);
+      parts.push(item.body);
+      bytes += item.body.byteLength;
+      records += decoded.length;
+    } catch {
+      break;
+    }
+  }
+  if (parts.length < 2) return undefined;
+  const body = contentType === "application/json"
+    ? textEncoder.encode(JSON.stringify({ resourceLogs }))
+    : concat(parts);
+  return { contentType, body, count: parts.length };
 }

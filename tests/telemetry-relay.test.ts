@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { ACCOUNT_MAX_BYTES, ACCOUNT_RELAY_PATH, createTelemetryRelay, isSafeCodexAccountPayload, isSafeOverlayPayload, isUsableOverlayPayload, OVERLAY_UPSTREAM_PATH, TELEMETRY_RELAY_HEALTH_PATH, TELEMETRY_RELAY_HOST } from "../scripts/telemetry-relay";
 import { TelemetrySpool } from "../scripts/telemetry-spool";
 import { loadRelaySecurity } from "../scripts/relay-security";
+import { decodeOtlpJson, decodeOtlpProtobuf } from "../src/lib/telemetry/otlp";
 
 // Keep the suite isolated from the user's running Codex Live relay. The
 // production relay intentionally uses a durable per-user spool, while tests
@@ -58,8 +59,19 @@ const accountSnapshot = {
   limits: [{ limitId: "codex", windows: [{ slot: "primary" as const, kind: "5h" as const, label: "5-hour", durationMins: 300, usedPercent: 33, remainingPercent: 67, resetsAt: 2_000_000_000 }] }],
 };
 
+let relayFixtureCount = 0;
 function createTestRelay(configuration: Parameters<typeof createTelemetryRelay>[0], options?: Parameters<typeof createTelemetryRelay>[2]) {
-  return createTelemetryRelay(configuration, security, options);
+  return createTelemetryRelay(configuration, security, {
+    liveBatchWindowMs: 100, spoolDirectory: join(testStateDirectory, `relay-${++relayFixtureCount}`), ...options,
+  });
+}
+
+async function until(predicate: () => boolean | Promise<boolean>) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("The relay did not reach the expected state.");
 }
 
 function requestRelay(url: string, init: { method?: string; headers?: HeadersInit; body?: string | Uint8Array } = {}, useDefaultAuth = true) {
@@ -195,23 +207,67 @@ test("local relay binds to loopback and forwards OTLP with Access and ingestion 
     const payload = JSON.stringify({ resourceLogs: [] });
     const response = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/logs`, { method: "POST", headers: { "content-type": "application/json" }, body: payload });
     assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-codex-telemetry-buffered"), "true");
+    await until(() => captured !== undefined);
     assert.equal(captured?.headers.get("cf-access-client-id"), "test-access-id");
     assert.equal(captured?.headers.get("cf-access-client-secret"), "test-access-secret");
     assert.equal(captured?.headers.get("x-codex-telemetry-key"), "test-ingest-key");
     assert.equal(captured?.body, payload);
+    assert.equal(captured?.headers.get("x-codex-telemetry-replay"), "1");
     const protobuf = Uint8Array.of(10, 0);
     const binary = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/logs`, {
       method: "POST", headers: { "content-type": "application/x-protobuf" }, body: protobuf,
     });
     assert.equal(binary.status, 200);
+    await until(() => captured?.headers.get("content-type") === "application/x-protobuf");
     assert.equal(captured?.headers.get("content-type"), "application/x-protobuf");
-    assert.deepEqual(Buffer.from(captured?.body ?? ""), Buffer.from(protobuf));
+    assert.deepEqual(decodeOtlpProtobuf(Buffer.from(captured?.body ?? "")), []);
     const address = relay.address();
     assert.ok(address && typeof address !== "string");
     assert.equal(address.address, TELEMETRY_RELAY_HOST);
   } finally {
     await close(relay);
     await close(collector);
+  }
+});
+
+test("sequential exporters get durable acknowledgments and one collector write batch", { timeout: 8_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-relay-live-batch-"));
+  const start = Date.parse("2026-11-22T00:00:00Z");
+  let now = start;
+  const spool = new TelemetrySpool({ directory, now: () => now, retryMinimumMs: 60_000 });
+  const calls: Array<Array<{ eventName?: string; timeUnixNano?: bigint }>> = [];
+  const relay = createTestRelay(relayConfiguration, {
+    spool,
+    now: () => now,
+    liveBatchWindowMs: 500,
+    fetchImpl: async (_input, init) => {
+      assert.equal(new Headers(init?.headers).get("x-codex-telemetry-replay"), "1");
+      calls.push(decodeOtlpJson(JSON.parse(new TextDecoder().decode(init?.body as Uint8Array))));
+      return new Response(null, { status: 200 });
+    },
+  });
+  const port = await listen(relay);
+  try {
+    const send = (name: string, timeUnixNano?: string) => requestRelay(`https://${TELEMETRY_RELAY_HOST}:${port}/v1/logs`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ resourceLogs: [{ scopeLogs: [{ logRecords: [{ eventName: name, timeUnixNano }] }] }] }),
+    });
+    assert.equal((await send("codex.one", "1789128000000000000")).status, 200);
+    now += 100;
+    assert.equal((await send("codex.untimed")).status, 200);
+    now += 100;
+    assert.equal((await send("codex.three", "1789128002000000000")).status, 200);
+    assert.equal(calls.length, 0, "each exporter receives its acknowledgment before D1 is contacted");
+    assert.equal((await spool.health()).queuedBatches, 3);
+    await until(async () => !(await spool.hasPending()));
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].map(({ eventName, timeUnixNano }) => [eventName, timeUnixNano]), [
+      ["codex.one", 1789128000000000000n], ["codex.untimed", BigInt(start + 100) * 1_000_000n], ["codex.three", 1789128002000000000n],
+    ]);
+  } finally {
+    await close(relay);
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -421,11 +477,12 @@ test("relay buffers a retryable collector failure durably and exposes only safe 
     try {
       const payload = JSON.stringify({ resourceLogs: [] });
       const buffered = await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}/v1/logs`, { method: "POST", headers: { "content-type": "application/json" }, body: payload });
-      assert.equal(buffered.status, 202);
+      assert.equal(buffered.status, 200);
       assert.equal(buffered.headers.get("x-codex-telemetry-buffered"), "true");
+      await until(() => spool.nextRetryAt() > Date.now());
       const health = await (await requestRelay(`https://${TELEMETRY_RELAY_HOST}:${relayPort}${TELEMETRY_RELAY_HEALTH_PATH}`)).json() as { telemetryBuffer: { queuedBatches: number; replayState: string }; diagnostics: { bufferedRequests: number } };
       assert.equal(health.telemetryBuffer.queuedBatches, 1);
-      assert.equal(health.telemetryBuffer.replayState, "buffering");
+      assert.equal(health.telemetryBuffer.replayState, "degraded");
       assert.equal(health.diagnostics.bufferedRequests, 1);
       assert.equal(attempts, 1);
       const spoolFiles = await readdir(directory);
@@ -447,6 +504,81 @@ test("relay buffers a retryable collector failure durably and exposes only safe 
       await close(relay);
     }
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("incoming batches do not postpone replay while the collector is in backoff", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-relay-backoff-test-"));
+  let now = Date.parse("2026-11-22T00:00:00Z");
+  const spool = new TelemetrySpool({ directory, now: () => now, retryMinimumMs: 60_000 });
+  let attempts = 0;
+  const relay = createTestRelay(relayConfiguration, {
+    spool,
+    now: () => now,
+    fetchImpl: async () => { attempts += 1; return new Response(null, { status: 503 }); },
+  });
+  const port = await listen(relay);
+  try {
+    const submit = () => requestRelay(`https://${TELEMETRY_RELAY_HOST}:${port}/v1/logs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"resourceLogs":[]}',
+    });
+    assert.equal((await submit()).status, 200);
+    await until(() => spool.nextRetryAt() > now);
+    const retryAt = spool.nextRetryAt();
+    assert.equal(retryAt, now + 60_000);
+    now += 30_000;
+    assert.equal((await submit()).status, 200);
+    assert.equal(attempts, 1);
+    assert.equal(spool.nextRetryAt(), retryAt);
+    assert.equal((await spool.health()).queuedBatches, 2);
+  } finally {
+    await close(relay);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("relay retries a grouped backlog without removing entries before collector acceptance", { timeout: 5_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-relay-group-test-"));
+  const spool = new TelemetrySpool({ directory, retryMinimumMs: 1, retryMaximumMs: 1 });
+  const payload = (name: string) => new TextEncoder().encode(JSON.stringify({
+    resourceLogs: [{ scopeLogs: [{ logRecords: [{ eventName: name }] }] }],
+  }));
+  await spool.enqueue("application/json", payload("codex.first"));
+  await spool.enqueue("application/json", payload("codex.second"));
+  let calls = 0;
+  let finish!: () => void;
+  const delivered = new Promise<void>((resolve) => { finish = resolve; });
+  const requests: Array<{ records: number; queued: number; replay: string | null }> = [];
+  const relay = createTestRelay(relayConfiguration, {
+    spool,
+    fetchImpl: async (_input, init) => {
+      calls += 1;
+      requests.push({
+        records: decodeOtlpJson(JSON.parse(new TextDecoder().decode(init?.body as Uint8Array))).length,
+        queued: (await spool.health()).queuedBatches,
+        replay: new Headers(init?.headers).get("x-codex-telemetry-replay"),
+      });
+      if (calls === 1) return new Response(null, { status: 503 });
+      finish();
+      return new Response(null, { status: 200 });
+    },
+  });
+  await listen(relay);
+  try {
+    await delivered;
+    for (let attempt = 0; attempt < 50 && await spool.hasPending(); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.deepEqual(requests, [
+      { records: 2, queued: 2, replay: "1" },
+      { records: 2, queued: 2, replay: "1" },
+    ]);
+    assert.equal((await spool.health()).queuedBatches, 0);
+  } finally {
+    await close(relay);
     await rm(directory, { recursive: true, force: true });
   }
 });

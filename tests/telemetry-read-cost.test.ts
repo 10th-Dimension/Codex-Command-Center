@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { SqliteD1 } from "./helpers/sqlite-d1";
 import { readTelemetryForensicActivity, readTelemetryForensics } from "../src/lib/telemetry/database";
-import { buildMaterializedSnapshot, readMaterializedSnapshot, refreshStaleMaterializedSnapshots, writeMaterializedSnapshot } from "../src/lib/telemetry/rollups";
+import { buildMaterializedSnapshot, readMaterializedSnapshot, refreshStaleMaterializedSnapshot, refreshStaleMaterializedSnapshots, writeMaterializedSnapshot } from "../src/lib/telemetry/rollups";
 import { createCodexTelemetryProvider } from "../src/lib/providers/codex-core";
 
 const now = new Date("2026-10-26T12:00:00.000Z");
@@ -73,6 +73,24 @@ test("durable claims coalesce concurrent isolates, including a stale metadata re
     assert.equal(second.statements.length - readsBefore, 1, "freshness costs one metadata read, no payload or aggregate read");
     assert.ok(!second.statements.at(-1)?.sql.includes("payload_json"));
   } finally { release(); first.sqlite.close(); }
+});
+
+test("overlay refresh rebuilds only its requested stale range and throttles relay retries", async () => {
+  const database = new SqliteD1();
+  try {
+    assert.deepEqual(await refreshStaleMaterializedSnapshot(database, "24h", now), { refreshed: ["24h"] });
+    assert.deepEqual(await refreshStaleMaterializedSnapshot(database, "7d", new Date(now.getTime() + 1)), { refreshed: ["7d"] });
+    assert.deepEqual(database.sqlite.prepare("SELECT range FROM codex_dashboard_snapshot ORDER BY range").all().map((row) => row.range), ["24h", "7d"]);
+    assert.deepEqual(database.sqlite.prepare("SELECT range FROM codex_snapshot_refresh_lease ORDER BY range").all().map((row) => row.range), ["24h", "7d"]);
+
+    const before = database.statements.length;
+    assert.deepEqual(await refreshStaleMaterializedSnapshot(database, "24h", new Date(now.getTime() + 30_000)), { refreshed: [] });
+    assert.equal(database.statements.length, before, "a relay retry inside the minute backoff does not query or write D1");
+
+    const metadataBefore = database.statements.length;
+    assert.deepEqual(await refreshStaleMaterializedSnapshot(database, "24h", new Date(now.getTime() + 60_000)), { refreshed: [] });
+    assert.equal(database.statements.length - metadataBefore, 1, "a fresh snapshot costs one metadata read and no lease or snapshot write");
+  } finally { database.sqlite.close(); }
 });
 
 test("failed refresh backs off across isolates and an expired claim can recover", async () => {
