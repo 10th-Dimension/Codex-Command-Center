@@ -6,7 +6,7 @@ import { sanitizeTelemetryPayload } from "./telemetry-spool-payload";
 export const TELEMETRY_SPOOL_MAX_BYTES = 64 * 1024 * 1024;
 export const TELEMETRY_SPOOL_MAX_FILES = 4_096;
 export const TELEMETRY_SPOOL_MAX_ENTRY_BODY_BYTES = 1_048_576;
-export const TELEMETRY_SPOOL_REPLAY_BATCH_SIZE = 16;
+export const TELEMETRY_SPOOL_REPLAY_BATCH_SIZE = 64;
 export const TELEMETRY_SPOOL_RETRY_MINIMUM_MS = 5_000;
 export const TELEMETRY_SPOOL_RETRY_MAXIMUM_MS = 60_000;
 
@@ -111,7 +111,7 @@ function stateFile(directory: string) {
 
 async function writeAtomically(path: string, contents: string) {
   const temporary = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  await writeFile(temporary, contents, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  await writeFile(temporary, contents, { encoding: "utf8", flag: "wx", mode: 0o600, flush: true });
   try {
     await rename(temporary, path);
   } catch (error) {
@@ -285,14 +285,9 @@ export class TelemetrySpool {
     return this.retryNotBefore;
   }
 
-  async recordUpstreamFailure() {
-    await this.ready();
-    return this.serialize(async () => {
-      this.state.lastUpstreamFailureAt = new Date(this.now()).toISOString();
-      this.replayState = "buffering";
-      this.retryNotBefore = Math.max(this.retryNotBefore, this.now() + this.retryDelayMs);
-      await this.persistState();
-    });
+  oldestQueuedAt() {
+    const first = this.entries[0];
+    return first ? Date.parse(first.enqueuedAt) : undefined;
   }
 
   async enqueue(contentType: TelemetrySpoolContentType, body: Uint8Array) {
@@ -347,8 +342,11 @@ export class TelemetrySpool {
     this.replayState = "replaying";
     let delivered = 0;
     let attempts = 0;
-    while (this.entries.length && attempts < this.replayBatchSize) {
-      const entries = this.entries.slice(0, sendGroup ? Math.min(8, this.replayBatchSize - attempts) : 1);
+    // New arrivals belong to the next flush rather than being sent one at a
+    // time behind the batch that is already in flight.
+    const batchSize = Math.min(this.entries.length, this.replayBatchSize);
+    while (this.entries.length && attempts < batchSize) {
+      const entries = this.entries.slice(0, sendGroup ? batchSize - attempts : 1);
       let completed = 1;
       let result: TelemetrySpoolReplayResult;
       try {

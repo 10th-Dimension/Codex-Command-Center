@@ -144,6 +144,7 @@ test("spooled OTLP is rebuilt from privacy-safe normalized fields", async () => 
           { key: "authorization", value: { stringValue: "Bearer secret-value" } },
           { key: "tool.output", value: { stringValue: "private tool output" } },
           { key: "input_tokens", value: { intValue: "4" } },
+          { key: "unrecognized.safe_key", value: { stringValue: "unrecognized value must not persist" } },
         ],
       }] }],
     }],
@@ -153,13 +154,12 @@ test("spooled OTLP is rebuilt from privacy-safe normalized fields", async () => 
   assert.ok(sanitized);
   assert.equal(sanitized.contentType, "application/json");
   const serialized = new TextDecoder().decode(sanitized.body);
-  assert.doesNotMatch(serialized, /person@example\.test|private prompt|Bearer secret-value|private tool output/);
+  assert.doesNotMatch(serialized, /person@example\.test|private prompt|Bearer secret-value|private tool output|unrecognized value/);
   assert.match(serialized, /codex\.api_request/);
   assert.match(serialized, /codex\.replay\.fingerprint/);
   const original = await normalizeOtlpRecords(decodeOtlpJson(payload), "2026-09-17T12:00:00.000Z");
   const replayed = await normalizeOtlpRecords(decodeOtlpJson(JSON.parse(serialized)), "2026-09-17T12:00:00.000Z", { replay: true });
-  assert.equal(replayed[0]?.fingerprint, original[0]?.fingerprint);
-  assert.equal(replayed[0]?.callIdHash, original[0]?.callIdHash);
+  assert.deepEqual(replayed, original);
 });
 
 test("privacy-safe protobuf replay keeps the protobuf content type and event shape", async () => {

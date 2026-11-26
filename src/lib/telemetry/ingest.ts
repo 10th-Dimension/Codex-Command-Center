@@ -13,8 +13,11 @@ import {
 export const MAX_TELEMETRY_PAYLOAD_BYTES = 1_048_576;
 export const TELEMETRY_MAINTENANCE_INTERVAL_MS = 60_000;
 const INGEST_HEADER = "x-codex-telemetry-key";
-const MAX_ATOMIC_EVENTS = 100;
-const MAX_ATOMIC_STATEMENTS = 200;
+const MAX_ATOMIC_EVENTS = 200;
+const MAX_ATOMIC_STATEMENTS = 500;
+const BUSY_DAY_EVENT_RATE = 35_000;
+const BUSY_RETENTION_ROWS_PER_TABLE = 100;
+const DAY_MS = 86_400_000;
 
 interface MaintenanceResult {
   schemaUnavailable: boolean;
@@ -125,6 +128,17 @@ async function commitTelemetry(database: D1DatabaseLike, events: NormalizedTelem
   return { inserted, rollupUpserts, sessionSummaryUpserts, rowsWritten };
 }
 
+async function retentionLimitForLoad(database: D1DatabaseLike, now: Date) {
+  const dayStart = Math.floor(now.getTime() / DAY_MS) * DAY_MS;
+  const result = await database.prepare(`SELECT COALESCE(SUM(event_count), 0) AS events
+    FROM codex_rollup_hourly WHERE hour_start>=? AND hour_start<=?`)
+    .bind(new Date(dayStart).toISOString(), now.toISOString()).all<{ events: number }>();
+  if (!result.success) throw new Error("Could not measure telemetry intake for retention.");
+  const elapsed = Math.max(now.getTime() - dayStart, 3_600_000);
+  const projectedEvents = (result.results?.[0]?.events ?? 0) * DAY_MS / elapsed;
+  return projectedEvents >= BUSY_DAY_EVENT_RATE ? BUSY_RETENTION_ROWS_PER_TABLE : undefined;
+}
+
 async function runMaintenance(database: D1DatabaseLike, retentionDays: number, now: Date, intervalMs: number): Promise<MaintenanceResult> {
   const existing = maintenanceStates.get(database);
   const state = existing ?? {};
@@ -163,7 +177,11 @@ async function runMaintenance(database: D1DatabaseLike, retentionDays: number, n
     }
     if (cleanupDue) {
       state.lastCleanupAt = now.getTime();
-      const rawCleanup = await deleteExpiredTelemetry(database, retentionDays, now);
+      // Keep the retention cutoff and cadence, but leave write headroom for
+      // incoming telemetry on busy days. Later cleanup can reclaim the rest.
+      const retentionLimit = schemaUnavailable ? undefined : await retentionLimitForLoad(database, now)
+        .catch(() => BUSY_RETENTION_ROWS_PER_TABLE);
+      const rawCleanup = await deleteExpiredTelemetry(database, retentionDays, now, retentionLimit);
       cleanupDeletes += rawCleanup.changes;
       rowsWritten = addRowsWritten(rowsWritten, rawCleanup.rowsWritten);
     }

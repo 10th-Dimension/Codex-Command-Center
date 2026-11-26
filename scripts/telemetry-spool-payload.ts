@@ -127,6 +127,9 @@ function eventAttributes(event: NormalizedTelemetryEvent) {
   addAttribute(attributes, "codex.replay.category", event.category);
   addAttribute(attributes, "codex.replay.fingerprint", event.fingerprint);
   addAttribute(attributes, "codex.replay.call_id_hash", event.callIdHash);
+  addAttribute(attributes, "codex.replay.safe_keys", JSON.stringify(event.safeAttributeKeys));
+  addAttribute(attributes, "codex.replay.unknown_keys", JSON.stringify(event.unknownAttributeKeys));
+  addAttribute(attributes, "codex.replay.redacted_keys", event.redactedAttributeCount);
   return attributes;
 }
 
@@ -194,10 +197,8 @@ export async function sanitizeTelemetryPayload(contentType: TelemetrySpoolConten
   }
 }
 
-// Preserve the original resource and scope envelopes. Live records with no
-// usable event time must be sent separately: changing their shared receipt
-// time could change their fingerprints and collapse distinct events.
-export function groupTelemetryPayloads(items: readonly TelemetryPayload[], mode: "live" | "replay") {
+// The spool has already assigned and preserved each event's time and fingerprint.
+export function groupTelemetryPayloads(items: readonly TelemetryPayload[]) {
   if (items.length < 2) return undefined;
   const contentType = items[0]?.contentType;
   if (!contentType) return undefined;
@@ -214,10 +215,6 @@ export function groupTelemetryPayloads(items: readonly TelemetryPayload[], mode:
         : undefined;
       const decoded = json ? decodeOtlpJson(json) : decodeOtlpProtobuf(item.body);
       if (records + decoded.length > MAX_OTLP_LOG_RECORDS) break;
-      if (mode === "live" && decoded.some((record) => {
-        const timestamp = record.timeUnixNano ?? record.observedTimeUnixNano;
-        return !timestamp || timestamp <= 0n || timestamp / 1_000_000n > 8_640_000_000_000_000n;
-      })) break;
       if (json) resourceLogs.push(...json.resourceLogs);
       parts.push(item.body);
       bytes += item.body.byteLength;

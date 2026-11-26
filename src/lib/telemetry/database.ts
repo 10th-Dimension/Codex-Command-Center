@@ -99,9 +99,13 @@ export async function insertTelemetryEvents(database: D1DatabaseLike, events: No
   return (await insertTelemetryEventsDetailed(database, events)).inserted;
 }
 
-export async function deleteExpiredTelemetry(database: D1DatabaseLike, retentionDays: number, now: Date): Promise<D1MutationResult> {
+export async function deleteExpiredTelemetry(
+  database: D1DatabaseLike,
+  retentionDays: number,
+  now: Date,
+  perTableLimit = Math.floor(TELEMETRY_RETENTION_DELETE_BATCH_SIZE / 2),
+): Promise<D1MutationResult> {
   const cutoff = new Date(now.getTime() - retentionDays * 86_400_000).toISOString();
-  const perTableLimit = Math.floor(TELEMETRY_RETENTION_DELETE_BATCH_SIZE / 2);
   const results = await database.batch([
     database.prepare(`
       DELETE FROM codex_telemetry_events INDEXED BY sqlite_autoindex_codex_telemetry_events_1

@@ -534,6 +534,25 @@ test("a full raw-retention batch waits for the next 30-day cleanup cycle", async
   assert.equal(database.legacyDeletePasses, 2, "cleanup rests after the backlog is drained");
 });
 
+test("busy intake reserves more D1 writes for ingest while retaining the same expiration cutoff", async () => {
+  class BusyD1 extends FakeD1 {
+    execute(statement: FakeStatement): D1ResultLike {
+      if (statement.sql.startsWith("SELECT COALESCE(SUM(event_count), 0) AS events")) {
+        assert.deepEqual(statement.values, ["2026-09-11T00:00:00.000Z", now]);
+        return { success: true, results: [{ events: 25_000 }] };
+      }
+      return super.execute(statement);
+    }
+  }
+  const database = new BusyD1();
+  const response = await handleTelemetryIngest(requestFor(jsonPayload()), { database, ingestKey, retentionDays: 30, now: () => new Date(now) });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-codex-telemetry-accepted"), "1");
+  assert.deepEqual(database.statements
+    .filter(({ sql }) => sql.trim().startsWith("DELETE FROM codex_telemetry_events"))
+    .map(({ values }) => values), [["2026-08-12T12:00:00.000Z", 100], ["2026-08-12T12:00:00.000Z", 100]]);
+});
+
 test("duplicate-only retries skip maintenance even when the maintenance interval is eligible", async () => {
   const database = new MetadataD1();
   const options = { database, ingestKey, retentionDays: 30, now: () => new Date(now), maintenanceIntervalMs: 0 };
